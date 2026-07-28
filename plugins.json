@@ -1,0 +1,22 @@
+[
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-1a743db0225a0e00155772fb76efd9949c406f2bc283b85d56f5f56c4330643c",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 21699,
+        "status": 1,
+        "language": "jp",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "9tsu.vipProvider",
+        "description": "Lorem ipsum",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsu.vipProvider.cs3",
+        "name": "9tsu.vipProvider"
+    }
+]
