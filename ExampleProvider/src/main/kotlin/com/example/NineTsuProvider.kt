@@ -27,22 +27,19 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 3. Fungsi Memuat Link Pemutar (Diperbaiki tanpa reassign 'val')
+    // 3. Fungsi Memuat Link Pemutar (Tanpa parameter isM3u8 yang bikin error)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        
-        val isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
 
         callback.invoke(
             newExtractorLink(
                 name = this.name,
                 source = this.name,
-                url = data,
-                isM3u8 = isM3u8
+                url = data
             ) {
                 this.referer = mainUrl
                 this.quality = Qualities.Unknown.value
