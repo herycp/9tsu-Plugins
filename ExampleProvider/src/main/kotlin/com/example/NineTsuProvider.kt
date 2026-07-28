@@ -6,6 +6,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import org.json.JSONArray
 import java.net.URLDecoder
 
 class NineTsuProvider : MainAPI() {
@@ -14,13 +15,20 @@ class NineTsuProvider : MainAPI() {
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
-    // Helper kustom untuk mengekstrak atribut gambar tanpa memicu error JSpecify
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+    // Helper kustom untuk mengekstrak atribut gambar/iframe tanpa memicu error JSpecify
     private fun getAttrOrNull(element: org.jsoup.nodes.Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
     }
 
-    // 1. Konfigurasi Halaman Utama (Main Page) Sesuai URL Terbaru
+    // Unescape string JavaScript (menghilangkan \/ dan \")
+    private fun unescapeJs(str: String): String {
+        return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
+    }
+
+    // 1. Konfigurasi Halaman Utama
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
         "$mainUrl/daily" to "Harian (Daily)",
@@ -44,7 +52,7 @@ class NineTsuProvider : MainAPI() {
             request.data
         }
 
-        val doc = app.get(url).document
+        val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
         val homeItems = doc.select("article, .post, .entry, .type-post").mapNotNull { element ->
             val titleElement = element.selectFirst("h2 a, h3 a, .entry-title a, a[rel='bookmark']") 
@@ -55,7 +63,9 @@ class NineTsuProvider : MainAPI() {
             if (title.isBlank() || href.isBlank()) return@mapNotNull null
 
             val imgElement = element.selectFirst("img")
-            val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+            val posterUrl = getAttrOrNull(imgElement, "data-src") 
+                ?: getAttrOrNull(imgElement, "data-lazy-src") 
+                ?: getAttrOrNull(imgElement, "src")
 
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
@@ -65,63 +75,44 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // 3. Pencarian Diakali Menggunakan DuckDuckGo Site Search (Mencegah Redirect ke Homepage)
+    // 3. Pencarian Stabil Menggunakan Bing Site Search & WP API Fallback
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim().replace(" ", "+")
 
-        // Metode Utama: Trik DuckDuckGo HTML Search
+        // Metode 1: Bing HTML Search (Tahan anti-bot)
         try {
-            val ddgUrl = "https://html.duckduckgo.com/html/?q=site:9tsu.vip+$cleanQuery"
-            val response = app.get(
-                ddgUrl,
-                headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                )
-            )
+            val bingUrl = "https://www.bing.com/search?q=site%3A9tsu.vip+$cleanQuery"
+            val response = app.get(bingUrl, headers = mapOf("User-Agent" to userAgent))
             val doc = response.document
 
-            doc.select(".result").forEach { element ->
-                val titleElem = element.selectFirst("a.result__a") ?: return@forEach
+            doc.select("li.b_algo").forEach { element ->
+                val titleElem = element.selectFirst("h2 a") ?: return@forEach
                 val rawTitle = titleElem.text()
-                val title = rawTitle.replace(Regex("""\s*[-|]\s*9tsu.*""", RegexOption.IGNORE_CASE), "").trim()
-                val rawHref = titleElem.attr("href")
+                val title = rawTitle.replace(Regex("""\s*[-|–]\s*9tsu.*""", RegexOption.IGNORE_CASE), "").trim()
+                val href = titleElem.attr("href")
 
-                // Unpack URL redirect milik DuckDuckGo (uddg=...)
-                val realUrl = if (rawHref.contains("uddg=")) {
-                    try {
-                        URLDecoder.decode(rawHref.substringAfter("uddg=").substringBefore("&"), "UTF-8")
-                    } catch (e: Exception) {
-                        rawHref
-                    }
-                } else {
-                    rawHref
-                }
+                if (href.contains("9tsu.vip") && 
+                    href != mainUrl && 
+                    href != "$mainUrl/" && 
+                    !href.contains("/category/") && 
+                    !href.contains("/tag/")) {
 
-                // Filter agar link hasil cari benar-benar berupa postingan video (bukan homepage/kategori)
-                if (realUrl.contains("9tsu.vip") && 
-                    realUrl != mainUrl && 
-                    realUrl != "$mainUrl/" && 
-                    !realUrl.contains("/category/") && 
-                    !realUrl.contains("/tag/")) {
-
-                    results.add(
-                        newTvSeriesSearchResponse(title, realUrl, TvType.TvSeries)
-                    )
+                    results.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries))
                 }
             }
         } catch (e: Exception) {
-            // Lanjut ke fallback jika DuckDuckGo gagal
+            // Lanjut ke fallback jika Bing gagal
         }
 
-        // Fallback: WordPress REST API
+        // Metode 2: Fallback WordPress REST API
         if (results.isEmpty()) {
             try {
                 val wpApiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$cleanQuery&_embed"
-                val apiResponse = app.get(wpApiUrl)
+                val apiResponse = app.get(wpApiUrl, headers = mapOf("User-Agent" to userAgent))
 
                 if (apiResponse.code == 200) {
-                    val jsonArray = org.json.JSONArray(apiResponse.text)
+                    val jsonArray = JSONArray(apiResponse.text)
                     for (i in 0 until jsonArray.length()) {
                         val item = jsonArray.getJSONObject(i)
                         val titleRaw = item.getJSONObject("title").getString("rendered")
@@ -156,9 +147,9 @@ class NineTsuProvider : MainAPI() {
         return results.distinctBy { it.url }
     }
 
-    // 4. Scraping Detail Halaman Video
+    // 4. Scraping Detail Halaman Video (Menangkap Semua Sumber Player)
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url)
+        val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val html = response.text
         val doc = response.document
 
@@ -166,20 +157,25 @@ class NineTsuProvider : MainAPI() {
             ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img")
-        val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        val posterUrl = getAttrOrNull(imgElement, "data-src") 
+            ?: getAttrOrNull(imgElement, "data-lazy-src") 
+            ?: getAttrOrNull(imgElement, "src")
 
         val embedUrls = mutableListOf<String>()
 
-        // A. Ekstrak langsung URL .m3u8 jika ada di HTML
-        val m3u8Regex = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
-        m3u8Regex.findAll(html).forEach { match ->
-            embedUrls.add(match.value)
+        // Scan atribut iframe (src, data-src, data-lazy-src)
+        doc.select("iframe").forEach { iframe ->
+            val src = getAttrOrNull(iframe, "src") 
+                ?: getAttrOrNull(iframe, "data-src") 
+                ?: getAttrOrNull(iframe, "data-lazy-src")
+            if (!src.isNullOrBlank()) embedUrls.add(src)
         }
 
-        // B. Ekstrak iframe player
-        doc.select("iframe[src]").forEach { iframe ->
-            val src = iframe.attr("src")
-            if (src.isNotBlank()) embedUrls.add(src)
+        // Scan script tag untuk URL dremoxa/demoxa/m3u8
+        val unescapedHtml = unescapeJs(html)
+        val urlRegex = Regex("""https?://[^\s"'<>]+?(?:dremoxa|demoxa|playlist|\.m3u8)[^\s"'<>]*""")
+        urlRegex.findAll(unescapedHtml).forEach { match ->
+            embedUrls.add(match.value)
         }
 
         if (embedUrls.isEmpty()) {
@@ -191,7 +187,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 5. Ekstraksi Dremoxa/Demoxa iFrame & Penyelesaian Error 3003
+    // 5. Pembongkaran Dremoxa iFrame & Pencarian Stream M3U8
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -201,7 +197,6 @@ class NineTsuProvider : MainAPI() {
         if (data.isBlank()) return false
 
         val urls = data.split(",")
-        val m3u8Regex = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
 
         for (rawUrl in urls) {
             val cleanUrl = rawUrl.trim()
@@ -209,11 +204,11 @@ class NineTsuProvider : MainAPI() {
 
             val formattedUrl = if (cleanUrl.startsWith("//")) "https:$cleanUrl" else cleanUrl
 
-            // Kasus A: Jika link sudah langsung berupa file .m3u8
+            // Kasus 1: Link sudah berupa file .m3u8 langsung
             if (formattedUrl.contains(".m3u8")) {
                 callback.invoke(
                     newExtractorLink(
-                        name = "9tsu - Demoxa",
+                        name = "9tsu - Direct Stream",
                         source = this.name,
                         url = formattedUrl,
                         type = ExtractorLinkType.M3U8
@@ -225,21 +220,20 @@ class NineTsuProvider : MainAPI() {
                 continue
             }
 
-            // Kasus B: Jika link berupa iframe dremoxa.space / demoxa.space
+            // Kasus 2: Link berupa embed/iframe Dremoxa atau Demoxa
             if (formattedUrl.contains("demoxa") || formattedUrl.contains("dremoxa")) {
                 try {
-                    // Buka halaman iframe pemutar di latar belakang
                     val embedResponse = app.get(
                         formattedUrl,
                         referer = mainUrl,
-                        headers = mapOf(
-                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                        )
+                        headers = mapOf("User-Agent" to userAgent)
                     )
-                    val embedHtml = embedResponse.text
+                    val embedHtml = unescapeJs(embedResponse.text)
 
-                    // Cari URL playlist.m3u8 tersembunyi di dalam iframe dremoxa
-                    val m3u8Match = m3u8Regex.find(embedHtml)?.value
+                    // A. Cari URL .m3u8 absolut
+                    val absM3u8Regex = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""")
+                    val m3u8Match = absM3u8Regex.find(embedHtml)?.value
+
                     if (!m3u8Match.isNullOrBlank()) {
                         callback.invoke(
                             newExtractorLink(
@@ -254,12 +248,32 @@ class NineTsuProvider : MainAPI() {
                         )
                         continue
                     }
+
+                    // B. Cari URL .m3u8 relatif (misal: /playlist/xyz/playlist.m3u8)
+                    val relM3u8Regex = Regex("""/playlist/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""")
+                    val relMatch = relM3u8Regex.find(embedHtml)?.value
+
+                    if (!relMatch.isNullOrBlank()) {
+                        val fullM3u8 = "https://dremoxa.space$relMatch"
+                        callback.invoke(
+                            newExtractorLink(
+                                name = "9tsu - Demoxa Stream",
+                                source = this.name,
+                                url = fullM3u8,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = formattedUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        continue
+                    }
                 } catch (e: Exception) {
-                    // Lanjut ke fallback jika iframe gagal dibuka
+                    // Lanjut ke fallback
                 }
             }
 
-            // Kasus C: Fallback extractor bawaan CloudStream
+            // Kasus 3: Fallback ke ekstraktor standar CloudStream
             val loaded = loadExtractor(formattedUrl, subtitleCallback, callback)
             if (!loaded && formattedUrl.contains(".mp4")) {
                 callback.invoke(
