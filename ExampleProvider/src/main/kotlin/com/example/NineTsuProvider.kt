@@ -4,7 +4,6 @@ import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.jsoup.Jsoup
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -12,21 +11,24 @@ class NineTsuProvider : MainAPI() {
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
+    // Helper sederhana untuk mengambil atribut gambar tanpa memicu error JSpecify
+    private fun getAttrOrNull(element: org.jsoup.nodes.Element?, attr: String): String? {
+        val value = element?.attr(attr)?.trim()
+        return if (value.isNullOrEmpty()) null else value
+    }
+
     // 1. Scraping Hasil Pencarian
     override suspend fun search(query: String): List<SearchResponse> {
         val searchUrl = "$mainUrl/?s=${query.replace(" ", "+")}"
         val doc = app.get(searchUrl).document
 
-        // Mengambil elemen-elemen kartu video dari hasil pencarian
         return doc.select("article, .post, .entry").mapNotNull { element ->
             val titleElement = element.selectFirst("h2 a, h3 a, .entry-title a") ?: return@mapNotNull null
             val title = titleElement.text().trim()
             val href = titleElement.attr("href")
 
-            // Mengambil URL gambar poster (mengecek src atau data-src jika ada lazy loading)
             val imgElement = element.selectFirst("img")
-            val posterUrl = imgElement?.attr("data-src")?.ifEmpty { null } 
-                ?: imgElement?.attr("src")
+            val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
 
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
@@ -38,23 +40,19 @@ class NineTsuProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse {
         val doc = app.get(url).document
 
-        // Ambil judul halaman
         val title = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() 
             ?: doc.title()
 
-        // Ambil gambar poster utama jika ada
-        val posterUrl = doc.selectFirst(".entry-content img, .post-thumbnail img")?.let { img ->
-            img.attr("data-src").ifEmpty { img.attr("src") }
-        }
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img")
+        val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
 
-        // Cari URL iframe / pemutar video di dalam halaman (tanpa mengambil deskripsi)
         val embedUrl = doc.selectFirst("iframe[src]")?.attr("src")
             ?: doc.selectFirst("video source[src]")?.attr("src")
-            ?: url // Fallback jika link video langsung berupa URL halaman ini
+            ?: url
 
         return newMovieLoadResponse(title, url, TvType.Movie, embedUrl) {
             this.posterUrl = posterUrl
-            // Deskripsi disengaja dilewati
+            // Deskripsi sengaja dilewati
         }
     }
 
