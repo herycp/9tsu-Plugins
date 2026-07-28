@@ -26,7 +26,8 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 3. Fungsi Memuat Link Pemutar (Signature disesuaikan dengan pesan error)
+    // 3. Fungsi Memuat Link Pemutar (Ditambahkan Suppress agar Deprecation tidak dianggap Error)
+    @Suppress("DEPRECATION")
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
