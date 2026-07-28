@@ -1,0 +1,102 @@
+[
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-7b1e3996e55846d5f03b907072db7bfd574961e2e096ee8f435d7facca1fb5a1",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 25915,
+        "status": 1,
+        "language": "ja",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "5mio.orgProvider",
+        "description": "Lorem ipsum",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/5mio.orgProvider.cs3",
+        "name": "5mio.orgProvider"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-0a9c395def567689a2dfabffa76e05f156ad3c33ab32c630d00a5a2b32f767f1",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 25753,
+        "status": 1,
+        "language": "ja",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "9tsu.inProvider",
+        "description": "9tsu.in provider",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsu.inProvider.cs3",
+        "name": "9tsu.inProvider"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-46e14b792614e679a7bf206e4f66beff11bbf6a409ec216a4130793cea463d98",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 25979,
+        "status": 1,
+        "language": "ja",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "9tsu.vipProvider",
+        "description": "Lorem ipsum",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsu.vipProvider.cs3",
+        "name": "9tsu.vipProvider"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-40456da6aa14567ea4fd05f6aaa3b52e30c0e3d3f300bf5cfe6bfcfa6012a082",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 37317,
+        "status": 1,
+        "language": "ja",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "9tsufixProvider",
+        "description": "9tsu.in provider",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsufixProvider.cs3",
+        "name": "9tsufixProvider"
+    },
+    {
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "fileHash": "sha256-3d7b5cdde2126f3b994d6537e88154cab18c46e7937c2e97eb6b5768a5b4b163",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "fileSize": 29870,
+        "status": 1,
+        "language": "en",
+        "authors": [
+            "Herycp"
+        ],
+        "tvTypes": [
+            "Movie"
+        ],
+        "version": -1,
+        "internalName": "DramacoolProvider",
+        "description": "dramacool.my provider",
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/DramacoolProvider.cs3",
+        "name": "DramacoolProvider"
+    }
+]

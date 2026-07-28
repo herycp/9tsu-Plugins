@@ -1,0 +1,9 @@
+{
+  "name": "9tsu",
+  "description": " 🗾 dorama raw",
+  "iconUrl": "https://i.ibb.co/q3YkdNRv/asm0d3usx.png",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/plugins.json"
+  ]
+}
