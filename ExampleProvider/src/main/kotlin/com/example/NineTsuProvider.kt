@@ -1,7 +1,6 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -26,7 +25,6 @@ class NineTsuProvider : MainAPI() {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
 
-    // 1. Kategori Halaman Utama
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
         "$mainUrl/daily" to "Harian (Daily)",
@@ -41,7 +39,6 @@ class NineTsuProvider : MainAPI() {
         "$mainUrl/premium" to "Kategori Premium"
     )
 
-    // 2. Scraping Beranda
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) {
             val cleanData = request.data.removeSuffix("/")
@@ -51,41 +48,35 @@ class NineTsuProvider : MainAPI() {
         }
 
         val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-
-        val homeItems = doc.select("article, .post, .entry, .type-post").mapNotNull { element ->
-            val titleElement = element.selectFirst("h2 a, h3 a, .entry-title a, a[rel='bookmark']") 
-                ?: return@mapNotNull null
+        val homeItems = doc.select("article, .post, .entry, .type-post, .item, .video-item").mapNotNull { element ->
+            val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']") ?: return@mapNotNull null
             val title = titleElement.text().trim()
             val href = titleElement.attr("href")
 
-            if (title.isBlank() || href.isBlank()) return@mapNotNull null
+            if (title.isBlank() || href.isBlank() || !href.startsWith("http")) return@mapNotNull null
 
             val imgElement = element.selectFirst("img")
-            val posterUrl = getAttrOrNull(imgElement, "data-src") 
-                ?: getAttrOrNull(imgElement, "data-lazy-src") 
-                ?: getAttrOrNull(imgElement, "src")
+            var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
+            if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
             newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
             }
         }
-
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // 3. Pencarian (FIXED: Blokir Hasil Navigasi)
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim().replace(" ", "+")
 
-        // Filter ketat untuk membuang elemen web/menu
-        val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content")
+        // Filter navigasi mati
+        val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content", "not found", "404")
 
-        // Metode A: WP REST API (Target Utama)
+        // 1. Coba REST API
         try {
             val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$cleanQuery&_embed&per_page=20"
             val apiRes = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
-            
             if (apiRes.code == 200 && apiRes.text.trim().startsWith("[")) {
                 val jsonArray = JSONArray(apiRes.text)
                 for (i in 0 until jsonArray.length()) {
@@ -101,71 +92,59 @@ class NineTsuProvider : MainAPI() {
                         val embedded = item.getJSONObject("_embedded")
                         if (embedded.has("wp:featuredmedia")) {
                             val mediaArray = embedded.getJSONArray("wp:featuredmedia")
-                            if (mediaArray.length() > 0) {
-                                posterUrl = mediaArray.getJSONObject(0).optString("source_url", null)
-                            }
+                            if (mediaArray.length() > 0) posterUrl = mediaArray.getJSONObject(0).optString("source_url", null)
                         }
                     }
 
                     if (title.isNotBlank() && link.isNotBlank()) {
-                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
-                            this.posterUrl = posterUrl
-                        })
+                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = posterUrl })
                     }
                 }
             }
-        } catch (e: Exception) {
-            // Abaikan error API
-        }
+        } catch (e: Exception) {}
 
-        // Jangan eksekusi fallback HTML jika API sudah menemukan hasil yang bersih
-        if (results.isNotEmpty()) return results.distinctBy { it.url }
+        // 2. Fallback HTML jika API kosong atau gagal (Diperluas jangkauannya)
+        if (results.isEmpty()) {
+            try {
+                val res = app.get("$mainUrl/?s=$cleanQuery", headers = mapOf("User-Agent" to userAgent))
+                val doc = res.document
 
-        // Metode B: HTML Fallback dengan Seleksi Ketat
-        try {
-            val res = app.get("$mainUrl/?s=$cleanQuery", headers = mapOf("User-Agent" to userAgent))
-            val doc = res.document
+                doc.select("article, .post, .entry, .type-post, .item, .result-item, .video-block").forEach { element ->
+                    // Ambil tag 'a' mana saja yang punya teks
+                    val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']") 
+                        ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() } 
+                        ?: return@forEach
+                        
+                    val title = titleElement.text().trim()
+                    val href = titleElement.attr("href")
 
-            // HANYA ekstrak dari div artikel resmi, bukan tag 'a' bebas
-            doc.select("article.post, article.type-post, div.post, div.result-item, li.is-ajax-search-result").forEach { element ->
-                val titleElement = element.selectFirst("h2 a, h3 a, .entry-title a, a[rel='bookmark']") ?: return@forEach
-                val title = titleElement.text().trim()
-                val href = titleElement.attr("href")
+                    if (title.isBlank() || href.isBlank() || !href.contains("9tsu")) return@forEach
+                    if (invalidTitles.any { title.contains(it, ignoreCase = true) }) return@forEach
 
-                if (invalidTitles.any { title.equals(it, ignoreCase = true) }) return@forEach
-
-                if (title.isNotBlank() && href.isNotBlank() && href.contains("9tsu.vip")) {
                     val imgElement = element.selectFirst("img")
-                    val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+                    var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
+                    if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                    results.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                        this.posterUrl = posterUrl
-                    })
+                    results.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = posterUrl })
                 }
-            }
-        } catch (e: Exception) {
-            // Abaikan error HTML
+            } catch (e: Exception) {}
         }
 
         return results.distinctBy { it.url }
     }
 
-    // 4. Memuat Detail Halaman
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1")?.text()?.trim() ?: doc.title()
+        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Kunci Perbaikan: Lempar URL postingan aslinya langsung ke loadLinks
-        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
-            this.posterUrl = posterUrl
-        }
+        return newMovieLoadResponse(title, url, TvType.TvSeries, url) { this.posterUrl = posterUrl }
     }
 
-    // 5. Ekstraksi Pemutar Video menggunakan API newExtractorLink
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -174,31 +153,28 @@ class NineTsuProvider : MainAPI() {
     ): Boolean {
         if (data.isBlank()) return false
         
-        // Data adalah tautan asli (https://9tsu.vip/...)
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
         val doc = docRes.document
 
         val embedUrls = mutableSetOf<String>()
 
-        // A. Cek iFrame yang tertanam
+        // 1. Ekstrak brutal SEMUA Iframe di dalam halaman
         doc.select("iframe").forEach { iframe ->
-            getAttrOrNull(iframe, "src")?.let { embedUrls.add(it) }
-            getAttrOrNull(iframe, "data-src")?.let { embedUrls.add(it) }
+            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+            if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // B. Cek Tombol/Tautan server video
-        doc.select("a.video-link, a.play-button, .entry-content a").forEach { a ->
-            val href = a.attr("href")
-            if (href.contains("dremoxa") || href.contains("demoxa") || href.contains("vtbe") || href.endsWith(".m3u8")) {
-                embedUrls.add(href)
-            }
+        // 2. Ekstrak tag Video langsung
+        doc.select("video source, video").forEach { v ->
+            val src = v.attr("src").ifBlank { v.attr("data-src") }
+            if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // C. Ekstrak brutal peladen mentah dari JS dan teks HTML
-        val regex = Regex("""https?://[^\s"'<>]+?(?:dremoxa|demoxa|vtbe|vidmoly|streamtape|dood|mixdrop|playlist|\.m3u8|\.mp4)[^\s"'<>]*""")
-        regex.findAll(html).forEach { match ->
-            embedUrls.add(unescapeJs(match.value))
+        // 3. Regex URL Global (Menangkap segala macam link embed tersembunyi)
+        val embedRegex = Regex("""(https?://[^\s"'<>]+?(?:/embed/|/e/|/v/|dremoxa|demoxa|vtbe|vidmoly|streamtape|dood|mixdrop|playlist|\.m3u8|\.mp4)[^\s"'<>]*)""")
+        embedRegex.findAll(html).forEach { match ->
+            embedUrls.add(unescapeJs(match.groupValues[1]).replace("\\", ""))
         }
 
         var linkFound = false
@@ -208,12 +184,17 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // 1. Ekstrak Langsung jika file .m3u8 atau .mp4
+            // A. Coba kirim langsung ke parser bawaan CloudStream (Streamtape, Vidmoly, dll)
+            if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
+                linkFound = true
+            }
+
+            // B. Deteksi M3U8 & MP4 mentah
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
                     newExtractorLink(
-                        name = if (isM3) "9tsu - Direct Stream" else "9tsu - Direct MP4",
+                        name = if (isM3) "9tsu - Raw HLS" else "9tsu - Raw MP4",
                         source = this.name,
                         url = cleanUrl,
                         type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -226,22 +207,18 @@ class NineTsuProvider : MainAPI() {
                 continue
             }
 
-            // 2. Ekstrak Dremoxa / Demoxa (Unpacker)
+            // C. Penanganan Khusus Dremoxa / Demoxa (jika gagal diekstrak oleh bawaan)
             if (cleanUrl.contains("dremoxa") || cleanUrl.contains("demoxa") || cleanUrl.contains("vtbe")) {
                 try {
-                    // Paksa Origin header agar server tidak menolak HTTP Request
-                    val embedHtml = app.get(cleanUrl, referer = data, headers = mapOf("User-Agent" to userAgent, "Origin" to mainUrl)).text
+                    val embedHtml = app.get(cleanUrl, referer = data, headers = mapOf("User-Agent" to userAgent)).text
                     val unpacked = try { getAndUnpack(embedHtml) } catch (e: Exception) { "" }
                     val combinedText = embedHtml + unpacked
 
-                    // Temukan .m3u8 yang berhasil di-unpack
                     val m3u8Regex = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""")
-                    val streams = m3u8Regex.findAll(combinedText).map { unescapeJs(it.value) }.toList()
-
-                    streams.distinct().forEach { streamUrl ->
+                    m3u8Regex.findAll(combinedText).map { unescapeJs(it.value) }.distinct().forEach { streamUrl ->
                         callback.invoke(
                             newExtractorLink(
-                                name = "9tsu - Demoxa Server",
+                                name = "9tsu - Demoxa Unpacked",
                                 source = this.name,
                                 url = streamUrl,
                                 type = ExtractorLinkType.M3U8
@@ -253,15 +230,7 @@ class NineTsuProvider : MainAPI() {
                         )
                         linkFound = true
                     }
-                } catch (e: Exception) {
-                    // Jika server target down, lanjutkan ke peladen berikutnya
-                }
-                continue
-            }
-
-            // 3. Fallback Universal (Streamtape, dll)
-            if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
-                linkFound = true
+                } catch (e: Exception) {}
             }
         }
 
