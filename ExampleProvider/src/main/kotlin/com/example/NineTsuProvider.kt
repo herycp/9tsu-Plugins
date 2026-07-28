@@ -27,7 +27,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 3. Fungsi Memuat Link Pemutar (Menggunakan newExtractorLink modern)
+    // 3. Fungsi Memuat Link Pemutar (Diperbaiki tanpa reassign 'val')
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -35,15 +35,17 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
+        val isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
+
         callback.invoke(
             newExtractorLink(
                 name = this.name,
                 source = this.name,
-                url = data
+                url = data,
+                isM3u8 = isM3u8
             ) {
                 this.referer = mainUrl
                 this.quality = Qualities.Unknown.value
-                this.isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
             }
         )
 
