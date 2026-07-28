@@ -1,6 +1,7 @@
 package com.example
 
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -70,10 +71,9 @@ class NineTsuProvider : MainAPI() {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim().replace(" ", "+")
 
-        // Filter navigasi mati
         val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content", "not found", "404")
 
-        // 1. Coba REST API
+        // 1. WP REST API Search
         try {
             val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$cleanQuery&_embed&per_page=20"
             val apiRes = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
@@ -103,14 +103,13 @@ class NineTsuProvider : MainAPI() {
             }
         } catch (e: Exception) {}
 
-        // 2. Fallback HTML jika API kosong atau gagal (Diperluas jangkauannya)
+        // 2. HTML Search Fallback
         if (results.isEmpty()) {
             try {
                 val res = app.get("$mainUrl/?s=$cleanQuery", headers = mapOf("User-Agent" to userAgent))
                 val doc = res.document
 
                 doc.select("article, .post, .entry, .type-post, .item, .result-item, .video-block").forEach { element ->
-                    // Ambil tag 'a' mana saja yang punya teks
                     val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']") 
                         ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() } 
                         ?: return@forEach
@@ -159,19 +158,16 @@ class NineTsuProvider : MainAPI() {
 
         val embedUrls = mutableSetOf<String>()
 
-        // 1. Ekstrak brutal SEMUA Iframe di dalam halaman
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // 2. Ekstrak tag Video langsung
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // 3. Regex URL Global (Menangkap segala macam link embed tersembunyi)
         val embedRegex = Regex("""(https?://[^\s"'<>]+?(?:/embed/|/e/|/v/|dremoxa|demoxa|vtbe|vidmoly|streamtape|dood|mixdrop|playlist|\.m3u8|\.mp4)[^\s"'<>]*)""")
         embedRegex.findAll(html).forEach { match ->
             embedUrls.add(unescapeJs(match.groupValues[1]).replace("\\", ""))
@@ -184,12 +180,10 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // A. Coba kirim langsung ke parser bawaan CloudStream (Streamtape, Vidmoly, dll)
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
             }
 
-            // B. Deteksi M3U8 & MP4 mentah
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
@@ -207,7 +201,6 @@ class NineTsuProvider : MainAPI() {
                 continue
             }
 
-            // C. Penanganan Khusus Dremoxa / Demoxa (jika gagal diekstrak oleh bawaan)
             if (cleanUrl.contains("dremoxa") || cleanUrl.contains("demoxa") || cleanUrl.contains("vtbe")) {
                 try {
                     val embedHtml = app.get(cleanUrl, referer = data, headers = mapOf("User-Agent" to userAgent)).text
