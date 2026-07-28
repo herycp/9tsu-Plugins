@@ -2,10 +2,11 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import org.json.JSONArray
+import java.net.URLDecoder
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -19,17 +20,19 @@ class NineTsuProvider : MainAPI() {
         return if (value.isNullOrEmpty()) null else value
     }
 
-    // 1. Konfigurasi Halaman Utama berdasarkan kategori asli 9tsu.vip
+    // 1. Konfigurasi Halaman Utama (Main Page) Sesuai URL Terbaru
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
+        "$mainUrl/daily" to "Harian (Daily)",
         "$mainUrl/drama-monday1" to "Drama Senin",
         "$mainUrl/drama-tuesday1" to "Drama Selasa",
-        "$mainUrl/drama-wednesday1" to "Drama Rabu",
-        "$mainUrl/drama-thursday1" to "Drama Kamis",
-        "$mainUrl/drama-friday1" to "Drama Jumat",
-        "$mainUrl/drama-saturday1" to "Drama Sabtu",
-        "$mainUrl/drama-sunday1" to "Drama Minggu",
-        "$mainUrl/dramaend" to "Drama Tamat (End)"
+        "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
+        "$mainUrl/drama-thursdaydouga" to "Drama Kamis",
+        "$mainUrl/drama-fridaydouga" to "Drama Jumat",
+        "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
+        "$mainUrl/drama-sundaydouga" to "Drama Minggu",
+        "$mainUrl/dramaend" to "Drama Tamat (End)",
+        "$mainUrl/premium" to "Kategori Premium"
     )
 
     // 2. Scraping Konten Halaman Utama
@@ -62,51 +65,63 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // 3. Pencarian Ganda (AJAX Header + WP REST API Fallback)
+    // 3. Pencarian Diakali Menggunakan DuckDuckGo Site Search (Mencegah Redirect ke Homepage)
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
-        val formattedQuery = query.replace(" ", "+")
-        val searchUrl = "$mainUrl/?s=$formattedQuery"
+        val cleanQuery = query.trim().replace(" ", "+")
 
-        // Metode A: Coba Scraping HTML dengan Header AJAX
+        // Metode Utama: Trik DuckDuckGo HTML Search
         try {
+            val ddgUrl = "https://html.duckduckgo.com/html/?q=site:9tsu.vip+$cleanQuery"
             val response = app.get(
-                searchUrl,
-                headers = mapOf("X-Requested-With" to "XMLHttpRequest")
+                ddgUrl,
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
             )
             val doc = response.document
 
-            val elements = doc.select("article, .post, .entry, .type-post, .search-result, .ajax-search-item, li.post-item")
+            doc.select(".result").forEach { element ->
+                val titleElem = element.selectFirst("a.result__a") ?: return@forEach
+                val rawTitle = titleElem.text()
+                val title = rawTitle.replace(Regex("""\s*[-|]\s*9tsu.*""", RegexOption.IGNORE_CASE), "").trim()
+                val rawHref = titleElem.attr("href")
 
-            elements.forEach { element ->
-                val titleElement = element.selectFirst("h2 a, h3 a, .entry-title a, a[rel='bookmark'], a.title") 
-                    ?: element.selectFirst("a") ?: return@forEach
-                val title = titleElement.text().trim()
-                val href = titleElement.attr("href")
+                // Unpack URL redirect milik DuckDuckGo (uddg=...)
+                val realUrl = if (rawHref.contains("uddg=")) {
+                    try {
+                        URLDecoder.decode(rawHref.substringAfter("uddg=").substringBefore("&"), "UTF-8")
+                    } catch (e: Exception) {
+                        rawHref
+                    }
+                } else {
+                    rawHref
+                }
 
-                if (title.isNotBlank() && href.isNotBlank() && href.startsWith("http")) {
-                    val imgElement = element.selectFirst("img")
-                    val posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+                // Filter agar link hasil cari benar-benar berupa postingan video (bukan homepage/kategori)
+                if (realUrl.contains("9tsu.vip") && 
+                    realUrl != mainUrl && 
+                    realUrl != "$mainUrl/" && 
+                    !realUrl.contains("/category/") && 
+                    !realUrl.contains("/tag/")) {
 
                     results.add(
-                        newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
-                            this.posterUrl = posterUrl
-                        }
+                        newTvSeriesSearchResponse(title, realUrl, TvType.TvSeries)
                     )
                 }
             }
         } catch (e: Exception) {
-            // Lanjut ke fallback jika gagal
+            // Lanjut ke fallback jika DuckDuckGo gagal
         }
 
-        // Metode B: Fallback ke WordPress REST API jika scraping HTML tidak menghasilkan apa-apa
+        // Fallback: WordPress REST API
         if (results.isEmpty()) {
             try {
-                val wpApiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$formattedQuery&_embed"
+                val wpApiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$cleanQuery&_embed"
                 val apiResponse = app.get(wpApiUrl)
 
                 if (apiResponse.code == 200) {
-                    val jsonArray = JSONArray(apiResponse.text)
+                    val jsonArray = org.json.JSONArray(apiResponse.text)
                     for (i in 0 until jsonArray.length()) {
                         val item = jsonArray.getJSONObject(i)
                         val titleRaw = item.getJSONObject("title").getString("rendered")
@@ -124,7 +139,7 @@ class NineTsuProvider : MainAPI() {
                             }
                         }
 
-                        if (title.isNotBlank() && link.isNotBlank()) {
+                        if (title.isNotBlank() && link.isNotBlank() && link != mainUrl && link != "$mainUrl/") {
                             results.add(
                                 newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                                     this.posterUrl = posterUrl
@@ -134,7 +149,7 @@ class NineTsuProvider : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Abaikan jika REST API dikunci
+                // Abaikan
             }
         }
 
@@ -155,13 +170,13 @@ class NineTsuProvider : MainAPI() {
 
         val embedUrls = mutableListOf<String>()
 
-        // Ekstrak URL dremoxa/demoxa .m3u8 via Regex
+        // A. Ekstrak langsung URL .m3u8 jika ada di HTML
         val m3u8Regex = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
         m3u8Regex.findAll(html).forEach { match ->
             embedUrls.add(match.value)
         }
 
-        // Ekstrak iframe jika ada
+        // B. Ekstrak iframe player
         doc.select("iframe[src]").forEach { iframe ->
             val src = iframe.attr("src")
             if (src.isNotBlank()) embedUrls.add(src)
@@ -176,7 +191,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 5. Penanganan Stream dremoxa.space / demoxa.space (.m3u8)
+    // 5. Ekstraksi Dremoxa/Demoxa iFrame & Penyelesaian Error 3003
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -186,6 +201,7 @@ class NineTsuProvider : MainAPI() {
         if (data.isBlank()) return false
 
         val urls = data.split(",")
+        val m3u8Regex = Regex("""https?://[^\s"'<>]+?\.m3u8[^\s"'<>]*""")
 
         for (rawUrl in urls) {
             val cleanUrl = rawUrl.trim()
@@ -193,10 +209,62 @@ class NineTsuProvider : MainAPI() {
 
             val formattedUrl = if (cleanUrl.startsWith("//")) "https:$cleanUrl" else cleanUrl
 
-            if (formattedUrl.contains("demoxa") || formattedUrl.contains("dremoxa") || formattedUrl.contains(".m3u8")) {
+            // Kasus A: Jika link sudah langsung berupa file .m3u8
+            if (formattedUrl.contains(".m3u8")) {
                 callback.invoke(
                     newExtractorLink(
                         name = "9tsu - Demoxa",
+                        source = this.name,
+                        url = formattedUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = "https://9tsu.vip/"
+                        this.quality = Qualities.Unknown.value
+                    }
+                )
+                continue
+            }
+
+            // Kasus B: Jika link berupa iframe dremoxa.space / demoxa.space
+            if (formattedUrl.contains("demoxa") || formattedUrl.contains("dremoxa")) {
+                try {
+                    // Buka halaman iframe pemutar di latar belakang
+                    val embedResponse = app.get(
+                        formattedUrl,
+                        referer = mainUrl,
+                        headers = mapOf(
+                            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                        )
+                    )
+                    val embedHtml = embedResponse.text
+
+                    // Cari URL playlist.m3u8 tersembunyi di dalam iframe dremoxa
+                    val m3u8Match = m3u8Regex.find(embedHtml)?.value
+                    if (!m3u8Match.isNullOrBlank()) {
+                        callback.invoke(
+                            newExtractorLink(
+                                name = "9tsu - Demoxa Stream",
+                                source = this.name,
+                                url = m3u8Match,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = formattedUrl
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        continue
+                    }
+                } catch (e: Exception) {
+                    // Lanjut ke fallback jika iframe gagal dibuka
+                }
+            }
+
+            // Kasus C: Fallback extractor bawaan CloudStream
+            val loaded = loadExtractor(formattedUrl, subtitleCallback, callback)
+            if (!loaded && formattedUrl.contains(".mp4")) {
+                callback.invoke(
+                    newExtractorLink(
+                        name = this.name,
                         source = this.name,
                         url = formattedUrl
                     ) {
@@ -204,20 +272,6 @@ class NineTsuProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
-            } else {
-                val loaded = loadExtractor(formattedUrl, subtitleCallback, callback)
-                if (!loaded && formattedUrl.contains(".mp4")) {
-                    callback.invoke(
-                        newExtractorLink(
-                            name = this.name,
-                            source = this.name,
-                            url = formattedUrl
-                        ) {
-                            this.referer = mainUrl
-                            this.quality = Qualities.Unknown.value
-                        }
-                    )
-                }
             }
         }
 
