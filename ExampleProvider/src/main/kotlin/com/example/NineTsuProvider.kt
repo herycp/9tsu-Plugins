@@ -3,6 +3,7 @@ package com.example
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink // Import fungsi pembantu baru
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -12,16 +13,13 @@ class NineTsuProvider : MainAPI() {
 
     // 1. Fungsi Pencarian (Search)
     override suspend fun search(query: String): List<SearchResponse> {
-        // Logika scraping pencarian dari 9tsu.vip
         return listOf()
     }
 
-    // 2. Fungsi Memuat Halaman Detail Film/Video
+    // 2. Fungsi Memuat Halaman Detail
     override suspend fun load(url: String): LoadResponse {
         val title = "Judul Video"
         val poster = "https://example.com/poster.jpg"
-        
-        // Simpan URL stream/video ke variabel data
         val videoUrl = "https://example.com/video.m3u8"
 
         return newMovieLoadResponse(title, url, TvType.Movie, videoUrl) {
@@ -29,7 +27,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 3. Fungsi Memuat Link Pemutar Video (Membuat ExtractorLink Manual)
+    // 3. Fungsi Memuat Link Pemutar (Diperbarui untuk API CloudStream Terbaru)
     override suspend fun loadLinks(
         data: String,
         isCdn: Boolean,
@@ -38,18 +36,19 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        // Membawa link stream langsung tanpa memanggil fungsi loadExtractor
+        // Menggunakan newExtractorLink(...) sesuai standar API terbaru
         callback.invoke(
-            ExtractorLink(
-                source = this.name,
+            newExtractorLink(
                 name = this.name,
+                source = this.name,
                 url = data,
-                referer = referer ?: mainUrl,
-                quality = Qualities.Unknown.value,
-                isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
-            )
+                type = if (data.contains(".m3u8") || data.contains(".m3u")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+            ) {
+                this.referer = referer ?: mainUrl
+                this.quality = Qualities.Unknown.value
+            }
         )
-        
+
         return true
     }
 }
