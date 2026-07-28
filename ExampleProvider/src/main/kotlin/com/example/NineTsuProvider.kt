@@ -8,7 +8,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.json.JSONArray
-import org.json.JSONObject
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -79,7 +78,7 @@ class NineTsuProvider : MainAPI() {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
 
-        // Metode A: WP REST API Search (Paling handal untuk Instant Search WP)
+        // Metode A: WP REST API Search
         try {
             val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=${cleanQuery.replace(" ", "+")}&_embed&per_page=20"
             val apiRes = app.get(apiUrl, headers = mapOf(
@@ -117,7 +116,7 @@ class NineTsuProvider : MainAPI() {
             // Lanjut ke metode B jika WP-JSON dinonaktifkan
         }
 
-        // Metode B: Direct Admin-AJAX Call (Instant Live Search Backend)
+        // Metode B: Direct Admin-AJAX Call
         if (results.isEmpty()) {
             try {
                 val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
@@ -264,13 +263,13 @@ class NineTsuProvider : MainAPI() {
 
                     val domainMatch = Regex("""https?://[^/]+""").find(cleanUrl)?.value ?: "https://dremoxa.space"
 
-                    // Ekstraksi URL M3U8 (Absolut, Relatif, maupun variabel JS)
-                    val absM3u8 = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""").findAll(combinedText).map { it.value }
-                    val relM3u8 = Regex("""/playlist/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""").findAll(combinedText).map { "$domainMatch${it.value}" }
+                    // Konversi hasil regex ke List menggunakan .toList()
+                    val absM3u8 = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""").findAll(combinedText).map { it.value }.toList()
+                    val relM3u8 = Regex("""/playlist/[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""").findAll(combinedText).map { "$domainMatch${it.value}" }.toList()
                     val fileM3u8 = Regex("""(?:file|source|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']""").findAll(combinedText).map { match ->
                         val path = match.groupValues[1]
                         if (path.startsWith("http")) path else "$domainMatch$path"
-                    }
+                    }.toList()
 
                     val foundStreams = (absM3u8 + relM3u8 + fileM3u8).distinct()
 
