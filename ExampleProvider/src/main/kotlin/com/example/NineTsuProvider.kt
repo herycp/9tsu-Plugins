@@ -11,23 +11,32 @@ class NineTsuProvider : MainAPI() {
 
     override var hasMainPage = true
 
-    // ... (fungsi search / getMainPage / load detail film di sini) ...
+    // Fungsi ini HANYA untuk mengambil detail halaman (TIDAK BOLEH pakai loadExtractor di sini)
+    override suspend fun load(url: String): LoadResponse {
+        // ... Logika scraping detail film/episode Anda ...
+        
+        val title = "Judul Film"
+        val poster = "https://example.com/poster.jpg"
+        val videoEmbedUrl = "https://example.com/embed/123" // URL pemutar video yang akan diproses
 
-    // 2. loadExtractor HANYA boleh dipanggil di dalam fungsi loadLinks ini
+        return newMovieLoadResponse(title, url, TvType.Movie, videoEmbedUrl) {
+            this.posterUrl = poster
+        }
+    }
+
+    // BARIS 29 SEBELUMNYA ERROR DI SINI:
+    // Pindahkan pemanggilan loadExtractor ke dalam fungsi loadLinks di bawah ini:
     override suspend fun loadLinks(
-        data: String,
+        data: String, // 'data' berisi videoEmbedUrl yang dikirim dari load()
         isCdn: Boolean,
         referer: String?,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
 
-        // 'data' di sini berisi URL embed/stream yang dikirim dari fungsi load()
-        val videoUrl = data
-
-        // Pemanggilan loadExtractor yang benar:
+        // Memanggil loadExtractor di tempat yang benar
         loadExtractor(
-            url = videoUrl,
+            url = data,
             referer = referer ?: mainUrl,
             subtitleCallback = subtitleCallback,
             callback = callback
