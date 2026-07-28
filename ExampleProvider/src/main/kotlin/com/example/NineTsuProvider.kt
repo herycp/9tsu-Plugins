@@ -2,8 +2,10 @@ package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.json.JSONArray
 
@@ -163,7 +165,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 5. Ekstraksi Pemutar Video (FIXED: Penelusuran Mendalam)
+    // 5. Ekstraksi Pemutar Video menggunakan API newExtractorLink
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -206,18 +208,19 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // 1. Ekstrak Langsung jika file .m3u8
+            // 1. Ekstrak Langsung jika file .m3u8 atau .mp4
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
-                    ExtractorLink(
-                        source = this.name,
+                    newExtractorLink(
                         name = if (isM3) "9tsu - Direct Stream" else "9tsu - Direct MP4",
+                        source = this.name,
                         url = cleanUrl,
-                        referer = data,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = isM3 // Paksa ExoPlayer memutar sebagai HLS
-                    )
+                        type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = data
+                        this.quality = Qualities.Unknown.value
+                    }
                 )
                 linkFound = true
                 continue
@@ -237,15 +240,16 @@ class NineTsuProvider : MainAPI() {
 
                     streams.distinct().forEach { streamUrl ->
                         callback.invoke(
-                            ExtractorLink(
-                                source = this.name,
+                            newExtractorLink(
                                 name = "9tsu - Demoxa Server",
+                                source = this.name,
                                 url = streamUrl,
-                                referer = cleanUrl,
-                                quality = Qualities.Unknown.value,
-                                isM3u8 = true, // Wajib bernilai True agar streaming stabil
-                                headers = mapOf("Origin" to "https://dremoxa.space")
-                            )
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = cleanUrl
+                                this.quality = Qualities.Unknown.value
+                                this.headers = mapOf("Origin" to "https://dremoxa.space")
+                            }
                         )
                         linkFound = true
                     }
