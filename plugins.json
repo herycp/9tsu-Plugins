@@ -1,0 +1,223 @@
+[
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/5mio.orgProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "5mio.orgProvider",
+        "internalName": "5mio.orgProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "Lorem ipsum",
+        "fileSize": 31029,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "ja",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-0502734f54c316c50802dd98317702fbdc413dcbabba593e0b6896279d015fce"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsu.inProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "9tsu.inProvider",
+        "internalName": "9tsu.inProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "9tsu.in provider",
+        "fileSize": 30930,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "ja",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-a1f6c5b21edd73bef8fb14bcdde3a7e587c66608f6abfa52971b3baf7c1a36a3"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsu.vipProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "9tsu.vipProvider",
+        "internalName": "9tsu.vipProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "Lorem ipsum",
+        "fileSize": 31088,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "ja",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-ab30ebe464c1def0dfebc9c78faa70b44bf7768ec1fa3373f16430bd484d7be9"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/9tsufixProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "9tsufixProvider",
+        "internalName": "9tsufixProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "9tsu.in provider",
+        "fileSize": 47693,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "ja",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-9a96d851353ecabe2b17920b7d6a92c1e55f0ce0c5a9d77d6e9aeb93a721e662"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/AsiaFlixProvider.cs3",
+        "status": 1,
+        "version": 1,
+        "name": "AsiaFlixProvider",
+        "internalName": "AsiaFlixProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "asiaflix.in provider",
+        "fileSize": 135757,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "Movie",
+            "TvSeries",
+            "AsianDrama"
+        ],
+        "apiVersion": 1,
+        "fileHash": "sha256-2b16cfa0df646504f5bf7be787596994a0b06941b7fd084d033780ac950ee311"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/DramacoolProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "DramacoolProvider",
+        "internalName": "DramacoolProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "dramacool.my provider",
+        "fileSize": 42397,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-68648ba25d1ff41d98013486b95aea2e094912279b1ed8759bce21649368b215"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/DramikaProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "DramikaProvider",
+        "internalName": "DramikaProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "dramika.com provider",
+        "fileSize": 21473,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-ec9000d9763d69435d1d0edf65179ee17b3fd8bc14ff07ed931e7b9c09132ff2"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/fawesome.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "fawesome",
+        "internalName": "fawesome",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "fawesome provider",
+        "fileSize": 42102,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-ea1d8fb4c097d8925b178df2b8bdd5b655dc32e0c8b06d601b03f8fa81d5ed33"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/KodasusakaProvider.cs3",
+        "status": 1,
+        "version": 8,
+        "name": "KodasusakaProvider",
+        "internalName": "KodasusakaProvider",
+        "authors": [
+            "ByAyzen"
+        ],
+        "description": "Watch online The Yagyu Code: Secret Scrolls on Japanese Classic Movies and TVSeries (https://jp-films.com) with English Subtitle.",
+        "fileSize": 24679,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "AsianDrama"
+        ],
+        "iconUrl": "https://t3.gstatic.com/faviconV2?client=SOCIAL&type=FAVICON&fallback_opts=TYPE,SIZE,URL&url=http://kodasusaka.com&size=128",
+        "apiVersion": 1,
+        "fileHash": "sha256-c4221f6c1dfdbfcaa43222310db6f55c986ba7dfde343d8781e99441be4cb568"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/MyAsianTvProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "MyAsianTvProvider",
+        "internalName": "MyAsianTvProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "myasiantv provider",
+        "fileSize": 26409,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "en",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-76d18ab6bd90ae6c1ab54e97698c68665583cf1f273892aa8fe513572f61d9e5"
+    },
+    {
+        "url": "https://raw.githubusercontent.com/herycp/9tsu-Plugins/builds/NoritvProvider.cs3",
+        "status": 1,
+        "version": 17,
+        "name": "NoritvProvider",
+        "internalName": "NoritvProvider",
+        "authors": [
+            "Herycp"
+        ],
+        "description": "noritv.com Provider",
+        "fileSize": 24546,
+        "repositoryUrl": "https://github.com/herycp/9tsu-Plugins",
+        "language": "ja",
+        "tvTypes": [
+            "Movie"
+        ],
+        "iconUrl": "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png",
+        "apiVersion": 1,
+        "fileHash": "sha256-84a1ea472a097ef4228bb186e7d8795e17745fdd60b2c19dce0b7963130a3fef"
+    }
+]
