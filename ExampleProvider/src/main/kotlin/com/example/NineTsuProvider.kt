@@ -1,35 +1,35 @@
 package com.example
 
-// Wildcard imports untuk memastikan semua komponen dan utilitas terdeteksi
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
 
 class NineTsuProvider : MainAPI() {
-    override var mainUrl = "https://9tsu.cc"
+    override var mainUrl = "https://9tsu.vip"
     override var name = "9tsu"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
-    // 1. Fungsi untuk mencari konten (Wajib ada agar tidak error struktur)
+    // 1. Fungsi Pencarian (Search)
     override suspend fun search(query: String): List<SearchResponse> {
-        // Logika pencarian diletakkan di sini nantinya
+        // Logika scraping pencarian dari 9tsu.vip
         return listOf()
     }
 
-    // 2. Fungsi untuk memuat detail halaman video
+    // 2. Fungsi Memuat Halaman Detail Film/Video
     override suspend fun load(url: String): LoadResponse {
         val title = "Judul Video"
         val poster = "https://example.com/poster.jpg"
         
-        // URL embed atau server pihak ketiga yang mengandung video
-        val embedUrl = "https://example.com/embed/123"
+        // Simpan URL stream/video ke variabel data
+        val videoUrl = "https://example.com/video.m3u8"
 
-        return newMovieLoadResponse(title, url, TvType.Movie, embedUrl) {
+        return newMovieLoadResponse(title, url, TvType.Movie, videoUrl) {
             this.posterUrl = poster
         }
     }
 
-    // 3. Fungsi untuk mengekstrak dan memutar video
+    // 3. Fungsi Memuat Link Pemutar Video (Membuat ExtractorLink Manual)
     override suspend fun loadLinks(
         data: String,
         isCdn: Boolean,
@@ -38,15 +38,17 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         
-        // Pastikan URL valid sebelum mencoba mengekstrak
-        if (data.startsWith("http")) {
-            loadExtractor(
-                data,
-                referer ?: mainUrl,
-                subtitleCallback,
-                callback
+        // Membawa link stream langsung tanpa memanggil fungsi loadExtractor
+        callback.invoke(
+            ExtractorLink(
+                source = this.name,
+                name = this.name,
+                url = data,
+                referer = referer ?: mainUrl,
+                quality = Qualities.Unknown.value,
+                isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
             )
-        }
+        )
         
         return true
     }
