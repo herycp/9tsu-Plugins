@@ -3,6 +3,7 @@ package com.example
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -26,8 +27,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // 3. Fungsi Memuat Link Pemutar (Ditambahkan Suppress agar Deprecation tidak dianggap Error)
-    @Suppress("DEPRECATION")
+    // 3. Fungsi Memuat Link Pemutar (Menggunakan newExtractorLink modern)
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -36,14 +36,15 @@ class NineTsuProvider : MainAPI() {
     ): Boolean {
         
         callback.invoke(
-            ExtractorLink(
-                source = this.name,
+            newExtractorLink(
                 name = this.name,
-                url = data,
-                referer = mainUrl,
-                quality = Qualities.Unknown.value,
-                isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
-            )
+                source = this.name,
+                url = data
+            ) {
+                this.referer = mainUrl
+                this.quality = Qualities.Unknown.value
+                this.isM3u8 = data.contains(".m3u8") || data.contains(".m3u")
+            }
         )
 
         return true
