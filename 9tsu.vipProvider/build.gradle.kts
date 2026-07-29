@@ -4,13 +4,13 @@ dependencies {
 }
 
 // Use an integer for version numbers
-version = 1
+version = 1.02
 
 cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
     description = "Lorem ipsum"
-    authors = listOf("Cloudburst", "Luna712")
+    authors = listOf("Herycp")
 
     /**
     * Status int as one of the following:
@@ -24,7 +24,7 @@ cloudstream {
     tvTypes = listOf("Movie")
 
     requiresResources = true
-    language = "en"
+    language = "jp"
 
     // Random CC logo I found
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
