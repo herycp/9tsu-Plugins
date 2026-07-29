@@ -277,124 +277,6 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    /**
-     * Ekstrak link dari embed dremoxa/demoxa/vtbe menggunakan API
-     */
-    private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
-        val result = mutableListOf<String>()
-        try {
-            val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
-            val idMatch = idPattern.find(embedUrl)
-            val videoId = idMatch?.groupValues?.get(1) ?: return result
-
-            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-            val baseUrl = "https://$baseDomain"
-
-            // Endpoint API
-            val apiUrl = "$baseUrl/api/source/$videoId"
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent
-            )
-
-            // Coba POST
-            try {
-                val response = app.post(apiUrl, headers = headers, data = mapOf("id" to videoId))
-                if (response.code == 200) {
-                    val text = response.text
-                    // Parse JSON
-                    try {
-                        val json = JSONObject(text)
-                        val sourcesArray = json.optJSONArray("sources")
-                        if (sourcesArray != null) {
-                            for (i in 0 until sourcesArray.length()) {
-                                val srcObj = sourcesArray.getJSONObject(i)
-                                val file = srcObj.optString("file", null)
-                                if (file != null) result.add(file)
-                            }
-                        }
-                        val file = json.optString("file", null)
-                        if (file != null) result.add(file)
-                    } catch (e: Exception) {
-                        result.addAll(extractVideoUrls(text))
-                    }
-                }
-            } catch (e: Exception) {}
-
-            // Jika gagal, coba GET alternatif
-            if (result.isEmpty()) {
-                val altEndpoints = listOf(
-                    "$baseUrl/source/$videoId",
-                    "$baseUrl/get/$videoId",
-                    "$baseUrl/api/get/$videoId"
-                )
-                for (endpoint in altEndpoints) {
-                    try {
-                        val resp = app.get(endpoint, referer = embedUrl, headers = headers)
-                        if (resp.code == 200) {
-                            result.addAll(extractVideoUrls(resp.text))
-                        }
-                    } catch (e: Exception) {}
-                }
-            }
-
-            // Jika masih kosong, ekstrak dari HTML embed
-            if (result.isEmpty()) {
-                try {
-                    val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
-                    result.addAll(extractVideoUrls(embedHtml))
-                    try {
-                        val unpacked = getAndUnpack(embedHtml)
-                        if (unpacked.isNotBlank()) {
-                            result.addAll(extractVideoUrls(unpacked))
-                        }
-                    } catch (e: Exception) {}
-                } catch (e: Exception) {}
-            }
-
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return result.distinct()
-    }
-
-    /**
-     * Ekstrak link dari embed non-dremoxa dengan memuat halaman embed dan mengekstrak video URLs
-     */
-    private suspend fun extractGenericEmbedLinks(embedUrl: String, parentUrl: String): List<String> {
-        val result = mutableListOf<String>()
-        try {
-            val headers = mapOf(
-                "Referer" to parentUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent
-            )
-            val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
-            // Ekstrak video URLs dari HTML embed
-            result.addAll(extractVideoUrls(embedHtml))
-            // Coba unpack
-            try {
-                val unpacked = getAndUnpack(embedHtml)
-                if (unpacked.isNotBlank()) {
-                    result.addAll(extractVideoUrls(unpacked))
-                }
-            } catch (e: Exception) {}
-            // Coba parse skrip untuk konfigurasi player
-            val doc = org.jsoup.Jsoup.parse(embedHtml)
-            doc.select("script").forEach { script ->
-                val scriptData = script.data()
-                val setupPattern = Regex("""file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']""")
-                setupPattern.findAll(scriptData).forEach { match ->
-                    result.add(match.groupValues[1])
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return result.distinct()
-    }
-
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -408,19 +290,13 @@ class NineTsuProvider : MainAPI() {
         val doc = docRes.document
 
         val allUrls = mutableSetOf<String>()
+        val embedUrls = mutableSetOf<String>()
 
         // 1. iframe
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                // Tangani embed berdasarkan domain
-                if (src.contains("dremoxa") || src.contains("demoxa") || src.contains("vtbe")) {
-                    val extracted = extractDremoxaLinks(src, data)
-                    extracted.forEach { url -> allUrls.add(url) }
-                } else {
-                    val extracted = extractGenericEmbedLinks(src, data)
-                    extracted.forEach { url -> allUrls.add(url) }
-                }
+                embedUrls.add(src)
             }
         }
 
@@ -474,7 +350,26 @@ class NineTsuProvider : MainAPI() {
         // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. API endpoint jika ada post ID
+        // 6. Proses embed
+        for (embedUrl in embedUrls) {
+            try {
+                val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to data,
+                    "X-Requested-With" to "XMLHttpRequest"
+                ))
+                val embedHtml = embedRes.text
+                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+                try {
+                    val unpacked = getAndUnpack(embedHtml)
+                    if (unpacked.isNotBlank()) {
+                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
+                    }
+                } catch (e: Exception) {}
+            } catch (e: Exception) {}
+        }
+
+        // 7. API endpoint jika ada post ID
         val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
         if (postId != null) {
             val apiEndpoints = listOf(
@@ -491,7 +386,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 7. get_player
+        // 8. get_player
         val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
         if (playerScript != null) {
             val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
@@ -507,7 +402,27 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 8. Coba langsung ekstrak link dari elemen dengan attribute src yang mengandung m3u8
+        // 9. Coba endpoint /api/source (umum di dremoxa)
+        val dremoxaApi = Regex("""https?://(?:dremoxa|demoxa|vtbe)\.[^/]+/api/source/([a-zA-Z0-9]+)""")
+        dremoxaApi.findAll(html).forEach { match ->
+            val id = match.groupValues[1]
+            val baseUrl = match.value.substringBefore("/api/")
+            try {
+                val apiRes = app.post("$baseUrl/api/source/$id",
+                    data = mapOf("id" to id),
+                    headers = mapOf(
+                        "User-Agent" to userAgent,
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Content-Type" to "application/x-www-form-urlencoded"
+                    )
+                )
+                if (apiRes.code == 200) {
+                    extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
+                }
+            } catch (e: Exception) {}
+        }
+
+        // 10. Coba langsung ekstrak link dari elemen dengan attribute src yang mengandung m3u8
         doc.select("[src*=.m3u8], [data-src*=.m3u8]").forEach { el ->
             val src = el.attr("src").ifBlank { el.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
@@ -525,7 +440,7 @@ class NineTsuProvider : MainAPI() {
                 continue
             }
 
-            // Jika link langsung ke video, tambahkan sebagai ExtractorLink
+            // Jika link langsung ke video
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
