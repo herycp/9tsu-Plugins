@@ -296,11 +296,7 @@ class NineTsuProvider : MainAPI() {
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("dremoxa") || src.contains("demoxa") || src.contains("vtbe") || src.contains("dood") || src.contains("streamtape") || src.contains("mixdrop")) {
-                    embedUrls.add(src)
-                } else {
-                    allUrls.add(src)
-                }
+                embedUrls.add(src)
             }
         }
 
@@ -310,138 +306,70 @@ class NineTsuProvider : MainAPI() {
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script (dengan unpack dan decode)
+        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
-                if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                    val unpacked = getAndUnpack(scriptData)
-                    if (unpacked.isNotBlank()) scriptData = unpacked
-                }
+                val unpacked = getAndUnpack(scriptData)
+                if (unpacked.isNotBlank()) scriptData = unpacked
             } catch (e: Exception) {}
-
-            val decoded = decodeBase64IfPossible(scriptData)
-            if (decoded != scriptData) scriptData = decoded
 
             extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
 
-            // Cari konfigurasi player JSON
-            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
-            jsonPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null && file.isNotBlank()) allUrls.add(file)
-                    val sources = json.optJSONArray("sources")
-                    if (sources != null) {
-                        for (i in 0 until sources.length()) {
-                            val srcObj = sources.getJSONObject(i)
-                            val src = srcObj.optString("file", null) ?: srcObj.optString("src", null) ?: srcObj.optString("url", null)
-                            if (src != null) allUrls.add(src)
+            // Cari fetch/ajax di skrip
+            val fetchPattern = Regex("""fetch\s*\(\s*['"]([^'"]+)['"]\s*[,)]""")
+            fetchPattern.findAll(scriptData).forEach { match ->
+                val endpoint = match.groupValues[1]
+                if (endpoint.startsWith("/") || endpoint.startsWith("http")) {
+                    val fullUrl = if (endpoint.startsWith("http")) endpoint else "$mainUrl$endpoint"
+                    try {
+                        val apiRes = app.get(fullUrl, referer = data, headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "X-Requested-With" to "XMLHttpRequest"
+                        ))
+                        if (apiRes.code == 200) {
+                            extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
                         }
-                    }
-                } catch (e: Exception) {}
+                    } catch (e: Exception) {}
+                }
             }
 
-            // Cari var player = {...}
-            val varPattern = Regex("""var\s+player\s*=\s*(\{.*?\})""")
-            varPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null) allUrls.add(file)
-                } catch (e: Exception) {}
+            // Cari pola player setup
+            val setupPattern = Regex("""player\.setup\s*\(\s*\{[^}]*file\s*:\s*['"]([^'"]+)['"]""")
+            setupPattern.findAll(scriptData).forEach { match ->
+                allUrls.add(match.groupValues[1])
             }
         }
 
         // 4. data-* attributes
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
+        doc.select("[data-video], [data-src], [data-url], [data-file]").forEach { el ->
+            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex on full html
+        // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses embed URLs dengan referer yang benar (AJAX get playlist)
+        // 6. Proses embed URLs
         for (embedUrl in embedUrls) {
             try {
-                // Referer adalah URL halaman induk (data)
                 val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
                     "User-Agent" to userAgent,
                     "Referer" to data,
-                    "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+                    "X-Requested-With" to "XMLHttpRequest"
                 ))
                 val embedHtml = embedRes.text
                 extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-
-                // Coba unpack
                 try {
                     val unpacked = getAndUnpack(embedHtml)
                     if (unpacked.isNotBlank()) {
                         extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
                     }
                 } catch (e: Exception) {}
-
-                // Coba decode base64
-                val decodedEmbed = decodeBase64IfPossible(embedHtml)
-                if (decodedEmbed != embedHtml) {
-                    extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
-                }
-
-                // Cari endpoint API di dalam embed (misal /api/source)
-                val apiEndpointRegex = Regex("""["']/(?:api/)?(?:source|get|playlist)[^"']*["']""")
-                apiEndpointRegex.findAll(embedHtml).forEach { match ->
-                    val endpoint = match.value.trim('"').trim('\'')
-                    if (endpoint.startsWith("/")) {
-                        val base = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-                        val fullUrl = "https://$base$endpoint"
-                        try {
-                            val apiRes = app.get(fullUrl, referer = embedUrl, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to embedUrl,
-                                "X-Requested-With" to "XMLHttpRequest"
-                            ))
-                            if (apiRes.code == 200) {
-                                extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
-                                // Coba parse JSON
-                                try {
-                                    val json = JSONObject(apiRes.text)
-                                    val file = json.optString("file", null) ?: json.optString("url", null) ?: json.optString("src", null)
-                                    if (file != null) allUrls.add(file)
-                                    val sources = json.optJSONArray("sources") ?: json.optJSONArray("files")
-                                    if (sources != null) {
-                                        for (i in 0 until sources.length()) {
-                                            val srcObj = sources.getJSONObject(i)
-                                            val src = srcObj.optString("file", null) ?: srcObj.optString("url", null) ?: srcObj.optString("src", null)
-                                            if (src != null) allUrls.add(src)
-                                        }
-                                    }
-                                } catch (e: Exception) {}
-                            }
-                        } catch (e: Exception) {}
-                    }
-                }
-
-                // Coba ekstrak dari script yang memuat konfigurasi player di embed
-                val embedDoc = org.jsoup.Jsoup.parse(embedHtml)
-                embedDoc.select("script").forEach { script ->
-                    var scriptData = script.data()
-                    try {
-                        if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                            val unpacked = getAndUnpack(scriptData)
-                            if (unpacked.isNotBlank()) scriptData = unpacked
-                        }
-                    } catch (e: Exception) {}
-                    extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
-                }
-
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) {}
         }
 
-        // 7. Coba endpoint API jika ada ID di URL
+        // 7. Coba endpoint API jika ada post ID
         val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
         if (postId != null) {
             val apiEndpoints = listOf(
@@ -458,15 +386,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 8. Cari link di dalam elemen dengan class 'player' atau 'video-container'
-        doc.select(".player, .video-container, .embed-container").forEach { container ->
-            container.select("a[href], source, iframe").forEach { el ->
-                val link = el.attr("href").ifBlank { el.attr("src") }.ifBlank { el.attr("data-src") }
-                if (link.isNotBlank()) allUrls.add(link)
-            }
-        }
-
-        // 9. Coba endpoint /get_player atau /api/source (umum pada situs video)
+        // 8. Coba endpoint get_player
         val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
         if (playerScript != null) {
             val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
@@ -482,20 +402,23 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // Proses semua URL yang ditemukan
+        // Log jumlah URL yang ditemukan (gunakan app.log jika tersedia)
+        app.log("Found ${allUrls.size} potential video URLs")
+
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba loadExtractor
+            app.log("Trying URL: $cleanUrl")
+
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
+                app.log("loadExtractor success for $cleanUrl")
                 linkFound = true
                 continue
             }
 
-            // Jika link langsung ke video
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
@@ -509,10 +432,12 @@ class NineTsuProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
+                app.log("Added direct link: $cleanUrl")
                 linkFound = true
             }
         }
 
+        app.log("loadLinks returning $linkFound")
         return linkFound
     }
 }
