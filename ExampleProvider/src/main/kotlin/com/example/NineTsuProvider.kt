@@ -277,6 +277,122 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
+    /**
+     * Ekstrak link dari embed dremoxa/demoxa/vtbe sesuai riset
+     */
+    private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
+        val result = mutableListOf<String>()
+        try {
+            // Ambil ID dari URL (misal /e/ID atau /v/ID)
+            val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
+            val idMatch = idPattern.find(embedUrl)
+            val videoId = idMatch?.groupValues?.get(1) ?: return result
+
+            // Tentukan base URL (domain)
+            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+            val baseUrl = "https://$baseDomain"
+
+            // 1. Coba endpoint /api/source/{id} (metode POST)
+            val apiUrl = "$baseUrl/api/source/$videoId"
+            val headers = mapOf(
+                "Referer" to embedUrl,
+                "X-Requested-With" to "XMLHttpRequest",
+                "User-Agent" to userAgent
+            )
+
+            try {
+                val response = app.post(apiUrl, headers = headers, data = mapOf("id" to videoId))
+                if (response.code == 200) {
+                    val text = response.text
+                    // Coba parse JSON
+                    try {
+                        val json = JSONObject(text)
+                        // Cek field "sources"
+                        val sourcesArray = json.optJSONArray("sources")
+                        if (sourcesArray != null) {
+                            for (i in 0 until sourcesArray.length()) {
+                                val srcObj = sourcesArray.getJSONObject(i)
+                                val file = srcObj.optString("file", null)
+                                if (file != null) result.add(file)
+                            }
+                        }
+                        // Cek field "file" langsung
+                        val file = json.optString("file", null)
+                        if (file != null) result.add(file)
+                    } catch (e: Exception) {
+                        // Jika bukan JSON, cari regex di text
+                        result.addAll(extractVideoUrls(text))
+                    }
+                }
+            } catch (e: Exception) {}
+
+            // 2. Jika gagal, coba GET /source/{id} atau /get/{id}
+            val altEndpoints = listOf(
+                "$baseUrl/source/$videoId",
+                "$baseUrl/get/$videoId",
+                "$baseUrl/api/get/$videoId"
+            )
+            for (endpoint in altEndpoints) {
+                try {
+                    val resp = app.get(endpoint, referer = embedUrl, headers = headers)
+                    if (resp.code == 200) {
+                        result.addAll(extractVideoUrls(resp.text))
+                    }
+                } catch (e: Exception) {}
+            }
+
+            // 3. Jika masih tidak ada, coba ekstrak dari iframe HTML (skrip)
+            try {
+                val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
+                // Cari token atau variabel di script
+                val tokenMatch = Regex("""token\s*=\s*["']([^"']+)["']""").find(embedHtml)
+                val token = tokenMatch?.groupValues?.get(1)
+                if (token != null) {
+                    // Coba panggil api dengan token
+                    val apiWithToken = "$baseUrl/api/source/$videoId?token=$token"
+                    val respToken = app.post(apiWithToken, headers = headers)
+                    if (respToken.code == 200) {
+                        result.addAll(extractVideoUrls(respToken.text))
+                        // Coba parse JSON
+                        try {
+                            val json = JSONObject(respToken.text)
+                            val sourcesArray = json.optJSONArray("sources")
+                            if (sourcesArray != null) {
+                                for (i in 0 until sourcesArray.length()) {
+                                    val srcObj = sourcesArray.getJSONObject(i)
+                                    val file = srcObj.optString("file", null)
+                                    if (file != null) result.add(file)
+                                }
+                            }
+                            val file = json.optString("file", null)
+                            if (file != null) result.add(file)
+                        } catch (e: Exception) {}
+                    }
+                }
+
+                // Ekstrak dari skrip yang mengandung player setup
+                val setupPattern = Regex("""player\.setup\s*\(\s*\{[^}]*file\s*:\s*['"]([^'"]+)['"]""")
+                setupPattern.findAll(embedHtml).forEach { match ->
+                    result.add(match.groupValues[1])
+                }
+
+                // Cari link m3u8 langsung di HTML
+                result.addAll(extractVideoUrls(embedHtml))
+                // Unpack jika ada
+                try {
+                    val unpacked = getAndUnpack(embedHtml)
+                    if (unpacked.isNotBlank()) {
+                        result.addAll(extractVideoUrls(unpacked))
+                    }
+                } catch (e: Exception) {}
+            } catch (e: Exception) {}
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return result.distinct()
+    }
+
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -316,7 +432,7 @@ class NineTsuProvider : MainAPI() {
 
             extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
 
-            // Cari fetch/ajax di skrip
+            // Cari fetch/ajax
             val fetchPattern = Regex("""fetch\s*\(\s*['"]([^'"]+)['"]\s*[,)]""")
             fetchPattern.findAll(scriptData).forEach { match ->
                 val endpoint = match.groupValues[1]
@@ -334,7 +450,7 @@ class NineTsuProvider : MainAPI() {
                 }
             }
 
-            // Cari pola player setup
+            // player.setup
             val setupPattern = Regex("""player\.setup\s*\(\s*\{[^}]*file\s*:\s*['"]([^'"]+)['"]""")
             setupPattern.findAll(scriptData).forEach { match ->
                 allUrls.add(match.groupValues[1])
@@ -350,26 +466,38 @@ class NineTsuProvider : MainAPI() {
         // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses embed URLs
+        // 6. Proses embed yang bukan dremoxa dulu (loadExtractor mungkin bisa menangani)
         for (embedUrl in embedUrls) {
-            try {
-                val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "Referer" to data,
-                    "X-Requested-With" to "XMLHttpRequest"
-                ))
-                val embedHtml = embedRes.text
-                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                try {
-                    val unpacked = getAndUnpack(embedHtml)
-                    if (unpacked.isNotBlank()) {
-                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
-                    }
-                } catch (e: Exception) {}
-            } catch (e: Exception) {}
+            // Jika embed adalah dremoxa/demoxa/vtbe, tangani sendiri
+            if (embedUrl.contains("dremoxa") || embedUrl.contains("demoxa") || embedUrl.contains("vtbe")) {
+                val extracted = extractDremoxaLinks(embedUrl, data)
+                extracted.forEach { url -> allUrls.add(url) }
+            } else {
+                // Coba loadExtractor biasa
+                if (loadExtractor(embedUrl, subtitleCallback, callback)) {
+                    // sudah ada link
+                } else {
+                    // coba muat embed dan ekstrak
+                    try {
+                        val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "Referer" to data,
+                            "X-Requested-With" to "XMLHttpRequest"
+                        ))
+                        val embedHtml = embedRes.text
+                        extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+                        try {
+                            val unpacked = getAndUnpack(embedHtml)
+                            if (unpacked.isNotBlank()) {
+                                extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
+                            }
+                        } catch (e: Exception) {}
+                    } catch (e: Exception) {}
+                }
+            }
         }
 
-        // 7. Coba endpoint API jika ada post ID
+        // 7. API endpoint jika ada post ID
         val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
         if (postId != null) {
             val apiEndpoints = listOf(
@@ -386,7 +514,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 8. Coba endpoint get_player
+        // 8. get_player
         val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
         if (playerScript != null) {
             val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
@@ -402,8 +530,11 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // Log jumlah URL yang ditemukan (gunakan app.log jika tersedia)
-        app.log("Found ${allUrls.size} potential video URLs")
+        // 9. Coba langsung ekstrak link dari elemen dengan attribute src yang mengandung m3u8
+        doc.select("[src*=.m3u8], [data-src*=.m3u8]").forEach { el ->
+            val src = el.attr("src").ifBlank { el.attr("data-src") }
+            if (src.isNotBlank()) allUrls.add(src)
+        }
 
         var linkFound = false
         for (rawUrl in allUrls) {
@@ -411,14 +542,13 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            app.log("Trying URL: $cleanUrl")
-
+            // Coba loadExtractor terlebih dahulu
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
-                app.log("loadExtractor success for $cleanUrl")
                 linkFound = true
                 continue
             }
 
+            // Jika link langsung ke video
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
@@ -432,12 +562,10 @@ class NineTsuProvider : MainAPI() {
                         this.quality = Qualities.Unknown.value
                     }
                 )
-                app.log("Added direct link: $cleanUrl")
                 linkFound = true
             }
         }
 
-        app.log("loadLinks returning $linkFound")
         return linkFound
     }
 }
