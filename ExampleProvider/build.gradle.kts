@@ -4,13 +4,13 @@ dependencies {
 }
 
 // Use an integer for version numbers
-version = 1
+version = 1.01
 
 cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
-    description = "Lorem ipsum"
-    authors = listOf("Cloudburst", "Luna712")
+    description = "9tsu.vip"
+    authors = listOf("herycp")
 
     /**
     * Status int as one of the following:
