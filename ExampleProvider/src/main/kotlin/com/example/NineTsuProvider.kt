@@ -29,7 +29,6 @@ class NineTsuProvider : MainAPI() {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
 
-    // Helper untuk mengekstrak item dari dokumen HTML (digunakan di search)
     private fun extractItemsFromDocument(doc: Document, results: MutableList<SearchResponse>, invalidTitles: List<String>) {
         doc.select("article, .post, .entry, .type-post, .item, .result-item, .video-block, .search-item, .blog-item, .hentry, .list-item").forEach { element ->
             val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
@@ -97,7 +96,7 @@ class NineTsuProvider : MainAPI() {
 
         val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content", "not found", "404")
 
-        // 1. WP REST API (standar)
+        // 1. WP REST API
         try {
             val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=$cleanQuery&_embed&per_page=50"
             val apiRes = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent, "X-Requested-With" to "XMLHttpRequest"))
@@ -126,40 +125,68 @@ class NineTsuProvider : MainAPI() {
             }
         } catch (e: Exception) { e.printStackTrace() }
 
-        // 2. Ivory Search AJAX (spesifik untuk plugin Ivory Search)
+        // 2. Admin AJAX
         if (results.isEmpty()) {
             try {
                 val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-                // Parameter yang umum digunakan oleh Ivory Search
-                val params = mapOf(
-                    "action" to "ajax_load_posts",  // action khusus Ivory Search
-                    "s" to cleanQuery,
-                    "page" to "1",
-                    "post_type" to "post"           // bisa disesuaikan jika ada custom post type
-                )
-
-                val ajaxRes = app.post(
-                    ajaxUrl,
-                    data = params,
-                    headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Content-Type" to "application/x-www-form-urlencoded"
-                    )
-                )
-
-                if (ajaxRes.code == 200) {
-                    val text = ajaxRes.text.trim()
-                    if (text.isNotBlank()) {
-                        // Respons dari Ivory Search biasanya berupa HTML
-                        val doc = org.jsoup.Jsoup.parse(text)
-                        extractItemsFromDocument(doc, results, invalidTitles)
-                    }
+                val actions = listOf("search", "search_posts", "loadmore", "search_results", "load_posts")
+                for (action in actions) {
+                    try {
+                        val params = mapOf("action" to action, "s" to cleanQuery, "keyword" to cleanQuery, "search" to cleanQuery)
+                        val ajaxRes = app.post(
+                            ajaxUrl,
+                            data = params,
+                            headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "X-Requested-With" to "XMLHttpRequest",
+                                "Content-Type" to "application/x-www-form-urlencoded"
+                            )
+                        )
+                        if (ajaxRes.code == 200) {
+                            val text = ajaxRes.text.trim()
+                            if (text.startsWith("{")) {
+                                val json = JSONObject(text)
+                                val html = json.optString("html", null) ?: json.optString("data", null) ?: json.optString("content", null)
+                                if (html != null) {
+                                    val fragment = org.jsoup.Jsoup.parse(html)
+                                    extractItemsFromDocument(fragment, results, invalidTitles)
+                                } else {
+                                    val posts = json.optJSONArray("posts") ?: json.optJSONArray("results") ?: json.optJSONArray("items")
+                                    if (posts != null) {
+                                        for (j in 0 until posts.length()) {
+                                            val post = posts.getJSONObject(j)
+                                            val title = post.optString("title", "").trim()
+                                            val link = post.optString("link", "").trim()
+                                            val poster = post.optString("image", null) ?: post.optString("thumbnail", null)
+                                            if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
+                                                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
+                                            }
+                                        }
+                                    }
+                                }
+                            } else if (text.startsWith("[")) {
+                                val jsonArray = JSONArray(text)
+                                for (j in 0 until jsonArray.length()) {
+                                    val item = jsonArray.getJSONObject(j)
+                                    val title = item.optString("title", "").trim()
+                                    val link = item.optString("link", "").trim()
+                                    val poster = item.optString("image", null) ?: item.optString("thumbnail", null)
+                                    if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
+                                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
+                                    }
+                                }
+                            } else {
+                                val doc = org.jsoup.Jsoup.parse(text)
+                                extractItemsFromDocument(doc, results, invalidTitles)
+                            }
+                            if (results.isNotEmpty()) break
+                        }
+                    } catch (e: Exception) { /* ignore */ }
                 }
             } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // 3. HTML fallback dengan header AJAX dan beberapa format URL (jika belum ada hasil)
+        // 3. HTML fallback
         if (results.isEmpty()) {
             try {
                 val searchUrls = listOf(
@@ -191,7 +218,6 @@ class NineTsuProvider : MainAPI() {
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Untuk serial, setiap halaman adalah episode, jadi gunakan newMovieLoadResponse
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) { this.posterUrl = posterUrl }
     }
 
@@ -209,22 +235,21 @@ class NineTsuProvider : MainAPI() {
 
         val embedUrls = mutableSetOf<String>()
 
-        // 1. Ekstrak dari iframe
+        // 1. iframe
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // 2. Ekstrak dari video/source
+        // 2. video source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) embedUrls.add(src)
         }
 
-        // 3. Ekstrak dari skrip yang berisi konfigurasi player
+        // 3. script patterns
         doc.select("script").forEach { script ->
             val scriptData = script.data()
-            // Pola umum: file: "url", sources: [{file: "url"}], video: "url", dll
             val patterns = listOf(
                 Regex("""file\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']"""),
                 Regex("""src\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']"""),
@@ -240,13 +265,13 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 4. Ekstrak dari atribut data di elemen (misal data-video)
+        // 4. data attributes
         doc.select("[data-video], [data-src], [data-url], [data-file]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }
             if (video.isNotBlank()) embedUrls.add(video)
         }
 
-        // 5. Regex umum di seluruh HTML
+        // 5. general regex
         val generalRegex = Regex("""(https?://[^\s"'<>]+?(?:/embed/|/e/|/v/|dremoxa|demoxa|vtbe|vidmoly|streamtape|dood|mixdrop|playlist|\.m3u8|\.mp4)[^\s"'<>]*)""")
         generalRegex.findAll(html).forEach { match ->
             embedUrls.add(unescapeJs(match.groupValues[1]).replace("\\", ""))
@@ -259,13 +284,13 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba load dengan extractor pihak ketiga
+            // Try external extractor
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
-            // Jika link langsung ke file video
+            // Direct video link
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
@@ -283,61 +308,64 @@ class NineTsuProvider : MainAPI() {
                 continue
             }
 
-            // Penanganan khusus untuk dremoxa/demoxa/vtbe
+            // --- PENANGANAN KHUSUS DREMOXA (diperbaiki) ---
             if (cleanUrl.contains("dremoxa") || cleanUrl.contains("demoxa") || cleanUrl.contains("vtbe")) {
                 try {
-                    val embedHtml = app.get(cleanUrl, referer = data, headers = mapOf(
+                    // Ambil halaman embed dengan header yang benar
+                    val embedRes = app.get(cleanUrl, referer = data, headers = mapOf(
                         "User-Agent" to userAgent,
                         "Origin" to "https://dremoxa.space",
                         "Referer" to data
-                    )).text
+                    ))
+                    val embedHtml = embedRes.text
 
-                    // Coba unpack JavaScript
-                    val unpacked = try { getAndUnpack(embedHtml) } catch (e: Exception) { "" }
-                    val combined = embedHtml + unpacked
+                    // Cari link playlist.m3u8 secara langsung (paling akurat)
+                    val m3u8Regex = Regex("""https?://dremoxa\.space/playlist/[a-f0-9]+/playlist\.m3u8[^\s"'<>]*""")
+                    var streamUrl = m3u8Regex.find(embedHtml)?.value
+                    if (streamUrl == null) {
+                        // Coba di script yang di-unpack
+                        val unpacked = try { getAndUnpack(embedHtml) } catch (e: Exception) { "" }
+                        val combined = embedHtml + unpacked
+                        streamUrl = m3u8Regex.find(combined)?.value
+                    }
 
-                    // Cari link m3u8
-                    val m3u8Regex = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""")
-                    m3u8Regex.findAll(combined).map { unescapeJs(it.value) }.distinct().forEach { streamUrl ->
+                    if (streamUrl != null) {
                         callback.invoke(
                             newExtractorLink(
-                                name = "9tsu - Demoxa Unpacked",
+                                name = "9tsu - Dremoxa",
                                 source = this.name,
                                 url = streamUrl,
                                 type = ExtractorLinkType.M3U8
                             ) {
                                 this.referer = cleanUrl
                                 this.quality = Qualities.Unknown.value
-                                this.headers = mapOf("Origin" to "https://dremoxa.space")
+                                this.headers = mapOf(
+                                    "Origin" to "https://dremoxa.space",
+                                    "Referer" to cleanUrl,
+                                    "User-Agent" to userAgent
+                                )
                             }
                         )
                         linkFound = true
-                    }
-
-                    // Jika tidak ditemukan, coba cari di dalam eval atau atob manual
-                    if (!linkFound) {
-                        // Coba ekstrak dari skrip yang di-decode base64 atau eval
-                        val evalRegex = Regex("""eval\(function\([^)]*\)\s*\{[^}]*\}(?:\([^)]*\))\)""")
-                        evalRegex.findAll(embedHtml).forEach { evalMatch ->
-                            val evalStr = evalMatch.value
-                            // Sederhana: cari link langsung setelah eval
-                            val subRegex = Regex("""https?://[^\s"'<>]+\.m3u8[^\s"'<>]*""")
-                            subRegex.findAll(evalStr).forEach { subMatch ->
-                                val streamUrl = unescapeJs(subMatch.value)
-                                callback.invoke(
-                                    newExtractorLink(
-                                        name = "9tsu - Demoxa Eval",
-                                        source = this.name,
-                                        url = streamUrl,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = cleanUrl
-                                        this.quality = Qualities.Unknown.value
-                                        this.headers = mapOf("Origin" to "https://dremoxa.space")
-                                    }
-                                )
-                                linkFound = true
-                            }
+                    } else {
+                        // Fallback: metode sebelumnya (unpack dan eval)
+                        val unpacked = try { getAndUnpack(embedHtml) } catch (e: Exception) { "" }
+                        val combined = embedHtml + unpacked
+                        val fallbackRegex = Regex("""https?://[^\s"'<>\\]+?\.m3u8[^\s"'<>\\]*""")
+                        fallbackRegex.findAll(combined).map { unescapeJs(it.value) }.distinct().forEach { url ->
+                            callback.invoke(
+                                newExtractorLink(
+                                    name = "9tsu - Demoxa Unpacked",
+                                    source = this.name,
+                                    url = url,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = cleanUrl
+                                    this.quality = Qualities.Unknown.value
+                                    this.headers = mapOf("Origin" to "https://dremoxa.space")
+                                }
+                            )
+                            linkFound = true
                         }
                     }
                 } catch (e: Exception) {
