@@ -29,7 +29,7 @@ class NineTsuProvider : MainAPI() {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
 
-    // Fungsi pembantu untuk mengekstrak item dari document (digunakan di search)
+    // Helper untuk mengekstrak item dari dokumen HTML (digunakan di search)
     private fun extractItemsFromDocument(doc: Document, results: MutableList<SearchResponse>, invalidTitles: List<String>) {
         doc.select("article, .post, .entry, .type-post, .item, .result-item, .video-block, .search-item, .blog-item, .hentry, .list-item").forEach { element ->
             val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
@@ -126,73 +126,40 @@ class NineTsuProvider : MainAPI() {
             }
         } catch (e: Exception) { e.printStackTrace() }
 
-        // 2. Admin AJAX (umum digunakan untuk search)
+        // 2. Ivory Search AJAX (spesifik untuk plugin Ivory Search)
         if (results.isEmpty()) {
             try {
                 val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-                // Coba beberapa action yang mungkin
-                val actions = listOf("search", "search_posts", "loadmore", "search_results", "load_posts")
-                for (action in actions) {
-                    try {
-                        val params = mapOf("action" to action, "s" to cleanQuery, "keyword" to cleanQuery, "search" to cleanQuery)
-                        val ajaxRes = app.post(
-                            ajaxUrl,
-                            data = params,
-                            headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "X-Requested-With" to "XMLHttpRequest",
-                                "Content-Type" to "application/x-www-form-urlencoded"
-                            )
-                        )
-                        if (ajaxRes.code == 200) {
-                            val text = ajaxRes.text.trim()
-                            // Coba parse sebagai JSON
-                            if (text.startsWith("{")) {
-                                val json = JSONObject(text)
-                                val html = json.optString("html", null) ?: json.optString("data", null) ?: json.optString("content", null)
-                                if (html != null) {
-                                    val fragment = org.jsoup.Jsoup.parse(html)
-                                    extractItemsFromDocument(fragment, results, invalidTitles)
-                                } else {
-                                    // Mungkin respons JSON dengan array hasil
-                                    val posts = json.optJSONArray("posts") ?: json.optJSONArray("results") ?: json.optJSONArray("items")
-                                    if (posts != null) {
-                                        for (j in 0 until posts.length()) {
-                                            val post = posts.getJSONObject(j)
-                                            val title = post.optString("title", "").trim()
-                                            val link = post.optString("link", "").trim()
-                                            val poster = post.optString("image", null) ?: post.optString("thumbnail", null)
-                                            if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
-                                                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if (text.startsWith("[")) {
-                                // Mungkin JSON array langsung
-                                val jsonArray = JSONArray(text)
-                                for (j in 0 until jsonArray.length()) {
-                                    val item = jsonArray.getJSONObject(j)
-                                    val title = item.optString("title", "").trim()
-                                    val link = item.optString("link", "").trim()
-                                    val poster = item.optString("image", null) ?: item.optString("thumbnail", null)
-                                    if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
-                                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
-                                    }
-                                }
-                            } else {
-                                // Mungkin HTML
-                                val doc = org.jsoup.Jsoup.parse(text)
-                                extractItemsFromDocument(doc, results, invalidTitles)
-                            }
-                            if (results.isNotEmpty()) break
-                        }
-                    } catch (e: Exception) { /* ignore */ }
+                // Parameter yang umum digunakan oleh Ivory Search
+                val params = mapOf(
+                    "action" to "ajax_load_posts",  // action khusus Ivory Search
+                    "s" to cleanQuery,
+                    "page" to "1",
+                    "post_type" to "post"           // bisa disesuaikan jika ada custom post type
+                )
+
+                val ajaxRes = app.post(
+                    ajaxUrl,
+                    data = params,
+                    headers = mapOf(
+                        "User-Agent" to userAgent,
+                        "X-Requested-With" to "XMLHttpRequest",
+                        "Content-Type" to "application/x-www-form-urlencoded"
+                    )
+                )
+
+                if (ajaxRes.code == 200) {
+                    val text = ajaxRes.text.trim()
+                    if (text.isNotBlank()) {
+                        // Respons dari Ivory Search biasanya berupa HTML
+                        val doc = org.jsoup.Jsoup.parse(text)
+                        extractItemsFromDocument(doc, results, invalidTitles)
+                    }
                 }
             } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // 3. HTML fallback dengan header AJAX dan beberapa format URL
+        // 3. HTML fallback dengan header AJAX dan beberapa format URL (jika belum ada hasil)
         if (results.isEmpty()) {
             try {
                 val searchUrls = listOf(
