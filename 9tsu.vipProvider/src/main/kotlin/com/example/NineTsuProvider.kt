@@ -22,9 +22,6 @@ class NineTsuProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    // Debug: menyimpan URL yang ditemukan
-    private var debugUrls: String = ""
-
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -167,7 +164,7 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // SEARCH: DuckDuckGo sebagai utama, lalu failsafe
+    // SEARCH
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -327,6 +324,104 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
+    // ==================== DEBUG DREMOXA ====================
+    private suspend fun debugDremoxa(embedUrl: String): String {
+        val debug = StringBuilder()
+        debug.append("=== DREMOXA DEBUG ===\n")
+        debug.append("Embed URL: $embedUrl\n")
+
+        try {
+            val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
+            val idMatch = idPattern.find(embedUrl)
+            val videoId = idMatch?.groupValues?.get(1)
+            if (videoId == null) {
+                debug.append("ERROR: Could not extract video ID\n")
+                return debug.toString()
+            }
+            debug.append("Video ID: $videoId\n")
+
+            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+            val baseUrl = "https://$baseDomain"
+            debug.append("Base URL: $baseUrl\n")
+
+            val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
+            debug.append("API URL: $apiUrl\n")
+
+            val headers = mapOf(
+                "Referer" to embedUrl,
+                "X-Requested-With" to "XMLHttpRequest",
+                "User-Agent" to userAgent,
+                "Origin" to baseUrl
+            )
+
+            val response = app.get(apiUrl, headers = headers)
+            debug.append("Response Code: ${response.code}\n")
+
+            if (response.code == 200) {
+                val rawText = response.text
+                debug.append("Raw Response (first 500 chars): ${rawText.take(500)}${if (rawText.length > 500) "..." else ""}\n")
+
+                try {
+                    val json = JSONObject(rawText)
+                    val encryptedPlaylist = json.optString("playlist", null)
+                    val tracks = json.optJSONArray("tracks")
+
+                    debug.append("Encrypted Playlist: ${encryptedPlaylist ?: "null"}\n")
+                    debug.append("Tracks count: ${tracks?.length() ?: 0}\n")
+
+                    if (!encryptedPlaylist.isNullOrBlank()) {
+                        val parts = encryptedPlaylist.split(":")
+                        debug.append("Parts count: ${parts.size}\n")
+                        if (parts.size >= 2) {
+                            debug.append("Part1 (truncated): ${parts[1].take(100)}${if (parts[1].length > 100) "..." else ""}\n")
+                            // TEA decrypt
+                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
+                            if (decrypted != null) {
+                                debug.append("TEA Decrypted: $decrypted\n")
+                                val extracted = extractVideoUrls(decrypted)
+                                if (extracted.isNotEmpty()) {
+                                    debug.append("Extracted URLs from decrypted: ${extracted.joinToString(", ")}\n")
+                                } else {
+                                    debug.append("No URLs found in decrypted text\n")
+                                }
+                            } else {
+                                debug.append("TEA decryption FAILED\n")
+                            }
+
+                            // Base64 fallback
+                            if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
+                                try {
+                                    val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
+                                    debug.append("Base64 Decoded (truncated): ${base64Decoded.take(200)}${if (base64Decoded.length > 200) "..." else ""}\n")
+                                    val extractedBase64 = extractVideoUrls(base64Decoded)
+                                    if (extractedBase64.isNotEmpty()) {
+                                        debug.append("Extracted from base64: ${extractedBase64.joinToString(", ")}\n")
+                                    }
+                                } catch (e: Exception) {
+                                    debug.append("Base64 decode failed: ${e.message}\n")
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    debug.append("JSON Parse Error: ${e.message}\n")
+                    // Try regex on raw text
+                    val extracted = extractVideoUrls(rawText)
+                    if (extracted.isNotEmpty()) {
+                        debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
+                    }
+                }
+            } else {
+                debug.append("Response not 200, skipping extraction\n")
+            }
+        } catch (e: Exception) {
+            debug.append("Exception: ${e.message}\n")
+            e.printStackTrace()
+        }
+        return debug.toString()
+    }
+    // ========================================================
+
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
@@ -338,22 +433,29 @@ class NineTsuProvider : MainAPI() {
 
         val description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim()
 
-        // Debug: tampilkan URL yang ditemukan di plot
-        val debugInfo = if (debugUrls.isNotEmpty()) {
-            "\n\n=== DEBUG: Found URLs ===\n$debugUrls"
+        // Cari iframe dremoxa untuk debug
+        var debugInfo = ""
+        val iframe = doc.selectFirst("iframe[src*='dremoxa'], iframe[src*='demoxa'], iframe[src*='vtbe']")
+        if (iframe != null) {
+            val embedUrl = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+            if (embedUrl.isNotBlank()) {
+                debugInfo = debugDremoxa(embedUrl)
+            }
+        }
+
+        val finalPlot = if (debugInfo.isNotEmpty()) {
+            "$description\n\n$debugInfo"
         } else {
-            "\n\n=== DEBUG: No URLs found ==="
+            description
         }
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
-            this.plot = (description ?: "") + debugInfo
+            this.plot = finalPlot
         }
     }
 
-    /**
-     * Ekstrak link video dari embed dremoxa/demoxa/vtbe
-     */
+    // ==================== EKSTRAKSI DREMOXA UNTUK LOADLINKS ====================
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
@@ -383,7 +485,6 @@ class NineTsuProvider : MainAPI() {
                     if (!encryptedPlaylist.isNullOrBlank()) {
                         val parts = encryptedPlaylist.split(":")
                         if (parts.size >= 2) {
-                            // Decrypt data part
                             val decrypted = teaDecryptString(parts[1], TEA_KEY)
                             if (decrypted != null) {
                                 result.addAll(extractVideoUrls(decrypted))
@@ -392,7 +493,6 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
-                            // Fallback: decrypt full
                             if (result.isEmpty()) {
                                 val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
                                 if (fullDecrypted != null) {
@@ -400,7 +500,6 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
-                            // Fallback: base64 decode
                             if (result.isEmpty()) {
                                 try {
                                     val decoded = String(Base64.getDecoder().decode(parts[1]))
@@ -427,6 +526,7 @@ class NineTsuProvider : MainAPI() {
         }
         return result.distinct()
     }
+    // ========================================================
 
     override suspend fun loadLinks(
         data: String,
@@ -435,9 +535,6 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-
-        // Reset debug URLs
-        debugUrls = ""
 
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -587,9 +684,6 @@ class NineTsuProvider : MainAPI() {
                 } catch (e: Exception) {}
             }
         }
-
-        // Simpan semua URL untuk debug
-        debugUrls = allUrls.joinToString("\n")
 
         // Proses semua URL yang ditemukan
         var linkFound = false
