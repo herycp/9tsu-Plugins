@@ -124,24 +124,16 @@ class NineTsuProvider : MainAPI() {
     // ========================================================
 
     // ==================== DREMOXA HELPER ====================
-    /**
-     * Ekstrak base URL dari embed URL dengan benar
-     */
     private fun getBaseUrl(embedUrl: String): String? {
         return try {
             val uri = java.net.URI(embedUrl)
             "${uri.scheme}://${uri.host}"
         } catch (e: Exception) {
-            // Fallback: manual parse
             val match = Regex("""(https?://[^/]+)""").find(embedUrl)
             match?.groupValues?.get(1)
         }
     }
 
-    /**
-     * Ekstrak ID panjang (32 hex) dari halaman embed.
-     * Mencari pola [a-f0-9]{32} di HTML dan skrip.
-     */
     private suspend fun extractLongIdFromEmbed(embedUrl: String): String? {
         return try {
             val headers = mapOf(
@@ -149,10 +141,35 @@ class NineTsuProvider : MainAPI() {
                 "User-Agent" to userAgent
             )
             val html = app.get(embedUrl, headers = headers).text
-            // Cari pola 32 karakter hex
             val pattern = Regex("""[a-f0-9]{32}""")
             val match = pattern.find(html)
             match?.value
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private suspend fun extractXHashFromEmbed(embedUrl: String): String? {
+        return try {
+            val headers = mapOf(
+                "Referer" to embedUrl,
+                "User-Agent" to userAgent
+            )
+            val html = app.get(embedUrl, headers = headers).text
+            // Cari pola x-hash atau nilai hash di script
+            // Format: MTc4NTM4NTUzOTgyMjo5ZWYyNjdmYTEzNmI1MjE2MWQyZGJhNzc3NDA5Mzc3MWFhMDQwMDAxNTNmMzljZTI0ZTdmNjk0NzAyY2M3OTlkOm41MWxxbTR0
+            val patterns = listOf(
+                Regex("""x-hash["']?\s*[:=]\s*["']([^"']+)["']"""),
+                Regex("""hash["']?\s*[:=]\s*["']([^"']+)["']"""),
+                Regex("""token["']?\s*[:=]\s*["']([^"']+)["']""")
+            )
+            for (pattern in patterns) {
+                val match = pattern.find(html)
+                if (match != null) {
+                    return match.groupValues[1]
+                }
+            }
+            null
         } catch (e: Exception) {
             null
         }
@@ -166,13 +183,11 @@ class NineTsuProvider : MainAPI() {
         debug.append("Embed URL: $embedUrl\n")
 
         try {
-            // 1. Ekstrak short ID dari URL
             val shortIdPattern = Regex("""/(?:embed/|e/|v/)([^/?]+)""")
             val shortIdMatch = shortIdPattern.find(embedUrl)
             val shortId = shortIdMatch?.groupValues?.get(1)
             debug.append("Short ID (from URL): $shortId\n")
 
-            // 2. Dapatkan long ID dari halaman embed
             val longId = extractLongIdFromEmbed(embedUrl)
             if (longId != null) {
                 debug.append("Long ID (extracted): $longId\n")
@@ -181,30 +196,41 @@ class NineTsuProvider : MainAPI() {
                 return debug.toString()
             }
 
-            // 3. Dapatkan base URL dengan benar
             val baseUrl = getBaseUrl(embedUrl)
             if (baseUrl == null) {
-                debug.append("Base URL: ERROR - Could not parse\n")
+                debug.append("Base URL: ERROR\n")
                 return debug.toString()
             }
             debug.append("Base URL: $baseUrl\n")
 
-            val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
-            debug.append("API URL: $apiUrl\n")
-
-            // Ekstrak token jika ada
             val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
             val token = tokenMatch?.groupValues?.get(1)
             debug.append("Token: $token\n")
 
+            // Ekstrak x-hash dari halaman embed
+            val xHash = extractXHashFromEmbed(embedUrl)
+            if (xHash != null) {
+                debug.append("x-hash (extracted): $xHash\n")
+            } else {
+                debug.append("x-hash: NOT FOUND\n")
+                return debug.toString()
+            }
+
+            val apiUrl = "$baseUrl/ajax/getSources"
+            debug.append("API URL: $apiUrl\n")
+
+            val body = mapOf("id" to longId)
+
             val headers = mapOf(
-                "Referer" to embedUrl,
+                "Referer" to embedUrl,  // Referer adalah URL embed lengkap dengan token
                 "X-Requested-With" to "XMLHttpRequest",
                 "User-Agent" to userAgent,
-                "Origin" to baseUrl
+                "Origin" to baseUrl,
+                "Accept" to "*/*",
+                "x-hash" to xHash
             )
 
-            val response = app.get(apiUrl, headers = headers)
+            val response = app.post(apiUrl, headers = headers, data = body)
             debug.append("Response Code: ${response.code}\n")
 
             if (response.code == 200) {
@@ -224,7 +250,6 @@ class NineTsuProvider : MainAPI() {
                         debug.append("Parts count: ${parts.size}\n")
                         if (parts.size >= 2) {
                             debug.append("Part1 (truncated): ${parts[1].take(100)}${if (parts[1].length > 100) "..." else ""}\n")
-                            // TEA decrypt
                             val decrypted = teaDecryptString(parts[1], TEA_KEY)
                             if (decrypted != null) {
                                 debug.append("TEA Decrypted: $decrypted\n")
@@ -238,7 +263,6 @@ class NineTsuProvider : MainAPI() {
                                 debug.append("TEA decryption FAILED\n")
                             }
 
-                            // Base64 fallback
                             if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
                                 try {
                                     val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
@@ -255,7 +279,6 @@ class NineTsuProvider : MainAPI() {
                     }
                 } catch (e: Exception) {
                     debug.append("JSON Parse Error: ${e.message}\n")
-                    // Try regex on raw text
                     val extracted = extractVideoUrls(rawText)
                     if (extracted.isNotEmpty()) {
                         debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
@@ -484,7 +507,6 @@ class NineTsuProvider : MainAPI() {
 
         val description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim()
 
-        // Cari iframe dremoxa untuk debug
         var debugInfo = ""
         val iframe = doc.selectFirst("iframe[src*='dremoxa'], iframe[src*='demoxa'], iframe[src*='vtbe']")
         if (iframe != null) {
@@ -510,7 +532,6 @@ class NineTsuProvider : MainAPI() {
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
-            // Hanya gunakan long ID dari halaman embed
             val longId = extractLongIdFromEmbed(embedUrl)
             if (longId == null) {
                 return result
@@ -521,15 +542,24 @@ class NineTsuProvider : MainAPI() {
                 return result
             }
 
-            val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
+            val xHash = extractXHashFromEmbed(embedUrl)
+            if (xHash == null) {
+                return result
+            }
+
+            val apiUrl = "$baseUrl/ajax/getSources"
+            val body = mapOf("id" to longId)
+
             val headers = mapOf(
-                "Referer" to embedUrl,
+                "Referer" to embedUrl,  // URL embed lengkap dengan token
                 "X-Requested-With" to "XMLHttpRequest",
                 "User-Agent" to userAgent,
-                "Origin" to baseUrl
+                "Origin" to baseUrl,
+                "Accept" to "*/*",
+                "x-hash" to xHash
             )
 
-            val response = app.get(apiUrl, headers = headers)
+            val response = app.post(apiUrl, headers = headers, data = body)
             if (response.code == 200) {
                 val text = response.text
                 try {
