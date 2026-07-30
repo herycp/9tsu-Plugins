@@ -125,6 +125,20 @@ class NineTsuProvider : MainAPI() {
 
     // ==================== DREMOXA HELPER ====================
     /**
+     * Ekstrak base URL dari embed URL dengan benar
+     */
+    private fun getBaseUrl(embedUrl: String): String? {
+        return try {
+            val uri = java.net.URI(embedUrl)
+            "${uri.scheme}://${uri.host}"
+        } catch (e: Exception) {
+            // Fallback: manual parse
+            val match = Regex("""(https?://[^/]+)""").find(embedUrl)
+            match?.groupValues?.get(1)
+        }
+    }
+
+    /**
      * Ekstrak ID panjang (32 hex) dari halaman embed.
      * Mencari pola [a-f0-9]{32} di HTML dan skrip.
      */
@@ -167,8 +181,12 @@ class NineTsuProvider : MainAPI() {
                 return debug.toString()
             }
 
-            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-            val baseUrl = "https://$baseDomain"
+            // 3. Dapatkan base URL dengan benar
+            val baseUrl = getBaseUrl(embedUrl)
+            if (baseUrl == null) {
+                debug.append("Base URL: ERROR - Could not parse\n")
+                return debug.toString()
+            }
             debug.append("Base URL: $baseUrl\n")
 
             val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
@@ -495,12 +513,14 @@ class NineTsuProvider : MainAPI() {
             // Hanya gunakan long ID dari halaman embed
             val longId = extractLongIdFromEmbed(embedUrl)
             if (longId == null) {
-                // Tidak ada fallback, langsung return
                 return result
             }
 
-            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-            val baseUrl = "https://$baseDomain"
+            val baseUrl = getBaseUrl(embedUrl)
+            if (baseUrl == null) {
+                return result
+            }
+
             val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
             val headers = mapOf(
                 "Referer" to embedUrl,
