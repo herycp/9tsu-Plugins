@@ -59,6 +59,74 @@ class NineTsuProvider : MainAPI() {
         return urls.distinct()
     }
 
+    // ==================== TEA DECRYPTION ====================
+    // Kunci dari app.js: base64 "NDh2aU1Cb0NHRG5hcDFRZQ==" -> "48viMBoCGlDnap1Qe"
+    private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
+
+    private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
+        // Key must be 16 bytes (4 x 32-bit words)
+        val k = IntArray(4)
+        for (i in 0..3) {
+            k[i] = ((key[i * 4].toInt() and 0xFF) shl 24) or
+                    ((key[i * 4 + 1].toInt() and 0xFF) shl 16) or
+                    ((key[i * 4 + 2].toInt() and 0xFF) shl 8) or
+                    (key[i * 4 + 3].toInt() and 0xFF)
+        }
+
+        val delta = 0x9E3779B9
+        var sum = delta shl 5 // 32 rounds * delta
+        val rounds = 32
+        val bytes = data.copyOf()
+        val result = ByteArray(bytes.size)
+
+        for (i in bytes.indices step 8) {
+            if (i + 7 >= bytes.size) break
+            var v0 = ((bytes[i].toInt() and 0xFF) shl 24) or
+                    ((bytes[i + 1].toInt() and 0xFF) shl 16) or
+                    ((bytes[i + 2].toInt() and 0xFF) shl 8) or
+                    (bytes[i + 3].toInt() and 0xFF)
+            var v1 = ((bytes[i + 4].toInt() and 0xFF) shl 24) or
+                    ((bytes[i + 5].toInt() and 0xFF) shl 16) or
+                    ((bytes[i + 6].toInt() and 0xFF) shl 8) or
+                    (bytes[i + 7].toInt() and 0xFF)
+
+            for (j in 0 until rounds) {
+                v1 -= ((v0 shl 4) + k[2]) xor (v0 + sum) xor ((v0 ushr 5) + k[3])
+                v0 -= ((v1 shl 4) + k[0]) xor (v1 + sum) xor ((v1 ushr 5) + k[1])
+                sum -= delta
+            }
+
+            result[i] = ((v0 ushr 24) and 0xFF).toByte()
+            result[i + 1] = ((v0 ushr 16) and 0xFF).toByte()
+            result[i + 2] = ((v0 ushr 8) and 0xFF).toByte()
+            result[i + 3] = (v0 and 0xFF).toByte()
+            result[i + 4] = ((v1 ushr 24) and 0xFF).toByte()
+            result[i + 5] = ((v1 ushr 16) and 0xFF).toByte()
+            result[i + 6] = ((v1 ushr 8) and 0xFF).toByte()
+            result[i + 7] = (v1 and 0xFF).toByte()
+        }
+
+        return result
+    }
+
+    private fun teaDecryptString(encryptedBase64: String, key: ByteArray): String? {
+        return try {
+            val encryptedBytes = Base64.getDecoder().decode(encryptedBase64)
+            val decryptedBytes = teaDecrypt(encryptedBytes, key)
+            // Remove PKCS#7 padding
+            val padding = decryptedBytes.lastOrNull()?.toInt() ?: 0
+            val unpadded = if (padding in 1..16) {
+                decryptedBytes.copyOf(decryptedBytes.size - padding)
+            } else {
+                decryptedBytes
+            }
+            String(unpadded, Charsets.UTF_8)
+        } catch (e: Exception) {
+            null
+        }
+    }
+    // ========================================================
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
         "$mainUrl/daily" to "Harian (Daily)",
@@ -278,12 +346,13 @@ class NineTsuProvider : MainAPI() {
     }
 
     /**
-     * Ekstrak link video dari embed dremoxa/demoxa/vtbe menggunakan API internal.
+     * Ekstrak link video dari embed dremoxa/demoxa/vtbe.
+     * Menggunakan TEA decryption untuk mendekripsi playlist dari /ajax/getSources
      */
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
-            // Ekstrak ID dari URL (misal /e/ID atau /v/ID)
+            // Ekstrak ID video dari URL (misal /e/ID atau /v/ID)
             val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
             val idMatch = idPattern.find(embedUrl)
             val videoId = idMatch?.groupValues?.get(1) ?: return result
@@ -291,8 +360,8 @@ class NineTsuProvider : MainAPI() {
             val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
             val baseUrl = "https://$baseDomain"
 
-            // Endpoint API utama
-            val apiUrl = "$baseUrl/api/source/$videoId"
+            // 1. Coba endpoint /ajax/getSources (metode GET)
+            val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
             val headers = mapOf(
                 "Referer" to embedUrl,
                 "X-Requested-With" to "XMLHttpRequest",
@@ -300,26 +369,56 @@ class NineTsuProvider : MainAPI() {
                 "Origin" to baseUrl
             )
 
-            // 1. Coba POST dengan body id
             try {
-                val response = app.post(apiUrl, headers = headers, data = mapOf("id" to videoId))
+                val response = app.get(apiUrl, headers = headers)
                 if (response.code == 200) {
                     val text = response.text
-                    // Parse JSON
                     try {
                         val json = JSONObject(text)
-                        // Ambil sources array
-                        val sourcesArray = json.optJSONArray("sources")
-                        if (sourcesArray != null) {
-                            for (i in 0 until sourcesArray.length()) {
-                                val srcObj = sourcesArray.getJSONObject(i)
-                                val file = srcObj.optString("file", null)
+                        val encryptedPlaylist = json.optString("playlist", null)
+                        val tracks = json.optJSONArray("tracks")
+
+                        if (!encryptedPlaylist.isNullOrBlank()) {
+                            // Split encrypted playlist: part1:part2:part3
+                            val parts = encryptedPlaylist.split(":")
+                            if (parts.size >= 2) {
+                                // Coba dekripsi bagian kedua (data)
+                                val decrypted = teaDecryptString(parts[1], TEA_KEY)
+                                if (decrypted != null) {
+                                    result.addAll(extractVideoUrls(decrypted))
+                                    // Jika hasil dekripsi adalah URL m3u8 langsung, tambahkan
+                                    if (decrypted.contains(".m3u8")) {
+                                        result.add(decrypted)
+                                    }
+                                }
+
+                                // Jika gagal, coba dekripsi seluruh playlist (tanpa split)
+                                if (result.isEmpty()) {
+                                    val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
+                                    if (fullDecrypted != null) {
+                                        result.addAll(extractVideoUrls(fullDecrypted))
+                                    }
+                                }
+
+                                // Jika masih kosong, coba base64 decode biasa
+                                if (result.isEmpty()) {
+                                    try {
+                                        val decoded = String(Base64.getDecoder().decode(parts[1]))
+                                        result.addAll(extractVideoUrls(decoded))
+                                    } catch (e: Exception) {}
+                                }
+                            }
+                        }
+
+                        // Coba tracks
+                        if (tracks != null) {
+                            for (i in 0 until tracks.length()) {
+                                val track = tracks.getJSONObject(i)
+                                val file = track.optString("file", null)
                                 if (file != null && file.isNotBlank()) result.add(file)
                             }
                         }
-                        // Ambil file langsung
-                        val file = json.optString("file", null)
-                        if (file != null && file.isNotBlank()) result.add(file)
+
                     } catch (e: Exception) {
                         // Jika bukan JSON, cari regex
                         result.addAll(extractVideoUrls(text))
@@ -327,38 +426,39 @@ class NineTsuProvider : MainAPI() {
                 }
             } catch (e: Exception) { e.printStackTrace() }
 
-            // 2. Jika gagal, coba GET alternatif
+            // 2. Jika gagal, coba endpoint alternatif
             if (result.isEmpty()) {
                 val altEndpoints = listOf(
                     "$baseUrl/source/$videoId",
                     "$baseUrl/get/$videoId",
-                    "$baseUrl/api/get/$videoId"
+                    "$baseUrl/api/get/$videoId",
+                    "$baseUrl/api/source/$videoId"
                 )
                 for (endpoint in altEndpoints) {
                     try {
                         val resp = app.get(endpoint, referer = embedUrl, headers = headers)
                         if (resp.code == 200) {
                             result.addAll(extractVideoUrls(resp.text))
-                            // Coba parse JSON juga
+                            // Coba parse JSON
                             try {
                                 val json = JSONObject(resp.text)
-                                val sourcesArray = json.optJSONArray("sources")
-                                if (sourcesArray != null) {
-                                    for (i in 0 until sourcesArray.length()) {
-                                        val srcObj = sourcesArray.getJSONObject(i)
-                                        val file = srcObj.optString("file", null)
-                                        if (file != null) result.add(file)
-                                    }
-                                }
                                 val file = json.optString("file", null)
                                 if (file != null) result.add(file)
+                                val sources = json.optJSONArray("sources")
+                                if (sources != null) {
+                                    for (i in 0 until sources.length()) {
+                                        val srcObj = sources.getJSONObject(i)
+                                        val src = srcObj.optString("file", null)
+                                        if (src != null) result.add(src)
+                                    }
+                                }
                             } catch (e: Exception) {}
                         }
                     } catch (e: Exception) {}
                 }
             }
 
-            // 3. Jika masih kosong, ekstrak dari HTML embed (fallback)
+            // 3. Fallback: ekstrak dari HTML embed
             if (result.isEmpty()) {
                 try {
                     val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
@@ -370,36 +470,6 @@ class NineTsuProvider : MainAPI() {
                             result.addAll(extractVideoUrls(unpacked))
                         }
                     } catch (e: Exception) {}
-                } catch (e: Exception) {}
-            }
-
-            // 4. Terakhir, coba cari token jika ada di HTML dan gunakan untuk API
-            if (result.isEmpty()) {
-                try {
-                    val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
-                    val tokenMatch = Regex("""token\s*=\s*["']([^"']+)["']""").find(embedHtml)
-                    val token = tokenMatch?.groupValues?.get(1)
-                    if (token != null) {
-                        val apiWithToken = "$baseUrl/api/source/$videoId?token=$token"
-                        val respToken = app.post(apiWithToken, headers = headers, data = mapOf("id" to videoId))
-                        if (respToken.code == 200) {
-                            val text = respToken.text
-                            result.addAll(extractVideoUrls(text))
-                            try {
-                                val json = JSONObject(text)
-                                val sourcesArray = json.optJSONArray("sources")
-                                if (sourcesArray != null) {
-                                    for (i in 0 until sourcesArray.length()) {
-                                        val srcObj = sourcesArray.getJSONObject(i)
-                                        val file = srcObj.optString("file", null)
-                                        if (file != null) result.add(file)
-                                    }
-                                }
-                                val file = json.optString("file", null)
-                                if (file != null) result.add(file)
-                            } catch (e: Exception) {}
-                        }
-                    }
                 } catch (e: Exception) {}
             }
 
@@ -497,16 +567,14 @@ class NineTsuProvider : MainAPI() {
         // 5. general regex on full html
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses embed URLs dengan penanganan khusus untuk dremoxa
+        // 6. Proses embed URLs
         for (embedUrl in embedUrls) {
-            // Deteksi apakah embed dari dremoxa/demoxa/vtbe
             val isDremoxa = embedUrl.contains("dremoxa") || embedUrl.contains("demoxa") || embedUrl.contains("vtbe")
             if (isDremoxa) {
-                // Gunakan fungsi khusus untuk dremoxa
                 val dremoxaUrls = extractDremoxaLinks(embedUrl, data)
                 dremoxaUrls.forEach { url -> allUrls.add(url) }
             } else {
-                // Proses generic untuk embed lainnya (dood, streamtape, mixdrop, dll)
+                // Generic embed (dood, streamtape, mixdrop, dll)
                 try {
                     val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
                         "User-Agent" to userAgent,
@@ -515,68 +583,16 @@ class NineTsuProvider : MainAPI() {
                     ))
                     val embedHtml = embedRes.text
                     extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-
-                    // Coba unpack
                     try {
                         val unpacked = getAndUnpack(embedHtml)
                         if (unpacked.isNotBlank()) {
                             extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
                         }
                     } catch (e: Exception) {}
-
-                    // Coba decode base64
                     val decodedEmbed = decodeBase64IfPossible(embedHtml)
                     if (decodedEmbed != embedHtml) {
                         extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
                     }
-
-                    // Cari endpoint API di dalam embed (misal /api/source)
-                    val apiEndpointRegex = Regex("""["']/(?:api/)?(?:source|get|playlist)[^"']*["']""")
-                    apiEndpointRegex.findAll(embedHtml).forEach { match ->
-                        val endpoint = match.value.trim('"').trim('\'')
-                        if (endpoint.startsWith("/")) {
-                            val base = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-                            val fullUrl = "https://$base$endpoint"
-                            try {
-                                val apiRes = app.get(fullUrl, referer = embedUrl, headers = mapOf(
-                                    "User-Agent" to userAgent,
-                                    "Referer" to embedUrl,
-                                    "X-Requested-With" to "XMLHttpRequest"
-                                ))
-                                if (apiRes.code == 200) {
-                                    extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
-                                    // Coba parse JSON
-                                    try {
-                                        val json = JSONObject(apiRes.text)
-                                        val file = json.optString("file", null) ?: json.optString("url", null) ?: json.optString("src", null)
-                                        if (file != null) allUrls.add(file)
-                                        val sources = json.optJSONArray("sources") ?: json.optJSONArray("files")
-                                        if (sources != null) {
-                                            for (i in 0 until sources.length()) {
-                                                val srcObj = sources.getJSONObject(i)
-                                                val src = srcObj.optString("file", null) ?: srcObj.optString("url", null) ?: srcObj.optString("src", null)
-                                                if (src != null) allUrls.add(src)
-                                            }
-                                        }
-                                    } catch (e: Exception) {}
-                                }
-                            } catch (e: Exception) {}
-                        }
-                    }
-
-                    // Coba ekstrak dari script yang memuat konfigurasi player di embed
-                    val embedDoc = org.jsoup.Jsoup.parse(embedHtml)
-                    embedDoc.select("script").forEach { script ->
-                        var scriptData = script.data()
-                        try {
-                            if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                                val unpacked = getAndUnpack(scriptData)
-                                if (unpacked.isNotBlank()) scriptData = unpacked
-                            }
-                        } catch (e: Exception) {}
-                        extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
-                    }
-
                 } catch (e: Exception) { e.printStackTrace() }
             }
         }
