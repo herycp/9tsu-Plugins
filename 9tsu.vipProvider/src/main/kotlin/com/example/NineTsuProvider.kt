@@ -47,8 +47,7 @@ class NineTsuProvider : MainAPI() {
             Regex("""https?://[^\s"'<>]+/manifest\.m3u8[^\s"'<>]*"""),
             Regex("""https?://[^\s"'<>]+/master\.m3u8[^\s"'<>]*"""),
             Regex("""https?://[^\s"'<>]+/index\.m3u8[^\s"'<>]*"""),
-            Regex("""https?://[^\s"'<>]+/stream\.m3u8[^\s"'<>]*"""),
-            Regex("""https?://[^\s"'<>]+/get\.php\?[^\s"'<>]+""")
+            Regex("""https?://[^\s"'<>]+/stream\.m3u8[^\s"'<>]*""")
         )
         patterns.forEach { pattern ->
             pattern.findAll(text).forEach { match ->
@@ -64,7 +63,6 @@ class NineTsuProvider : MainAPI() {
     private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
     private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
-        // Key must be 16 bytes (4 x 32-bit words)
         val k = IntArray(4)
         for (i in 0..3) {
             k[i] = ((key[i * 4].toInt() and 0xFF) shl 24) or
@@ -74,7 +72,7 @@ class NineTsuProvider : MainAPI() {
         }
 
         val delta = 0x9E3779B9
-        var sum = delta shl 5 // 32 rounds * delta
+        var sum = delta shl 5
         val rounds = 32
         val bytes = data.copyOf()
         val result = ByteArray(bytes.size)
@@ -346,13 +344,12 @@ class NineTsuProvider : MainAPI() {
     }
 
     /**
-     * Ekstrak link video dari embed dremoxa/demoxa/vtbe.
-     * Menggunakan TEA decryption untuk mendekripsi playlist dari /ajax/getSources
+     * Ekstrak link video dari embed dremoxa/demoxa/vtbe menggunakan TEA decryption
      */
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
-            // Ekstrak ID video dari URL (misal /e/ID atau /v/ID)
+            // Ekstrak ID video
             val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
             val idMatch = idPattern.find(embedUrl)
             val videoId = idMatch?.groupValues?.get(1) ?: return result
@@ -360,7 +357,7 @@ class NineTsuProvider : MainAPI() {
             val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
             val baseUrl = "https://$baseDomain"
 
-            // 1. Coba endpoint /ajax/getSources (metode GET)
+            // Panggil /ajax/getSources
             val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
             val headers = mapOf(
                 "Referer" to embedUrl,
@@ -369,110 +366,57 @@ class NineTsuProvider : MainAPI() {
                 "Origin" to baseUrl
             )
 
-            try {
-                val response = app.get(apiUrl, headers = headers)
-                if (response.code == 200) {
-                    val text = response.text
-                    try {
-                        val json = JSONObject(text)
-                        val encryptedPlaylist = json.optString("playlist", null)
-                        val tracks = json.optJSONArray("tracks")
-
-                        if (!encryptedPlaylist.isNullOrBlank()) {
-                            // Split encrypted playlist: part1:part2:part3
-                            val parts = encryptedPlaylist.split(":")
-                            if (parts.size >= 2) {
-                                // Coba dekripsi bagian kedua (data)
-                                val decrypted = teaDecryptString(parts[1], TEA_KEY)
-                                if (decrypted != null) {
-                                    result.addAll(extractVideoUrls(decrypted))
-                                    // Jika hasil dekripsi adalah URL m3u8 langsung, tambahkan
-                                    if (decrypted.contains(".m3u8")) {
-                                        result.add(decrypted)
-                                    }
-                                }
-
-                                // Jika gagal, coba dekripsi seluruh playlist (tanpa split)
-                                if (result.isEmpty()) {
-                                    val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
-                                    if (fullDecrypted != null) {
-                                        result.addAll(extractVideoUrls(fullDecrypted))
-                                    }
-                                }
-
-                                // Jika masih kosong, coba base64 decode biasa
-                                if (result.isEmpty()) {
-                                    try {
-                                        val decoded = String(Base64.getDecoder().decode(parts[1]))
-                                        result.addAll(extractVideoUrls(decoded))
-                                    } catch (e: Exception) {}
-                                }
-                            }
-                        }
-
-                        // Coba tracks
-                        if (tracks != null) {
-                            for (i in 0 until tracks.length()) {
-                                val track = tracks.getJSONObject(i)
-                                val file = track.optString("file", null)
-                                if (file != null && file.isNotBlank()) result.add(file)
-                            }
-                        }
-
-                    } catch (e: Exception) {
-                        // Jika bukan JSON, cari regex
-                        result.addAll(extractVideoUrls(text))
-                    }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-
-            // 2. Jika gagal, coba endpoint alternatif
-            if (result.isEmpty()) {
-                val altEndpoints = listOf(
-                    "$baseUrl/source/$videoId",
-                    "$baseUrl/get/$videoId",
-                    "$baseUrl/api/get/$videoId",
-                    "$baseUrl/api/source/$videoId"
-                )
-                for (endpoint in altEndpoints) {
-                    try {
-                        val resp = app.get(endpoint, referer = embedUrl, headers = headers)
-                        if (resp.code == 200) {
-                            result.addAll(extractVideoUrls(resp.text))
-                            // Coba parse JSON
-                            try {
-                                val json = JSONObject(resp.text)
-                                val file = json.optString("file", null)
-                                if (file != null) result.add(file)
-                                val sources = json.optJSONArray("sources")
-                                if (sources != null) {
-                                    for (i in 0 until sources.length()) {
-                                        val srcObj = sources.getJSONObject(i)
-                                        val src = srcObj.optString("file", null)
-                                        if (src != null) result.add(src)
-                                    }
-                                }
-                            } catch (e: Exception) {}
-                        }
-                    } catch (e: Exception) {}
-                }
-            }
-
-            // 3. Fallback: ekstrak dari HTML embed
-            if (result.isEmpty()) {
+            val response = app.get(apiUrl, headers = headers)
+            if (response.code == 200) {
+                val text = response.text
                 try {
-                    val embedHtml = app.get(embedUrl, referer = parentUrl, headers = headers).text
-                    result.addAll(extractVideoUrls(embedHtml))
-                    // Unpack
-                    try {
-                        val unpacked = getAndUnpack(embedHtml)
-                        if (unpacked.isNotBlank()) {
-                            result.addAll(extractVideoUrls(unpacked))
-                        }
-                    } catch (e: Exception) {}
-                } catch (e: Exception) {}
-            }
+                    val json = JSONObject(text)
+                    val encryptedPlaylist = json.optString("playlist", null)
+                    val tracks = json.optJSONArray("tracks")
 
+                    if (!encryptedPlaylist.isNullOrBlank()) {
+                        val parts = encryptedPlaylist.split(":")
+                        if (parts.size >= 2) {
+                            // Dekripsi bagian kedua (data)
+                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
+                            if (decrypted != null) {
+                                result.addAll(extractVideoUrls(decrypted))
+                                if (decrypted.contains(".m3u8")) {
+                                    result.add(decrypted)
+                                }
+                            }
+
+                            // Fallback: dekripsi seluruh playlist
+                            if (result.isEmpty()) {
+                                val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
+                                if (fullDecrypted != null) {
+                                    result.addAll(extractVideoUrls(fullDecrypted))
+                                }
+                            }
+
+                            // Fallback: base64 decode biasa
+                            if (result.isEmpty()) {
+                                try {
+                                    val decoded = String(Base64.getDecoder().decode(parts[1]))
+                                    result.addAll(extractVideoUrls(decoded))
+                                } catch (e: Exception) {}
+                            }
+                        }
+                    }
+
+                    // Coba tracks
+                    if (tracks != null) {
+                        for (i in 0 until tracks.length()) {
+                            val track = tracks.getJSONObject(i)
+                            val file = track.optString("file", null)
+                            if (file != null && file.isNotBlank()) result.add(file)
+                        }
+                    }
+
+                } catch (e: Exception) {
+                    result.addAll(extractVideoUrls(text))
+                }
+            }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -498,7 +442,8 @@ class NineTsuProvider : MainAPI() {
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("dremoxa") || src.contains("demoxa") || src.contains("vtbe") || src.contains("dood") || src.contains("streamtape") || src.contains("mixdrop")) {
+                if (src.contains("dremoxa") || src.contains("demoxa") || src.contains("vtbe") ||
+                    src.contains("dood") || src.contains("streamtape") || src.contains("mixdrop")) {
                     embedUrls.add(src)
                 } else {
                     allUrls.add(src)
@@ -512,7 +457,7 @@ class NineTsuProvider : MainAPI() {
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script (dengan unpack dan decode)
+        // 3. script dengan unpack dan decode
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -597,7 +542,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 7. Coba endpoint API jika ada ID di URL
+        // 7. API endpoint jika ada ID di URL
         val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
         if (postId != null) {
             val apiEndpoints = listOf(
@@ -614,7 +559,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 8. Cari link di dalam elemen dengan class 'player' atau 'video-container'
+        // 8. Cari link di elemen dengan class 'player' atau 'video-container'
         doc.select(".player, .video-container, .embed-container").forEach { container ->
             container.select("a[href], source, iframe").forEach { el ->
                 val link = el.attr("href").ifBlank { el.attr("src") }.ifBlank { el.attr("data-src") }
@@ -622,7 +567,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 9. Coba endpoint /get_player atau /api/source (umum pada situs video)
+        // 9. Coba endpoint /get_player atau /api/source
         val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
         if (playerScript != null) {
             val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
@@ -645,13 +590,11 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba loadExtractor
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
-            // Jika link langsung ke video
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
