@@ -156,23 +156,56 @@ class NineTsuProvider : MainAPI() {
                 "User-Agent" to userAgent
             )
             val html = app.get(embedUrl, headers = headers).text
-            // Cari pola x-hash atau nilai hash di script
-            // Format: MTc4NTM4NTUzOTgyMjo5ZWYyNjdmYTEzNmI1MjE2MWQyZGJhNzc3NDA5Mzc3MWFhMDQwMDAxNTNmMzljZTI0ZTdmNjk0NzAyY2M3OTlkOm41MWxxbTR0
-            val patterns = listOf(
-                Regex("""x-hash["']?\s*[:=]\s*["']([^"']+)["']"""),
-                Regex("""hash["']?\s*[:=]\s*["']([^"']+)["']"""),
-                Regex("""token["']?\s*[:=]\s*["']([^"']+)["']""")
-            )
-            for (pattern in patterns) {
-                val match = pattern.find(html)
-                if (match != null) {
-                    return match.groupValues[1]
+            
+            // Cari pola Base64 yang bisa di-decode menjadi format timestamp:hash:random
+            // Format: MTc4NTM4NzI3MjA2NjphNzMxZWVhZTFlOTIxOTA1MTQ4YzIxNTZjOGUyMmRmNDIyYTJkZGIwNTIwZWJlYTcxZjA1ZjEwNDZjOWNhNmE4OnpobnBzeW44
+            val pattern = Regex("""[A-Za-z0-9+/]{40,}={0,2}""")
+            val matches = pattern.findAll(html)
+            for (match in matches) {
+                val candidate = match.value
+                try {
+                    val decoded = String(Base64.getDecoder().decode(candidate))
+                    // Format yang valid: timestamp:hash:random
+                    if (decoded.contains(":") && decoded.split(":").size >= 3) {
+                        val parts = decoded.split(":")
+                        if (parts[0].all { it.isDigit() } && parts[1].length == 64) {
+                            return candidate
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Bukan base64 valid, lanjutkan
                 }
             }
             null
         } catch (e: Exception) {
             null
         }
+    }
+
+    private fun generateRandomString(length: Int): String {
+        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+        return (1..length).map { chars.random() }.joinToString("")
+    }
+
+    private fun sha256(input: String): String {
+        try {
+            val digest = java.security.MessageDigest.getInstance("SHA-256")
+            val hash = digest.digest(input.toByteArray())
+            return hash.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            // Fallback: gunakan MD5 atau simple hash
+            return input.hashCode().toString(16).padStart(64, '0')
+        }
+    }
+
+    private fun generateXHash(longId: String, timestamp: Long = System.currentTimeMillis()): String {
+        // Format: timestamp:hash:random
+        // hash = SHA-256(longId + timestamp + random)
+        val random = generateRandomString(8)
+        val data = "$longId$timestamp$random"
+        val hash = sha256(data)
+        val raw = "$timestamp:$hash:$random"
+        return Base64.getEncoder().encodeToString(raw.toByteArray())
     }
     // ========================================================
 
@@ -207,22 +240,25 @@ class NineTsuProvider : MainAPI() {
             val token = tokenMatch?.groupValues?.get(1)
             debug.append("Token: $token\n")
 
-            // Ekstrak x-hash dari halaman embed
-            val xHash = extractXHashFromEmbed(embedUrl)
-            if (xHash != null) {
-                debug.append("x-hash (extracted): $xHash\n")
-            } else {
-                debug.append("x-hash: NOT FOUND\n")
-                return debug.toString()
+            // Coba ekstrak x-hash dari halaman embed
+            var xHash = extractXHashFromEmbed(embedUrl)
+            var hashSource = "extracted from embed"
+            
+            if (xHash == null) {
+                debug.append("x-hash: NOT FOUND in embed, generating fallback\n")
+                xHash = generateXHash(longId)
+                hashSource = "generated fallback"
             }
+            debug.append("x-hash ($hashSource): ${xHash.take(60)}...\n")
 
             val apiUrl = "$baseUrl/ajax/getSources"
-            debug.append("API URL: $apiUrl\n")
+            debug.append("API URL: $apiUrl (POST with id in body)\n")
 
             val body = mapOf("id" to longId)
+            debug.append("Body: id=$longId\n")
 
             val headers = mapOf(
-                "Referer" to embedUrl,  // Referer adalah URL embed lengkap dengan token
+                "Referer" to embedUrl,
                 "X-Requested-With" to "XMLHttpRequest",
                 "User-Agent" to userAgent,
                 "Origin" to baseUrl,
@@ -542,16 +578,17 @@ class NineTsuProvider : MainAPI() {
                 return result
             }
 
-            val xHash = extractXHashFromEmbed(embedUrl)
+            // Coba ekstrak x-hash dari embed, jika gagal generate sendiri
+            var xHash = extractXHashFromEmbed(embedUrl)
             if (xHash == null) {
-                return result
+                xHash = generateXHash(longId)
             }
 
             val apiUrl = "$baseUrl/ajax/getSources"
             val body = mapOf("id" to longId)
 
             val headers = mapOf(
-                "Referer" to embedUrl,  // URL embed lengkap dengan token
+                "Referer" to embedUrl,
                 "X-Requested-With" to "XMLHttpRequest",
                 "User-Agent" to userAgent,
                 "Origin" to baseUrl,
