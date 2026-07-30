@@ -71,7 +71,7 @@ class NineTsuProvider : MainAPI() {
                     (key[i * 4 + 3].toInt() and 0xFF)
         }
 
-        val delta = 0x9E3779B9
+        val delta = 0x9E3779B9.toInt()
         var sum = delta shl 5
         val rounds = 32
         val bytes = data.copyOf()
@@ -79,14 +79,15 @@ class NineTsuProvider : MainAPI() {
 
         for (i in bytes.indices step 8) {
             if (i + 7 >= bytes.size) break
-            var v0 = ((bytes[i].toInt() and 0xFF) shl 24) or
+            
+            var v0 = (((bytes[i].toInt() and 0xFF) shl 24) or
                     ((bytes[i + 1].toInt() and 0xFF) shl 16) or
                     ((bytes[i + 2].toInt() and 0xFF) shl 8) or
-                    (bytes[i + 3].toInt() and 0xFF)
-            var v1 = ((bytes[i + 4].toInt() and 0xFF) shl 24) or
+                    (bytes[i + 3].toInt() and 0xFF))
+            var v1 = (((bytes[i + 4].toInt() and 0xFF) shl 24) or
                     ((bytes[i + 5].toInt() and 0xFF) shl 16) or
                     ((bytes[i + 6].toInt() and 0xFF) shl 8) or
-                    (bytes[i + 7].toInt() and 0xFF)
+                    (bytes[i + 7].toInt() and 0xFF))
 
             for (j in 0 until rounds) {
                 v1 -= ((v0 shl 4) + k[2]) xor (v0 + sum) xor ((v0 ushr 5) + k[3])
