@@ -22,6 +22,9 @@ class NineTsuProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+    // Debug: menyimpan URL yang ditemukan
+    private var debugUrls: String = ""
+
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -59,7 +62,6 @@ class NineTsuProvider : MainAPI() {
     }
 
     // ==================== TEA DECRYPTION ====================
-    // Kunci dari app.js: base64 "NDh2aU1Cb0NHRG5hcDFRZQ==" -> "48viMBoCGlDnap1Qe"
     private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
     private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
@@ -79,7 +81,6 @@ class NineTsuProvider : MainAPI() {
 
         for (i in bytes.indices step 8) {
             if (i + 7 >= bytes.size) break
-            
             var v0 = (((bytes[i].toInt() and 0xFF) shl 24) or
                     ((bytes[i + 1].toInt() and 0xFF) shl 16) or
                     ((bytes[i + 2].toInt() and 0xFF) shl 8) or
@@ -112,7 +113,6 @@ class NineTsuProvider : MainAPI() {
         return try {
             val encryptedBytes = Base64.getDecoder().decode(encryptedBase64)
             val decryptedBytes = teaDecrypt(encryptedBytes, key)
-            // Remove PKCS#7 padding
             val padding = decryptedBytes.lastOrNull()?.toInt() ?: 0
             val unpadded = if (padding in 1..16) {
                 decryptedBytes.copyOf(decryptedBytes.size - padding)
@@ -174,7 +174,7 @@ class NineTsuProvider : MainAPI() {
 
         val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content", "not found", "404")
 
-        // 1. DuckDuckGo (utama)
+        // 1. DuckDuckGo
         try {
             val ddgUrl = "https://html.duckduckgo.com/html/?q=site:9tsu.vip+${cleanQuery.replace(" ", "+")}"
             val ddgRes = app.get(ddgUrl, headers = mapOf("User-Agent" to userAgent))
@@ -192,7 +192,7 @@ class NineTsuProvider : MainAPI() {
             }
         } catch (e: Exception) { e.printStackTrace() }
 
-        // 2. Failsafe: REST API
+        // 2. REST API
         if (results.isEmpty()) {
             try {
                 val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=${cleanQuery.replace(" ", "+")}&_embed&per_page=50"
@@ -223,7 +223,7 @@ class NineTsuProvider : MainAPI() {
             } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // 3. Failsafe: Admin AJAX
+        // 3. Admin AJAX
         if (results.isEmpty()) {
             try {
                 val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
@@ -284,7 +284,7 @@ class NineTsuProvider : MainAPI() {
             } catch (e: Exception) { e.printStackTrace() }
         }
 
-        // 4. Failsafe: HTML fallback
+        // 4. HTML fallback
         if (results.isEmpty()) {
             try {
                 val searchUrls = listOf(
@@ -338,19 +338,25 @@ class NineTsuProvider : MainAPI() {
 
         val description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim()
 
+        // Debug: tampilkan URL yang ditemukan di plot
+        val debugInfo = if (debugUrls.isNotEmpty()) {
+            "\n\n=== DEBUG: Found URLs ===\n$debugUrls"
+        } else {
+            "\n\n=== DEBUG: No URLs found ==="
+        }
+
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
-            this.plot = description
+            this.plot = (description ?: "") + debugInfo
         }
     }
 
     /**
-     * Ekstrak link video dari embed dremoxa/demoxa/vtbe menggunakan TEA decryption
+     * Ekstrak link video dari embed dremoxa/demoxa/vtbe
      */
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
-            // Ekstrak ID video
             val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
             val idMatch = idPattern.find(embedUrl)
             val videoId = idMatch?.groupValues?.get(1) ?: return result
@@ -358,7 +364,6 @@ class NineTsuProvider : MainAPI() {
             val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
             val baseUrl = "https://$baseDomain"
 
-            // Panggil /ajax/getSources
             val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
             val headers = mapOf(
                 "Referer" to embedUrl,
@@ -378,7 +383,7 @@ class NineTsuProvider : MainAPI() {
                     if (!encryptedPlaylist.isNullOrBlank()) {
                         val parts = encryptedPlaylist.split(":")
                         if (parts.size >= 2) {
-                            // Dekripsi bagian kedua (data)
+                            // Decrypt data part
                             val decrypted = teaDecryptString(parts[1], TEA_KEY)
                             if (decrypted != null) {
                                 result.addAll(extractVideoUrls(decrypted))
@@ -387,7 +392,7 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
-                            // Fallback: dekripsi seluruh playlist
+                            // Fallback: decrypt full
                             if (result.isEmpty()) {
                                 val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
                                 if (fullDecrypted != null) {
@@ -395,7 +400,7 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
-                            // Fallback: base64 decode biasa
+                            // Fallback: base64 decode
                             if (result.isEmpty()) {
                                 try {
                                     val decoded = String(Base64.getDecoder().decode(parts[1]))
@@ -405,7 +410,6 @@ class NineTsuProvider : MainAPI() {
                         }
                     }
 
-                    // Coba tracks
                     if (tracks != null) {
                         for (i in 0 until tracks.length()) {
                             val track = tracks.getJSONObject(i)
@@ -431,6 +435,9 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
+
+        // Reset debug URLs
+        debugUrls = ""
 
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -458,7 +465,7 @@ class NineTsuProvider : MainAPI() {
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script dengan unpack dan decode
+        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -473,7 +480,6 @@ class NineTsuProvider : MainAPI() {
 
             extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
 
-            // Cari konfigurasi player JSON
             val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
             jsonPattern.findAll(scriptData).forEach { match ->
                 try {
@@ -492,7 +498,6 @@ class NineTsuProvider : MainAPI() {
                 } catch (e: Exception) {}
             }
 
-            // Cari var player = {...}
             val varPattern = Regex("""var\s+player\s*=\s*(\{.*?\})""")
             varPattern.findAll(scriptData).forEach { match ->
                 try {
@@ -520,7 +525,6 @@ class NineTsuProvider : MainAPI() {
                 val dremoxaUrls = extractDremoxaLinks(embedUrl, data)
                 dremoxaUrls.forEach { url -> allUrls.add(url) }
             } else {
-                // Generic embed (dood, streamtape, mixdrop, dll)
                 try {
                     val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
                         "User-Agent" to userAgent,
@@ -583,6 +587,9 @@ class NineTsuProvider : MainAPI() {
                 } catch (e: Exception) {}
             }
         }
+
+        // Simpan semua URL untuk debug
+        debugUrls = allUrls.joinToString("\n")
 
         // Proses semua URL yang ditemukan
         var linkFound = false
