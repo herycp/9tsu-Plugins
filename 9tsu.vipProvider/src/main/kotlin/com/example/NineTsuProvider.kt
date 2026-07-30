@@ -14,6 +14,8 @@ import org.jsoup.nodes.Element
 import java.net.URI
 import java.net.URLDecoder
 import java.util.Base64
+import javax.crypto.Mac
+import javax.crypto.spec.SecretKeySpec
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -22,6 +24,7 @@ class NineTsuProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
@@ -60,8 +63,6 @@ class NineTsuProvider : MainAPI() {
     }
 
     // ==================== TEA DECRYPTION ====================
-    private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
-
     private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
         val k = IntArray(4)
         for (i in 0..3) {
@@ -186,13 +187,53 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    private fun generateXHash(longId: String, token: String): String {
+    private fun hmacSha256(key: String, data: String): String {
+        return try {
+            val mac = Mac.getInstance("HmacSHA256")
+            val keySpec = SecretKeySpec(key.toByteArray(), "HmacSHA256")
+            mac.init(keySpec)
+            val hash = mac.doFinal(data.toByteArray())
+            hash.joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            sha256(data) // fallback
+        }
+    }
+
+    private fun generateXHashVariants(longId: String, token: String): List<Pair<String, String>> {
+        val results = mutableListOf<Pair<String, String>>()
         val timestamp = System.currentTimeMillis().toString()
         val random = (1..8).map { "abcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-        val data = "$longId$token$timestamp$random"
-        val hash = sha256(data)
-        val raw = "$timestamp:$hash:$random"
-        return Base64.getEncoder().encodeToString(raw.toByteArray())
+        val secret = "48viMBoCGlDnap1Qe"
+
+        // Varian 1: SHA-256(longId + token + timestamp + random)
+        val data1 = "$longId$token$timestamp$random"
+        val hash1 = sha256(data1)
+        val raw1 = "$timestamp:$hash1:$random"
+        results.add("V1 (SHA-256 data)" to Base64.getEncoder().encodeToString(raw1.toByteArray()))
+
+        // Varian 2: SHA-256(longId + token + timestamp)
+        val data2 = "$longId$token$timestamp"
+        val hash2 = sha256(data2)
+        val raw2 = "$timestamp:$hash2:$random"
+        results.add("V2 (SHA-256 data tanpa random)" to Base64.getEncoder().encodeToString(raw2.toByteArray()))
+
+        // Varian 3: HMAC-SHA256(secret, longId + token + timestamp + random)
+        val hash3 = hmacSha256(secret, data1)
+        val raw3 = "$timestamp:$hash3:$random"
+        results.add("V3 (HMAC-SHA256 dengan secret)" to Base64.getEncoder().encodeToString(raw3.toByteArray()))
+
+        // Varian 4: HMAC-SHA256(secret, longId + token + timestamp)
+        val hash4 = hmacSha256(secret, data2)
+        val raw4 = "$timestamp:$hash4:$random"
+        results.add("V4 (HMAC-SHA256 tanpa random)" to Base64.getEncoder().encodeToString(raw4.toByteArray()))
+
+        // Varian 5: HMAC-SHA256(secret, timestamp + random)
+        val data5 = "$timestamp$random"
+        val hash5 = hmacSha256(secret, data5)
+        val raw5 = "$timestamp:$hash5:$random"
+        results.add("V5 (HMAC-SHA256 timestamp+random)" to Base64.getEncoder().encodeToString(raw5.toByteArray()))
+
+        return results
     }
     // ========================================================
 
@@ -428,14 +469,19 @@ class NineTsuProvider : MainAPI() {
             val token = tokenMatch?.groupValues?.get(1)
             debug.append("Token: $token\n")
 
-            // 5. x-hash
+            // 5. x-hash - Ekstrak dari embed dulu
             var xHash = extractXHashFromEmbed(embedUrl)
             if (xHash != null) {
-                debug.append("x-hash (extracted): ${xHash.take(50)}...\n")
+                debug.append("x-hash (extracted): $xHash\n")
             } else {
-                debug.append("x-hash: NOT FOUND in embed\n")
-                xHash = generateXHash(longId, token ?: "")
-                debug.append("x-hash (generated): ${xHash.take(50)}...\n")
+                debug.append("x-hash: NOT FOUND in embed, trying to generate variants...\n")
+                val variants = generateXHashVariants(longId, token ?: "")
+                variants.forEach { (name, hash) ->
+                    debug.append("  $name: $hash\n")
+                }
+                // Gunakan varian pertama sebagai fallback
+                xHash = variants.firstOrNull()?.second
+                debug.append("Using first variant as fallback: $xHash\n")
             }
 
             // 6. API URL dan body
@@ -446,11 +492,12 @@ class NineTsuProvider : MainAPI() {
 
             // 7. Headers
             val headers = mutableMapOf<String, String>()
-            headers["Referer"] = embedUrl
+            headers["Referer"] = baseUrl ?: ""
             headers["X-Requested-With"] = "XMLHttpRequest"
             headers["User-Agent"] = userAgent
             headers["Origin"] = baseUrl ?: ""
             headers["Accept"] = "*/*"
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
             headers["x-hash"] = xHash ?: ""
 
             val headersString = headers.entries.joinToString(", ") { "${it.key}=${it.value.take(30)}..." }
@@ -572,23 +619,31 @@ class NineTsuProvider : MainAPI() {
                 return result
             }
 
-            var xHash = extractXHashFromEmbed(embedUrl)
             val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
             val token = tokenMatch?.groupValues?.get(1) ?: ""
+
+            // Prioritas: ekstrak x-hash dari embed, jika gagal generate dengan varian
+            var xHash = extractXHashFromEmbed(embedUrl)
             if (xHash == null) {
-                xHash = generateXHash(longId, token)
+                // Coba generate dengan beberapa varian, pilih yang pertama
+                val variants = generateXHashVariants(longId, token)
+                xHash = variants.firstOrNull()?.second
+                if (xHash == null) {
+                    return result
+                }
             }
 
             val apiUrl = "$baseUrl/ajax/getSources"
             val body = mapOf("id" to longId)
 
             val headers = mutableMapOf<String, String>()
-            headers["Referer"] = embedUrl
+            headers["Referer"] = baseUrl
             headers["X-Requested-With"] = "XMLHttpRequest"
             headers["User-Agent"] = userAgent
             headers["Origin"] = baseUrl
             headers["Accept"] = "*/*"
-            headers["x-hash"] = xHash ?: ""
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["x-hash"] = xHash
 
             val response = app.post(apiUrl, headers = headers, data = body)
 
