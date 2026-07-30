@@ -123,6 +123,137 @@ class NineTsuProvider : MainAPI() {
     }
     // ========================================================
 
+    // ==================== DREMOXA HELPER ====================
+    /**
+     * Ekstrak ID panjang (32 hex) dari halaman embed.
+     * Mencari pola [a-f0-9]{32} di HTML dan skrip.
+     */
+    private suspend fun extractLongIdFromEmbed(embedUrl: String): String? {
+        return try {
+            val headers = mapOf(
+                "Referer" to embedUrl,
+                "User-Agent" to userAgent
+            )
+            val html = app.get(embedUrl, headers = headers).text
+            // Cari pola 32 karakter hex
+            val pattern = Regex("""[a-f0-9]{32}""")
+            val match = pattern.find(html)
+            match?.value
+        } catch (e: Exception) {
+            null
+        }
+    }
+    // ========================================================
+
+    // ==================== DEBUG DREMOXA ====================
+    private suspend fun debugDremoxa(embedUrl: String): String {
+        val debug = StringBuilder()
+        debug.append("=== DREMOXA DEBUG ===\n")
+        debug.append("Embed URL: $embedUrl\n")
+
+        try {
+            // 1. Ekstrak short ID dari URL
+            val shortIdPattern = Regex("""/(?:embed/|e/|v/)([^/?]+)""")
+            val shortIdMatch = shortIdPattern.find(embedUrl)
+            val shortId = shortIdMatch?.groupValues?.get(1)
+            debug.append("Short ID (from URL): $shortId\n")
+
+            // 2. Dapatkan long ID dari halaman embed
+            val longId = extractLongIdFromEmbed(embedUrl)
+            if (longId != null) {
+                debug.append("Long ID (extracted): $longId\n")
+            } else {
+                debug.append("Long ID: NOT FOUND\n")
+                return debug.toString()
+            }
+
+            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+            val baseUrl = "https://$baseDomain"
+            debug.append("Base URL: $baseUrl\n")
+
+            val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
+            debug.append("API URL: $apiUrl\n")
+
+            // Ekstrak token jika ada
+            val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
+            val token = tokenMatch?.groupValues?.get(1)
+            debug.append("Token: $token\n")
+
+            val headers = mapOf(
+                "Referer" to embedUrl,
+                "X-Requested-With" to "XMLHttpRequest",
+                "User-Agent" to userAgent,
+                "Origin" to baseUrl
+            )
+
+            val response = app.get(apiUrl, headers = headers)
+            debug.append("Response Code: ${response.code}\n")
+
+            if (response.code == 200) {
+                val rawText = response.text
+                debug.append("Raw Response (first 500 chars): ${rawText.take(500)}${if (rawText.length > 500) "..." else ""}\n")
+
+                try {
+                    val json = JSONObject(rawText)
+                    val encryptedPlaylist = json.optString("playlist", null)
+                    val tracks = json.optJSONArray("tracks")
+
+                    debug.append("Encrypted Playlist: ${encryptedPlaylist ?: "null"}\n")
+                    debug.append("Tracks count: ${tracks?.length() ?: 0}\n")
+
+                    if (!encryptedPlaylist.isNullOrBlank()) {
+                        val parts = encryptedPlaylist.split(":")
+                        debug.append("Parts count: ${parts.size}\n")
+                        if (parts.size >= 2) {
+                            debug.append("Part1 (truncated): ${parts[1].take(100)}${if (parts[1].length > 100) "..." else ""}\n")
+                            // TEA decrypt
+                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
+                            if (decrypted != null) {
+                                debug.append("TEA Decrypted: $decrypted\n")
+                                val extracted = extractVideoUrls(decrypted)
+                                if (extracted.isNotEmpty()) {
+                                    debug.append("Extracted URLs from decrypted: ${extracted.joinToString(", ")}\n")
+                                } else {
+                                    debug.append("No URLs found in decrypted text\n")
+                                }
+                            } else {
+                                debug.append("TEA decryption FAILED\n")
+                            }
+
+                            // Base64 fallback
+                            if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
+                                try {
+                                    val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
+                                    debug.append("Base64 Decoded (truncated): ${base64Decoded.take(200)}${if (base64Decoded.length > 200) "..." else ""}\n")
+                                    val extractedBase64 = extractVideoUrls(base64Decoded)
+                                    if (extractedBase64.isNotEmpty()) {
+                                        debug.append("Extracted from base64: ${extractedBase64.joinToString(", ")}\n")
+                                    }
+                                } catch (e: Exception) {
+                                    debug.append("Base64 decode failed: ${e.message}\n")
+                                }
+                            }
+                        }
+                    }
+                } catch (e: Exception) {
+                    debug.append("JSON Parse Error: ${e.message}\n")
+                    // Try regex on raw text
+                    val extracted = extractVideoUrls(rawText)
+                    if (extracted.isNotEmpty()) {
+                        debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
+                    }
+                }
+            } else {
+                debug.append("Response not 200, skipping extraction\n")
+            }
+        } catch (e: Exception) {
+            debug.append("Exception: ${e.message}\n")
+            e.printStackTrace()
+        }
+        return debug.toString()
+    }
+    // ========================================================
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
         "$mainUrl/daily" to "Harian (Daily)",
@@ -324,104 +455,6 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // ==================== DEBUG DREMOXA ====================
-    private suspend fun debugDremoxa(embedUrl: String): String {
-        val debug = StringBuilder()
-        debug.append("=== DREMOXA DEBUG ===\n")
-        debug.append("Embed URL: $embedUrl\n")
-
-        try {
-            val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
-            val idMatch = idPattern.find(embedUrl)
-            val videoId = idMatch?.groupValues?.get(1)
-            if (videoId == null) {
-                debug.append("ERROR: Could not extract video ID\n")
-                return debug.toString()
-            }
-            debug.append("Video ID: $videoId\n")
-
-            val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-            val baseUrl = "https://$baseDomain"
-            debug.append("Base URL: $baseUrl\n")
-
-            val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
-            debug.append("API URL: $apiUrl\n")
-
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent,
-                "Origin" to baseUrl
-            )
-
-            val response = app.get(apiUrl, headers = headers)
-            debug.append("Response Code: ${response.code}\n")
-
-            if (response.code == 200) {
-                val rawText = response.text
-                debug.append("Raw Response (first 500 chars): ${rawText.take(500)}${if (rawText.length > 500) "..." else ""}\n")
-
-                try {
-                    val json = JSONObject(rawText)
-                    val encryptedPlaylist = json.optString("playlist", null)
-                    val tracks = json.optJSONArray("tracks")
-
-                    debug.append("Encrypted Playlist: ${encryptedPlaylist ?: "null"}\n")
-                    debug.append("Tracks count: ${tracks?.length() ?: 0}\n")
-
-                    if (!encryptedPlaylist.isNullOrBlank()) {
-                        val parts = encryptedPlaylist.split(":")
-                        debug.append("Parts count: ${parts.size}\n")
-                        if (parts.size >= 2) {
-                            debug.append("Part1 (truncated): ${parts[1].take(100)}${if (parts[1].length > 100) "..." else ""}\n")
-                            // TEA decrypt
-                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
-                            if (decrypted != null) {
-                                debug.append("TEA Decrypted: $decrypted\n")
-                                val extracted = extractVideoUrls(decrypted)
-                                if (extracted.isNotEmpty()) {
-                                    debug.append("Extracted URLs from decrypted: ${extracted.joinToString(", ")}\n")
-                                } else {
-                                    debug.append("No URLs found in decrypted text\n")
-                                }
-                            } else {
-                                debug.append("TEA decryption FAILED\n")
-                            }
-
-                            // Base64 fallback
-                            if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
-                                try {
-                                    val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
-                                    debug.append("Base64 Decoded (truncated): ${base64Decoded.take(200)}${if (base64Decoded.length > 200) "..." else ""}\n")
-                                    val extractedBase64 = extractVideoUrls(base64Decoded)
-                                    if (extractedBase64.isNotEmpty()) {
-                                        debug.append("Extracted from base64: ${extractedBase64.joinToString(", ")}\n")
-                                    }
-                                } catch (e: Exception) {
-                                    debug.append("Base64 decode failed: ${e.message}\n")
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    debug.append("JSON Parse Error: ${e.message}\n")
-                    // Try regex on raw text
-                    val extracted = extractVideoUrls(rawText)
-                    if (extracted.isNotEmpty()) {
-                        debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
-                    }
-                }
-            } else {
-                debug.append("Response not 200, skipping extraction\n")
-            }
-        } catch (e: Exception) {
-            debug.append("Exception: ${e.message}\n")
-            e.printStackTrace()
-        }
-        return debug.toString()
-    }
-    // ========================================================
-
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
@@ -459,14 +492,16 @@ class NineTsuProvider : MainAPI() {
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
-            val idPattern = Regex("""/(?:e/|v/|embed/|video/)([a-zA-Z0-9]+)""")
-            val idMatch = idPattern.find(embedUrl)
-            val videoId = idMatch?.groupValues?.get(1) ?: return result
+            // Hanya gunakan long ID dari halaman embed
+            val longId = extractLongIdFromEmbed(embedUrl)
+            if (longId == null) {
+                // Tidak ada fallback, langsung return
+                return result
+            }
 
             val baseDomain = embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
             val baseUrl = "https://$baseDomain"
-
-            val apiUrl = "$baseUrl/ajax/getSources?id=$videoId"
+            val apiUrl = "$baseUrl/ajax/getSources?id=$longId"
             val headers = mapOf(
                 "Referer" to embedUrl,
                 "X-Requested-With" to "XMLHttpRequest",
