@@ -26,6 +26,9 @@ class NineTsuProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
+    // Hardcoded valid x-hash dari capture browser untuk testing
+    private val HARDCODED_XHASH = "MTc4NTM4NzI3MjA2NjphNzMxZWVhZTFlOTIxOTA1MTQ4YzIxNTZjOGUyMmRmNDIyYTJkZGIwNTIwZWJlYTcxZjA1ZjEwNDZjOWNhNmE4OnpobnBzeW44"
+
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -159,6 +162,7 @@ class NineTsuProvider : MainAPI() {
             )
             val html = app.get(embedUrl, headers = headers).text
 
+            // Cari pola Base64 panjang (timestamp:hash:random)
             val pattern = Regex("""[A-Za-z0-9+/]{60,}={0,2}""")
             val matches = pattern.findAll(html)
             for (match in matches) {
@@ -171,6 +175,21 @@ class NineTsuProvider : MainAPI() {
                     }
                 } catch (e: Exception) { /* ignore */ }
             }
+
+            // Cari di atribut data
+            val attrPattern = Regex("""data-x-hash\s*=\s*["']([^"']+)["']""")
+            val attrMatch = attrPattern.find(html)
+            if (attrMatch != null) {
+                return attrMatch.groupValues[1]
+            }
+
+            // Cari di variabel JavaScript
+            val varPattern = Regex("""['"]x-hash['"]\s*:\s*['"]([^'"]+)['"]""")
+            val varMatch = varPattern.find(html)
+            if (varMatch != null) {
+                return varMatch.groupValues[1]
+            }
+
             null
         } catch (e: Exception) {
             null
@@ -195,7 +214,7 @@ class NineTsuProvider : MainAPI() {
             val hash = mac.doFinal(data.toByteArray())
             hash.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
-            sha256(data) // fallback
+            sha256(data)
         }
     }
 
@@ -232,6 +251,18 @@ class NineTsuProvider : MainAPI() {
         val hash5 = hmacSha256(secret, data5)
         val raw5 = "$timestamp:$hash5:$random"
         results.add("V5 (HMAC-SHA256 timestamp+random)" to Base64.getEncoder().encodeToString(raw5.toByteArray()))
+
+        // Varian 6: SHA-256(longId + timestamp + random)
+        val data6 = "$longId$timestamp$random"
+        val hash6 = sha256(data6)
+        val raw6 = "$timestamp:$hash6:$random"
+        results.add("V6 (SHA-256 longId+timestamp+random)" to Base64.getEncoder().encodeToString(raw6.toByteArray()))
+
+        // Varian 7: SHA-256(longId + timestamp)
+        val data7 = "$longId$timestamp"
+        val hash7 = sha256(data7)
+        val raw7 = "$timestamp:$hash7:$random"
+        results.add("V7 (SHA-256 longId+timestamp)" to Base64.getEncoder().encodeToString(raw7.toByteArray()))
 
         return results
     }
@@ -479,9 +510,10 @@ class NineTsuProvider : MainAPI() {
                 variants.forEach { (name, hash) ->
                     debug.append("  $name: $hash\n")
                 }
-                // Gunakan varian pertama sebagai fallback
-                xHash = variants.firstOrNull()?.second
-                debug.append("Using first variant as fallback: $xHash\n")
+                debug.append("Also using HARDCODED_XHASH: $HARDCODED_XHASH\n")
+                // Gunakan hardcode sebagai fallback
+                xHash = HARDCODED_XHASH
+                debug.append("Using HARDCODED_XHASH as fallback\n")
             }
 
             // 6. API URL dan body
@@ -490,7 +522,7 @@ class NineTsuProvider : MainAPI() {
             val body = mapOf("id" to longId)
             debug.append("Body: id=$longId\n")
 
-            // 7. Headers
+            // 7. Headers - Meniru persis dari browser capture
             val headers = mutableMapOf<String, String>()
             headers["Referer"] = baseUrl ?: ""
             headers["X-Requested-With"] = "XMLHttpRequest"
@@ -498,6 +530,15 @@ class NineTsuProvider : MainAPI() {
             headers["Origin"] = baseUrl ?: ""
             headers["Accept"] = "*/*"
             headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["Accept-Language"] = "en-US,en;q=0.9"
+            headers["Accept-Encoding"] = "gzip, deflate, br"
+            headers["DNT"] = "1"
+            headers["sec-ch-ua"] = "\"Google Chrome\";v=\"124\""
+            headers["sec-ch-ua-mobile"] = "?1"
+            headers["sec-ch-ua-platform"] = "\"Android\""
+            headers["sec-fetch-dest"] = "empty"
+            headers["sec-fetch-mode"] = "cors"
+            headers["sec-fetch-site"] = "same-origin"
             headers["x-hash"] = xHash ?: ""
 
             val headersString = headers.entries.joinToString(", ") { "${it.key}=${it.value.take(30)}..." }
@@ -622,15 +663,11 @@ class NineTsuProvider : MainAPI() {
             val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
             val token = tokenMatch?.groupValues?.get(1) ?: ""
 
-            // Prioritas: ekstrak x-hash dari embed, jika gagal generate dengan varian
+            // Prioritas: ekstrak x-hash dari embed, jika gagal gunakan hardcode
             var xHash = extractXHashFromEmbed(embedUrl)
             if (xHash == null) {
-                // Coba generate dengan beberapa varian, pilih yang pertama
-                val variants = generateXHashVariants(longId, token)
-                xHash = variants.firstOrNull()?.second
-                if (xHash == null) {
-                    return result
-                }
+                // Coba generate varian, tapi karena masih 400 kita gunakan hardcode dulu
+                xHash = HARDCODED_XHASH
             }
 
             val apiUrl = "$baseUrl/ajax/getSources"
@@ -643,6 +680,11 @@ class NineTsuProvider : MainAPI() {
             headers["Origin"] = baseUrl
             headers["Accept"] = "*/*"
             headers["Content-Type"] = "application/x-www-form-urlencoded"
+            headers["Accept-Language"] = "en-US,en;q=0.9"
+            headers["DNT"] = "1"
+            headers["sec-ch-ua"] = "\"Google Chrome\";v=\"124\""
+            headers["sec-ch-ua-mobile"] = "?1"
+            headers["sec-ch-ua-platform"] = "\"Android\""
             headers["x-hash"] = xHash
 
             val response = app.post(apiUrl, headers = headers, data = body)
