@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
+import java.net.URI
 import java.net.URLDecoder
 import java.util.Base64
 
@@ -59,6 +60,7 @@ class NineTsuProvider : MainAPI() {
     }
 
     // ==================== TEA DECRYPTION ====================
+    // Kunci dari app.js: base64 "NDh2aU1Cb0NHRG5hcDFRZQ==" -> "48viMBoCGlDnap1Qe"
     private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
     private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
@@ -123,10 +125,10 @@ class NineTsuProvider : MainAPI() {
     }
     // ========================================================
 
-    // ==================== DREMOXA HELPER ====================
+    // ==================== DREMOXA HELPERS ====================
     private fun getBaseUrl(embedUrl: String): String? {
         return try {
-            val uri = java.net.URI(embedUrl)
+            val uri = URI(embedUrl)
             "${uri.scheme}://${uri.host}"
         } catch (e: Exception) {
             val match = Regex("""(https?://[^/]+)""").find(embedUrl)
@@ -156,178 +158,58 @@ class NineTsuProvider : MainAPI() {
                 "User-Agent" to userAgent
             )
             val html = app.get(embedUrl, headers = headers).text
-            
-            // Cari pola Base64 yang bisa di-decode menjadi format timestamp:hash:random
-            // Format: MTc4NTM4NzI3MjA2NjphNzMxZWVhZTFlOTIxOTA1MTQ4YzIxNTZjOGUyMmRmNDIyYTJkZGIwNTIwZWJlYTcxZjA1ZjEwNDZjOWNhNmE4OnpobnBzeW44
-            val pattern = Regex("""[A-Za-z0-9+/]{40,}={0,2}""")
+
+            // Cari pola Base64 panjang (timestamp:hash:random)
+            val pattern = Regex("""[A-Za-z0-9+/]{60,}={0,2}""")
             val matches = pattern.findAll(html)
             for (match in matches) {
                 val candidate = match.value
                 try {
                     val decoded = String(Base64.getDecoder().decode(candidate))
-                    // Format yang valid: timestamp:hash:random
-                    if (decoded.contains(":") && decoded.split(":").size >= 3) {
-                        val parts = decoded.split(":")
-                        if (parts[0].all { it.isDigit() } && parts[1].length == 64) {
-                            return candidate
-                        }
+                    val parts = decoded.split(":")
+                    if (parts.size >= 3 && parts[0].all { it.isDigit() } && parts[1].length == 64) {
+                        return candidate
                     }
-                } catch (e: Exception) {
-                    // Bukan base64 valid, lanjutkan
-                }
+                } catch (e: Exception) { /* ignore */ }
             }
+
+            // Cari di atribut data
+            val attrPattern = Regex("""data-x-hash\s*=\s*["']([^"']+)["']""")
+            val attrMatch = attrPattern.find(html)
+            if (attrMatch != null) {
+                return attrMatch.groupValues[1]
+            }
+
+            // Cari di variabel JavaScript
+            val varPattern = Regex("""['"]x-hash['"]\s*:\s*['"]([^'"]+)['"]""")
+            val varMatch = varPattern.find(html)
+            if (varMatch != null) {
+                return varMatch.groupValues[1]
+            }
+
             null
         } catch (e: Exception) {
             null
         }
-    }
-
-    private fun generateRandomString(length: Int): String {
-        val chars = "abcdefghijklmnopqrstuvwxyz0123456789"
-        return (1..length).map { chars.random() }.joinToString("")
     }
 
     private fun sha256(input: String): String {
-        try {
+        return try {
             val digest = java.security.MessageDigest.getInstance("SHA-256")
             val hash = digest.digest(input.toByteArray())
-            return hash.joinToString("") { "%02x".format(it) }
+            hash.joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
-            // Fallback: gunakan MD5 atau simple hash
-            return input.hashCode().toString(16).padStart(64, '0')
+            input.hashCode().toString(16).padStart(64, '0')
         }
     }
 
-    private fun generateXHash(longId: String, timestamp: Long = System.currentTimeMillis()): String {
-        // Format: timestamp:hash:random
-        // hash = SHA-256(longId + timestamp + random)
-        val random = generateRandomString(8)
-        val data = "$longId$timestamp$random"
+    private fun generateXHash(longId: String, token: String): String {
+        val timestamp = System.currentTimeMillis().toString()
+        val random = (1..8).map { "abcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
+        val data = "$longId$token$timestamp$random"
         val hash = sha256(data)
         val raw = "$timestamp:$hash:$random"
         return Base64.getEncoder().encodeToString(raw.toByteArray())
-    }
-    // ========================================================
-
-    // ==================== DEBUG DREMOXA ====================
-    private suspend fun debugDremoxa(embedUrl: String): String {
-        val debug = StringBuilder()
-        debug.append("=== DREMOXA DEBUG ===\n")
-        debug.append("Embed URL: $embedUrl\n")
-
-        try {
-            val shortIdPattern = Regex("""/(?:embed/|e/|v/)([^/?]+)""")
-            val shortIdMatch = shortIdPattern.find(embedUrl)
-            val shortId = shortIdMatch?.groupValues?.get(1)
-            debug.append("Short ID (from URL): $shortId\n")
-
-            val longId = extractLongIdFromEmbed(embedUrl)
-            if (longId != null) {
-                debug.append("Long ID (extracted): $longId\n")
-            } else {
-                debug.append("Long ID: NOT FOUND\n")
-                return debug.toString()
-            }
-
-            val baseUrl = getBaseUrl(embedUrl)
-            if (baseUrl == null) {
-                debug.append("Base URL: ERROR\n")
-                return debug.toString()
-            }
-            debug.append("Base URL: $baseUrl\n")
-
-            val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
-            val token = tokenMatch?.groupValues?.get(1)
-            debug.append("Token: $token\n")
-
-            // Coba ekstrak x-hash dari halaman embed
-            var xHash = extractXHashFromEmbed(embedUrl)
-            var hashSource = "extracted from embed"
-            
-            if (xHash == null) {
-                debug.append("x-hash: NOT FOUND in embed, generating fallback\n")
-                xHash = generateXHash(longId)
-                hashSource = "generated fallback"
-            }
-            debug.append("x-hash ($hashSource): ${xHash.take(60)}...\n")
-
-            val apiUrl = "$baseUrl/ajax/getSources"
-            debug.append("API URL: $apiUrl (POST with id in body)\n")
-
-            val body = mapOf("id" to longId)
-            debug.append("Body: id=$longId\n")
-
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent,
-                "Origin" to baseUrl,
-                "Accept" to "*/*",
-                "x-hash" to xHash
-            )
-
-            val response = app.post(apiUrl, headers = headers, data = body)
-            debug.append("Response Code: ${response.code}\n")
-
-            if (response.code == 200) {
-                val rawText = response.text
-                debug.append("Raw Response (first 500 chars): ${rawText.take(500)}${if (rawText.length > 500) "..." else ""}\n")
-
-                try {
-                    val json = JSONObject(rawText)
-                    val encryptedPlaylist = json.optString("playlist", null)
-                    val tracks = json.optJSONArray("tracks")
-
-                    debug.append("Encrypted Playlist: ${encryptedPlaylist ?: "null"}\n")
-                    debug.append("Tracks count: ${tracks?.length() ?: 0}\n")
-
-                    if (!encryptedPlaylist.isNullOrBlank()) {
-                        val parts = encryptedPlaylist.split(":")
-                        debug.append("Parts count: ${parts.size}\n")
-                        if (parts.size >= 2) {
-                            debug.append("Part1 (truncated): ${parts[1].take(100)}${if (parts[1].length > 100) "..." else ""}\n")
-                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
-                            if (decrypted != null) {
-                                debug.append("TEA Decrypted: $decrypted\n")
-                                val extracted = extractVideoUrls(decrypted)
-                                if (extracted.isNotEmpty()) {
-                                    debug.append("Extracted URLs from decrypted: ${extracted.joinToString(", ")}\n")
-                                } else {
-                                    debug.append("No URLs found in decrypted text\n")
-                                }
-                            } else {
-                                debug.append("TEA decryption FAILED\n")
-                            }
-
-                            if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
-                                try {
-                                    val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
-                                    debug.append("Base64 Decoded (truncated): ${base64Decoded.take(200)}${if (base64Decoded.length > 200) "..." else ""}\n")
-                                    val extractedBase64 = extractVideoUrls(base64Decoded)
-                                    if (extractedBase64.isNotEmpty()) {
-                                        debug.append("Extracted from base64: ${extractedBase64.joinToString(", ")}\n")
-                                    }
-                                } catch (e: Exception) {
-                                    debug.append("Base64 decode failed: ${e.message}\n")
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    debug.append("JSON Parse Error: ${e.message}\n")
-                    val extracted = extractVideoUrls(rawText)
-                    if (extracted.isNotEmpty()) {
-                        debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
-                    }
-                }
-            } else {
-                debug.append("Response not 200, skipping extraction\n")
-            }
-        } catch (e: Exception) {
-            debug.append("Exception: ${e.message}\n")
-            e.printStackTrace()
-        }
-        return debug.toString()
     }
     // ========================================================
 
@@ -372,7 +254,7 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // SEARCH
+    // SEARCH: DuckDuckGo sebagai utama
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -543,47 +425,39 @@ class NineTsuProvider : MainAPI() {
 
         val description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim()
 
-        var debugInfo = ""
-        val iframe = doc.selectFirst("iframe[src*='dremoxa'], iframe[src*='demoxa'], iframe[src*='vtbe']")
-        if (iframe != null) {
-            val embedUrl = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (embedUrl.isNotBlank()) {
-                debugInfo = debugDremoxa(embedUrl)
-            }
-        }
-
-        val finalPlot = if (debugInfo.isNotEmpty()) {
-            "$description\n\n$debugInfo"
-        } else {
-            description
-        }
-
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
-            this.plot = finalPlot
+            this.plot = description
         }
     }
 
-    // ==================== EKSTRAKSI DREMOXA UNTUK LOADLINKS ====================
+    // ==================== EKSTRAKSI DREMOXA ====================
     private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
         val result = mutableListOf<String>()
         try {
+            // 1. Ekstrak long ID (32 hex) dari halaman embed
             val longId = extractLongIdFromEmbed(embedUrl)
             if (longId == null) {
                 return result
             }
 
+            // 2. Dapatkan base URL dengan benar
             val baseUrl = getBaseUrl(embedUrl)
             if (baseUrl == null) {
                 return result
             }
 
-            // Coba ekstrak x-hash dari embed, jika gagal generate sendiri
+            // 3. Ekstrak token dari URL embed
+            val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
+            val token = tokenMatch?.groupValues?.get(1) ?: ""
+
+            // 4. Ekstrak x-hash dari embed, jika gagal generate
             var xHash = extractXHashFromEmbed(embedUrl)
             if (xHash == null) {
-                xHash = generateXHash(longId)
+                xHash = generateXHash(longId, token)
             }
 
+            // 5. Panggil API dengan POST
             val apiUrl = "$baseUrl/ajax/getSources"
             val body = mapOf("id" to longId)
 
@@ -597,6 +471,7 @@ class NineTsuProvider : MainAPI() {
             )
 
             val response = app.post(apiUrl, headers = headers, data = body)
+
             if (response.code == 200) {
                 val text = response.text
                 try {
@@ -607,6 +482,7 @@ class NineTsuProvider : MainAPI() {
                     if (!encryptedPlaylist.isNullOrBlank()) {
                         val parts = encryptedPlaylist.split(":")
                         if (parts.size >= 2) {
+                            // Dekripsi bagian kedua dengan TEA
                             val decrypted = teaDecryptString(parts[1], TEA_KEY)
                             if (decrypted != null) {
                                 result.addAll(extractVideoUrls(decrypted))
@@ -615,6 +491,7 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
+                            // Fallback: dekripsi seluruh playlist
                             if (result.isEmpty()) {
                                 val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
                                 if (fullDecrypted != null) {
@@ -622,6 +499,7 @@ class NineTsuProvider : MainAPI() {
                                 }
                             }
 
+                            // Fallback: base64 decode
                             if (result.isEmpty()) {
                                 try {
                                     val decoded = String(Base64.getDecoder().decode(parts[1]))
