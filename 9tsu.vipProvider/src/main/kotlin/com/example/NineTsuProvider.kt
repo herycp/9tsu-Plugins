@@ -23,11 +23,6 @@ class NineTsuProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
-    // ==================== DEBUG VARIABLES ====================
-    private var debugInfo: String = ""
-    private var debugEnabled: Boolean = true
-    // =========================================================
-
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -450,15 +445,16 @@ class NineTsuProvider : MainAPI() {
             debug.append("Body: id=$longId\n")
 
             // 7. Headers
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent,
-                "Origin" to baseUrl,
-                "Accept" to "*/*",
-                "x-hash" to xHash
-            )
-            debug.append("Headers: Referer=${embedUrl.take(50)}..., x-hash=${xHash.take(30)}...\n")
+            val headers = mutableMapOf<String, String>()
+            headers["Referer"] = embedUrl
+            headers["X-Requested-With"] = "XMLHttpRequest"
+            headers["User-Agent"] = userAgent
+            headers["Origin"] = baseUrl ?: ""
+            headers["Accept"] = "*/*"
+            headers["x-hash"] = xHash ?: ""
+
+            val headersString = headers.entries.joinToString(", ") { "${it.key}=${it.value.take(30)}..." }
+            debug.append("Headers: $headersString\n")
 
             // 8. Execute request
             val response = app.post(apiUrl, headers = headers, data = body)
@@ -586,14 +582,13 @@ class NineTsuProvider : MainAPI() {
             val apiUrl = "$baseUrl/ajax/getSources"
             val body = mapOf("id" to longId)
 
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "X-Requested-With" to "XMLHttpRequest",
-                "User-Agent" to userAgent,
-                "Origin" to baseUrl,
-                "Accept" to "*/*",
-                "x-hash" to xHash
-            )
+            val headers = mutableMapOf<String, String>()
+            headers["Referer"] = embedUrl
+            headers["X-Requested-With"] = "XMLHttpRequest"
+            headers["User-Agent"] = userAgent
+            headers["Origin"] = baseUrl
+            headers["Accept"] = "*/*"
+            headers["x-hash"] = xHash ?: ""
 
             val response = app.post(apiUrl, headers = headers, data = body)
 
@@ -657,9 +652,6 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-
-        // Reset debug
-        debugInfo = ""
 
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -753,7 +745,8 @@ class NineTsuProvider : MainAPI() {
                         "Referer" to data,
                         "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
                     ))
-                    val embedHtml = embedRes.text                    extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+                    val embedHtml = embedRes.text
+                    extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                     try {
                         val unpacked = getAndUnpack(embedHtml)
                         if (unpacked.isNotBlank()) {
