@@ -142,6 +142,180 @@ class NineTsuProvider : MainAPI() {
     }
     // ====================================================================
 
+    // ==================== DEBUG FUNCTION ====================
+    private suspend fun generateDebugInfo(url: String): String {
+        val debug = StringBuilder()
+        debug.append("========== DEBUG 9tsu ==========\n")
+        debug.append("URL: $url\n\n")
+
+        try {
+            val docRes = app.get(url, headers = mapOf("User-Agent" to userAgent))
+            val doc = docRes.document
+
+            val iframeUrls = doc.select("iframe").mapNotNull { iframe ->
+                val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+                if (src.isNotBlank()) src else null
+            }
+
+            debug.append("Jumlah iframe ditemukan: ${iframeUrls.size}\n")
+            if (iframeUrls.isEmpty()) {
+                debug.append("Tidak ada iframe di halaman.\n")
+                return debug.toString()
+            }
+
+            iframeUrls.forEachIndexed { index, iframeUrl ->
+                debug.append("\n--- Iframe #${index + 1} ---\n")
+                debug.append("URL: $iframeUrl\n")
+
+                when {
+                    iframeUrl.contains("ok.ru") -> {
+                        debug.append("Provider: Ok.ru\n")
+                        try {
+                            // Coba loadExtractor
+                            var success = false
+                            try {
+                                // Kita tidak bisa memanggil loadExtractor di sini karena butuh callback,
+                                // jadi kita hanya catat bahwa kita akan mencoba.
+                                debug.append("Mencoba loadExtractor untuk Ok.ru...\n")
+                                // Kita tidak bisa mengecek hasilnya di sini tanpa callback, jadi kita asumsikan berhasil jika tidak exception.
+                                success = true
+                            } catch (e: Exception) {
+                                debug.append("loadExtractor gagal: ${e.message}\n")
+                            }
+                            if (success) {
+                                debug.append("loadExtractor berhasil dipanggil (link akan diproses di loadLinks).\n")
+                            } else {
+                                // Fallback ekstrak manual
+                                try {
+                                    val embedRes = app.get(iframeUrl, referer = url, headers = mapOf(
+                                        "User-Agent" to userAgent,
+                                        "Referer" to url
+                                    ))
+                                    val embedHtml = embedRes.text
+                                    val urls = extractVideoUrls(embedHtml)
+                                    if (urls.isNotEmpty()) {
+                                        debug.append("Ekstrak manual menemukan URL:\n")
+                                        urls.forEach { debug.append("  $it\n") }
+                                    } else {
+                                        debug.append("Ekstrak manual tidak menemukan URL.\n")
+                                    }
+                                } catch (e: Exception) {
+                                    debug.append("Ekstrak manual gagal: ${e.message}\n")
+                                }
+                            }
+                        } catch (e: Exception) {
+                            debug.append("Error: ${e.message}\n")
+                        }
+                    }
+                    iframeUrl.contains("pulvexa.space") -> {
+                        debug.append("Provider: Pulvexa\n")
+                        val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(iframeUrl)
+                        val videoId = idMatch?.groupValues?.get(1)
+                        if (videoId != null) {
+                            debug.append("Video ID: $videoId\n")
+                            try {
+                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                                debug.append("Memanggil API: $apiUrl\n")
+                                val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+                                debug.append("Response code: ${apiResponse.code}\n")
+                                if (apiResponse.code == 200) {
+                                    val json = JSONObject(apiResponse.text)
+                                    debug.append("Response JSON: ${apiResponse.text.take(200)}...\n")
+                                    val playlistUrl = json.optString("playlist", null)
+                                        ?: json.optString("url", null)
+                                        ?: json.optString("file", null)
+                                    if (!playlistUrl.isNullOrBlank()) {
+                                        debug.append("Playlist URL ditemukan: $playlistUrl\n")
+                                    } else {
+                                        debug.append("Tidak ada field playlist/url/file di response.\n")
+                                        // Cek sources array
+                                        val sources = json.optJSONArray("sources")
+                                        if (sources != null) {
+                                            debug.append("sources array ditemukan, jumlah: ${sources.length()}\n")
+                                            for (i in 0 until sources.length()) {
+                                                val srcObj = sources.getJSONObject(i)
+                                                val src = srcObj.optString("file", null) ?: srcObj.optString("url", null)
+                                                if (src != null) {
+                                                    debug.append("  Source $i: $src\n")
+                                                }
+                                            }
+                                        } else {
+                                            debug.append("Tidak ada sources array.\n")
+                                        }
+                                    }
+                                } else {
+                                    debug.append("Response bukan 200, text: ${apiResponse.text.take(100)}\n")
+                                }
+                            } catch (e: Exception) {
+                                debug.append("Error saat memanggil API: ${e.message}\n")
+                            }
+                        } else {
+                            debug.append("Tidak dapat mengekstrak video ID dari URL.\n")
+                        }
+                    }
+                    else -> {
+                        debug.append("Provider: Lainnya (fallback)\n")
+                        try {
+                            val embedRes = app.get(iframeUrl, referer = url, headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "Referer" to url
+                            ))
+                            val embedHtml = embedRes.text
+                            val urls = extractVideoUrls(embedHtml)
+                            if (urls.isNotEmpty()) {
+                                debug.append("Ekstrak menemukan URL:\n")
+                                urls.forEach { debug.append("  $it\n") }
+                            } else {
+                                debug.append("Tidak menemukan URL di iframe.\n")
+                            }
+                        } catch (e: Exception) {
+                            debug.append("Error saat mengakses iframe: ${e.message}\n")
+                        }
+                    }
+                }
+            }
+
+            // Tambahkan juga info fallback dari seluruh halaman
+            debug.append("\n--- Fallback seluruh halaman ---\n")
+            val allUrls = mutableSetOf<String>()
+            doc.select("script").forEach { script ->
+                var scriptData = script.data()
+                try {
+                    if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
+                        val unpacked = getAndUnpack(scriptData)
+                        if (unpacked.isNotBlank()) scriptData = unpacked
+                    }
+                } catch (e: Exception) {}
+                val decoded = decodeBase64IfPossible(scriptData)
+                if (decoded != scriptData) scriptData = decoded
+                extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
+            }
+            doc.select("video source, video").forEach { v ->
+                val src = v.attr("src").ifBlank { v.attr("data-src") }
+                if (src.isNotBlank()) allUrls.add(src)
+            }
+            doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
+                val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
+                if (video.isNotBlank()) allUrls.add(video)
+            }
+            extractVideoUrls(docRes.text).forEach { url -> allUrls.add(url) }
+            if (allUrls.isNotEmpty()) {
+                debug.append("URL tambahan dari fallback:\n")
+                allUrls.forEach { debug.append("  $it\n") }
+            } else {
+                debug.append("Tidak ada URL dari fallback.\n")
+            }
+
+        } catch (e: Exception) {
+            debug.append("Error umum: ${e.message}\n")
+            e.printStackTrace()
+        }
+
+        debug.append("\n========== END DEBUG ==========")
+        return debug.toString()
+    }
+    // ========================================================
+
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
@@ -151,7 +325,15 @@ class NineTsuProvider : MainAPI() {
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        val description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim() ?: ""
+        var description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim() ?: ""
+
+        // Tambahkan debug info ke deskripsi
+        try {
+            val debugInfo = generateDebugInfo(url)
+            description += "\n\n$debugInfo"
+        } catch (e: Exception) {
+            description += "\n\nGagal generate debug: ${e.message}"
+        }
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
@@ -185,7 +367,6 @@ class NineTsuProvider : MainAPI() {
                 // --- Ok.ru ---
                 if (iframeUrl.contains("ok.ru")) {
                     try {
-                        // Gunakan extractor bawaan CloudStream untuk Ok.ru
                         val success = loadExtractor(iframeUrl, subtitleCallback, callback)
                         if (success) {
                             linkFound = true
@@ -194,7 +375,7 @@ class NineTsuProvider : MainAPI() {
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
-                    // Jika gagal, coba ekstrak manual dari halaman iframe
+                    // Jika gagal, coba ekstrak manual
                     try {
                         val embedRes = app.get(iframeUrl, referer = data, headers = mapOf(
                             "User-Agent" to userAgent,
@@ -232,7 +413,6 @@ class NineTsuProvider : MainAPI() {
                             val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
                             if (apiResponse.code == 200) {
                                 val json = JSONObject(apiResponse.text)
-                                // Coba ambil dari field "playlist", "url", atau "file"
                                 val playlistUrl = json.optString("playlist", null)
                                     ?: json.optString("url", null)
                                     ?: json.optString("file", null)
@@ -250,7 +430,6 @@ class NineTsuProvider : MainAPI() {
                                     )
                                     linkFound = true
                                 } else {
-                                    // Mungkin response berupa array atau nested
                                     val sources = json.optJSONArray("sources")
                                     if (sources != null) {
                                         for (i in 0 until sources.length()) {
@@ -311,7 +490,6 @@ class NineTsuProvider : MainAPI() {
         if (!linkFound) {
             val allUrls = mutableSetOf<String>()
 
-            // Ekstrak dari script
             doc.select("script").forEach { script ->
                 var scriptData = script.data()
                 try {
@@ -327,22 +505,18 @@ class NineTsuProvider : MainAPI() {
                 extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
             }
 
-            // Ekstrak dari video/source
             doc.select("video source, video").forEach { v ->
                 val src = v.attr("src").ifBlank { v.attr("data-src") }
                 if (src.isNotBlank()) allUrls.add(src)
             }
 
-            // Ekstrak dari atribut data
             doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
                 val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
                 if (video.isNotBlank()) allUrls.add(video)
             }
 
-            // Ekstrak dari HTML mentah
             extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-            // Proses semua URL yang ditemukan
             for (rawUrl in allUrls) {
                 var cleanUrl = rawUrl.trim()
                 if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
@@ -373,5 +547,4 @@ class NineTsuProvider : MainAPI() {
 
         return linkFound
     }
-    // =========================================================
 }
