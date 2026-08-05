@@ -98,7 +98,7 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN BARU (via 9tsu.in) ====================
+    // ==================== PENCARIAN (via 9tsu.in) ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -159,6 +159,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
+    // ==================== loadLinks BARU ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -168,172 +169,98 @@ class NineTsuProvider : MainAPI() {
         if (data.isBlank()) return false
 
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
-        val html = docRes.text
         val doc = docRes.document
 
-        val allUrls = mutableSetOf<String>()
-        val embedUrls = mutableSetOf<String>()
-
-        // 1. iframe
-        doc.select("iframe").forEach { iframe ->
+        // 1. Cari semua iframe di halaman
+        val iframeUrls = doc.select("iframe").mapNotNull { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (src.isNotBlank()) {
-                embedUrls.add(src)
-            }
+            if (src.isNotBlank()) src else null
         }
 
-        // 2. video/source
-        doc.select("video source, video").forEach { v ->
-            val src = v.attr("src").ifBlank { v.attr("data-src") }
-            if (src.isNotBlank()) allUrls.add(src)
-        }
+        if (iframeUrls.isEmpty()) return false
 
-        // 3. script
-        doc.select("script").forEach { script ->
-            var scriptData = script.data()
-            try {
-                if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                    val unpacked = getAndUnpack(scriptData)
-                    if (unpacked.isNotBlank()) scriptData = unpacked
-                }
-            } catch (e: Exception) {}
-
-            val decoded = decodeBase64IfPossible(scriptData)
-            if (decoded != scriptData) scriptData = decoded
-
-            extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
-
-            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
-            jsonPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null && file.isNotBlank()) allUrls.add(file)
-                    val sources = json.optJSONArray("sources")
-                    if (sources != null) {
-                        for (i in 0 until sources.length()) {
-                            val srcObj = sources.getJSONObject(i)
-                            val src = srcObj.optString("file", null) ?: srcObj.optString("src", null) ?: srcObj.optString("url", null)
-                            if (src != null) allUrls.add(src)
-                        }
-                    }
-                } catch (e: Exception) {}
-            }
-
-            val varPattern = Regex("""var\s+player\s*=\s*(\{.*?\})""")
-            varPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null) allUrls.add(file)
-                } catch (e: Exception) {}
-            }
-        }
-
-        // 4. data-* attributes
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
-            if (video.isNotBlank()) allUrls.add(video)
-        }
-
-        // 5. general regex on full html
-        extractVideoUrls(html).forEach { url -> allUrls.add(url) }
-
-        // 6. Proses embed URLs (non-dremoxa, hanya ekstraksi umum)
-        for (embedUrl in embedUrls) {
-            try {
-                val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "Referer" to data,
-                    "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-                ))
-                val embedHtml = embedRes.text
-                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                try {
-                    val unpacked = getAndUnpack(embedHtml)
-                    if (unpacked.isNotBlank()) {
-                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
-                    }
-                } catch (e: Exception) {}
-                val decodedEmbed = decodeBase64IfPossible(embedHtml)
-                if (decodedEmbed != embedHtml) {
-                    extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-
-        // 7. API endpoint jika ada ID di URL
-        val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
-        if (postId != null) {
-            val apiEndpoints = listOf(
-                "$mainUrl/wp-json/wp/v2/posts/$postId?_embed",
-                "$mainUrl/wp-json/oembed/1.0/embed?url=$data"
-            )
-            for (endpoint in apiEndpoints) {
-                try {
-                    val apiRes = app.get(endpoint, headers = mapOf("User-Agent" to userAgent, "X-Requested-With" to "XMLHttpRequest"))
-                    if (apiRes.code == 200) {
-                        extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        // 8. Cari link di elemen dengan class 'player' atau 'video-container'
-        doc.select(".player, .video-container, .embed-container").forEach { container ->
-            container.select("a[href], source, iframe").forEach { el ->
-                val link = el.attr("href").ifBlank { el.attr("src") }.ifBlank { el.attr("data-src") }
-                if (link.isNotBlank()) allUrls.add(link)
-            }
-        }
-
-        // 9. Coba endpoint /get_player atau /api/source
-        val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
-        if (playerScript != null) {
-            val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
-            val id = match?.groupValues?.get(1)
-            if (id != null) {
-                try {
-                    val apiUrl = "$mainUrl/wp-admin/admin-ajax.php?action=get_player&id=$id"
-                    val apiRes = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent, "X-Requested-With" to "XMLHttpRequest"))
-                    if (apiRes.code == 200) {
-                        extractVideoUrls(apiRes.text).forEach { url -> allUrls.add(url) }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        // Proses semua URL yang ditemukan
         var linkFound = false
-        for (rawUrl in allUrls) {
-            var cleanUrl = rawUrl.trim()
-            if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
-            if (!cleanUrl.startsWith("http")) continue
 
-            if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
-                linkFound = true
+        for (iframeUrl in iframeUrls) {
+            // 2. Cek apakah iframe dari Ok.ru
+            if (iframeUrl.contains("ok.ru")) {
+                // Gunakan extractor bawaan CloudStream untuk Ok.ru
+                try {
+                    val success = loadExtractor(iframeUrl, subtitleCallback, callback)
+                    if (success) {
+                        linkFound = true
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
                 continue
             }
 
-            if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
-                val isM3 = cleanUrl.contains(".m3u8")
-                callback.invoke(
-                    newExtractorLink(
-                        name = if (isM3) "9tsu - HLS" else "9tsu - MP4",
-                        source = this.name,
-                        url = cleanUrl,
-                        type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = data
-                        this.quality = Qualities.Unknown.value
+            // 3. Cek apakah iframe dari Pulvexa
+            if (iframeUrl.contains("pulvexa.space")) {
+                // Ekstrak ID video dari URL: pulvexa.space/embed/ID?token=...
+                val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(iframeUrl)
+                val videoId = idMatch?.groupValues?.get(1)
+                if (videoId != null) {
+                    try {
+                        val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                        val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+                        if (apiResponse.code == 200) {
+                            val json = JSONObject(apiResponse.text)
+                            // Asumsi response memiliki field "playlist" atau "sources"
+                            val playlistUrl = json.optString("playlist", null) ?: json.optString("url", null)
+                            if (!playlistUrl.isNullOrBlank()) {
+                                callback.invoke(
+                                    newExtractorLink(
+                                        name = "Pulvexa",
+                                        source = this.name,
+                                        url = playlistUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = data
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
+                                linkFound = true
+                            }
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                )
-                linkFound = true
+                }
+                continue
+            }
+
+            // 4. Jika iframe dari sumber lain, coba ekstrak secara manual
+            try {
+                val embedRes = app.get(iframeUrl, referer = data, headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to data
+                ))
+                val embedHtml = embedRes.text
+                val urls = extractVideoUrls(embedHtml)
+                for (videoUrl in urls) {
+                    if (videoUrl.isNotBlank()) {
+                        callback.invoke(
+                            newExtractorLink(
+                                name = "9tsu - Video",
+                                source = this.name,
+                                url = videoUrl,
+                                type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = data
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        linkFound = true
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
         return linkFound
     }
+    // =========================================================
 }
