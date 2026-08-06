@@ -11,11 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
-import java.net.URI
-import java.net.URLDecoder
 import java.util.Base64
-import javax.crypto.Mac
-import javax.crypto.spec.SecretKeySpec
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -24,11 +20,8 @@ class NineTsuProvider : MainAPI() {
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    private val TEA_KEY = Base64.getDecoder().decode("NDh2aU1Cb0NHRG5hcDFRZQ==")
 
-    // Hardcoded valid x-hash dari capture browser untuk testing
-    private val HARDCODED_XHASH = "MTc4NTM4NzI3MjA2NjphNzMxZWVhZTFlOTIxOTA1MTQ4YzIxNTZjOGUyMmRmNDIyYTJkZGIwNTIwZWJlYTcxZjA1ZjEwNDZjOWNhNmE4OnpobnBzeW44"
-
+    // ==================== UTILITY ====================
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -64,209 +57,7 @@ class NineTsuProvider : MainAPI() {
         }
         return urls.distinct()
     }
-
-    // ==================== TEA DECRYPTION ====================
-    private fun teaDecrypt(data: ByteArray, key: ByteArray): ByteArray {
-        val k = IntArray(4)
-        for (i in 0..3) {
-            k[i] = ((key[i * 4].toInt() and 0xFF) shl 24) or
-                    ((key[i * 4 + 1].toInt() and 0xFF) shl 16) or
-                    ((key[i * 4 + 2].toInt() and 0xFF) shl 8) or
-                    (key[i * 4 + 3].toInt() and 0xFF)
-        }
-
-        val delta = 0x9E3779B9.toInt()
-        var sum = delta shl 5
-        val rounds = 32
-        val bytes = data.copyOf()
-        val result = ByteArray(bytes.size)
-
-        for (i in bytes.indices step 8) {
-            if (i + 7 >= bytes.size) break
-            var v0 = (((bytes[i].toInt() and 0xFF) shl 24) or
-                    ((bytes[i + 1].toInt() and 0xFF) shl 16) or
-                    ((bytes[i + 2].toInt() and 0xFF) shl 8) or
-                    (bytes[i + 3].toInt() and 0xFF))
-            var v1 = (((bytes[i + 4].toInt() and 0xFF) shl 24) or
-                    ((bytes[i + 5].toInt() and 0xFF) shl 16) or
-                    ((bytes[i + 6].toInt() and 0xFF) shl 8) or
-                    (bytes[i + 7].toInt() and 0xFF))
-
-            for (j in 0 until rounds) {
-                v1 -= ((v0 shl 4) + k[2]) xor (v0 + sum) xor ((v0 ushr 5) + k[3])
-                v0 -= ((v1 shl 4) + k[0]) xor (v1 + sum) xor ((v1 ushr 5) + k[1])
-                sum -= delta
-            }
-
-            result[i] = ((v0 ushr 24) and 0xFF).toByte()
-            result[i + 1] = ((v0 ushr 16) and 0xFF).toByte()
-            result[i + 2] = ((v0 ushr 8) and 0xFF).toByte()
-            result[i + 3] = (v0 and 0xFF).toByte()
-            result[i + 4] = ((v1 ushr 24) and 0xFF).toByte()
-            result[i + 5] = ((v1 ushr 16) and 0xFF).toByte()
-            result[i + 6] = ((v1 ushr 8) and 0xFF).toByte()
-            result[i + 7] = (v1 and 0xFF).toByte()
-        }
-
-        return result
-    }
-
-    private fun teaDecryptString(encryptedBase64: String, key: ByteArray): String? {
-        return try {
-            val encryptedBytes = Base64.getDecoder().decode(encryptedBase64)
-            val decryptedBytes = teaDecrypt(encryptedBytes, key)
-            val padding = decryptedBytes.lastOrNull()?.toInt() ?: 0
-            val unpadded = if (padding in 1..16) {
-                decryptedBytes.copyOf(decryptedBytes.size - padding)
-            } else {
-                decryptedBytes
-            }
-            String(unpadded, Charsets.UTF_8)
-        } catch (e: Exception) {
-            null
-        }
-    }
-    // ========================================================
-
-    // ==================== DREMOXA HELPERS ====================
-    private fun getBaseUrl(embedUrl: String): String? {
-        return try {
-            val uri = URI(embedUrl)
-            "${uri.scheme}://${uri.host}"
-        } catch (e: Exception) {
-            val match = Regex("""(https?://[^/]+)""").find(embedUrl)
-            match?.groupValues?.get(1)
-        }
-    }
-
-    private suspend fun extractLongIdFromEmbed(embedUrl: String): String? {
-        return try {
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "User-Agent" to userAgent
-            )
-            val html = app.get(embedUrl, headers = headers).text
-            val pattern = Regex("""[a-f0-9]{32}""")
-            val match = pattern.find(html)
-            match?.value
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private suspend fun extractXHashFromEmbed(embedUrl: String): String? {
-        return try {
-            val headers = mapOf(
-                "Referer" to embedUrl,
-                "User-Agent" to userAgent
-            )
-            val html = app.get(embedUrl, headers = headers).text
-
-            // Cari pola Base64 panjang (timestamp:hash:random)
-            val pattern = Regex("""[A-Za-z0-9+/]{60,}={0,2}""")
-            val matches = pattern.findAll(html)
-            for (match in matches) {
-                val candidate = match.value
-                try {
-                    val decoded = String(Base64.getDecoder().decode(candidate))
-                    val parts = decoded.split(":")
-                    if (parts.size >= 3 && parts[0].all { it.isDigit() } && parts[1].length == 64) {
-                        return candidate
-                    }
-                } catch (e: Exception) { /* ignore */ }
-            }
-
-            // Cari di atribut data
-            val attrPattern = Regex("""data-x-hash\s*=\s*["']([^"']+)["']""")
-            val attrMatch = attrPattern.find(html)
-            if (attrMatch != null) {
-                return attrMatch.groupValues[1]
-            }
-
-            // Cari di variabel JavaScript
-            val varPattern = Regex("""['"]x-hash['"]\s*:\s*['"]([^'"]+)['"]""")
-            val varMatch = varPattern.find(html)
-            if (varMatch != null) {
-                return varMatch.groupValues[1]
-            }
-
-            null
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun sha256(input: String): String {
-        return try {
-            val digest = java.security.MessageDigest.getInstance("SHA-256")
-            val hash = digest.digest(input.toByteArray())
-            hash.joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            input.hashCode().toString(16).padStart(64, '0')
-        }
-    }
-
-    private fun hmacSha256(key: String, data: String): String {
-        return try {
-            val mac = Mac.getInstance("HmacSHA256")
-            val keySpec = SecretKeySpec(key.toByteArray(), "HmacSHA256")
-            mac.init(keySpec)
-            val hash = mac.doFinal(data.toByteArray())
-            hash.joinToString("") { "%02x".format(it) }
-        } catch (e: Exception) {
-            sha256(data)
-        }
-    }
-
-    private fun generateXHashVariants(longId: String, token: String): List<Pair<String, String>> {
-        val results = mutableListOf<Pair<String, String>>()
-        val timestamp = System.currentTimeMillis().toString()
-        val random = (1..8).map { "abcdefghijklmnopqrstuvwxyz0123456789".random() }.joinToString("")
-        val secret = "48viMBoCGlDnap1Qe"
-
-        // Varian 1: SHA-256(longId + token + timestamp + random)
-        val data1 = "$longId$token$timestamp$random"
-        val hash1 = sha256(data1)
-        val raw1 = "$timestamp:$hash1:$random"
-        results.add("V1 (SHA-256 data)" to Base64.getEncoder().encodeToString(raw1.toByteArray()))
-
-        // Varian 2: SHA-256(longId + token + timestamp)
-        val data2 = "$longId$token$timestamp"
-        val hash2 = sha256(data2)
-        val raw2 = "$timestamp:$hash2:$random"
-        results.add("V2 (SHA-256 data tanpa random)" to Base64.getEncoder().encodeToString(raw2.toByteArray()))
-
-        // Varian 3: HMAC-SHA256(secret, longId + token + timestamp + random)
-        val hash3 = hmacSha256(secret, data1)
-        val raw3 = "$timestamp:$hash3:$random"
-        results.add("V3 (HMAC-SHA256 dengan secret)" to Base64.getEncoder().encodeToString(raw3.toByteArray()))
-
-        // Varian 4: HMAC-SHA256(secret, longId + token + timestamp)
-        val hash4 = hmacSha256(secret, data2)
-        val raw4 = "$timestamp:$hash4:$random"
-        results.add("V4 (HMAC-SHA256 tanpa random)" to Base64.getEncoder().encodeToString(raw4.toByteArray()))
-
-        // Varian 5: HMAC-SHA256(secret, timestamp + random)
-        val data5 = "$timestamp$random"
-        val hash5 = hmacSha256(secret, data5)
-        val raw5 = "$timestamp:$hash5:$random"
-        results.add("V5 (HMAC-SHA256 timestamp+random)" to Base64.getEncoder().encodeToString(raw5.toByteArray()))
-
-        // Varian 6: SHA-256(longId + timestamp + random)
-        val data6 = "$longId$timestamp$random"
-        val hash6 = sha256(data6)
-        val raw6 = "$timestamp:$hash6:$random"
-        results.add("V6 (SHA-256 longId+timestamp+random)" to Base64.getEncoder().encodeToString(raw6.toByteArray()))
-
-        // Varian 7: SHA-256(longId + timestamp)
-        val data7 = "$longId$timestamp"
-        val hash7 = sha256(data7)
-        val raw7 = "$timestamp:$hash7:$random"
-        results.add("V7 (SHA-256 longId+timestamp)" to Base64.getEncoder().encodeToString(raw7.toByteArray()))
-
-        return results
-    }
-    // ========================================================
+    // ================================================
 
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
@@ -309,315 +100,115 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // SEARCH
+    // ==================== PENCARIAN (via 9tsu.in) ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
+        if (cleanQuery.isBlank()) return emptyList()
 
-        val invalidTitles = listOf("back to homepage", "home", "beranda", "menu", "skip to content", "not found", "404")
-
-        // 1. DuckDuckGo
+        val searchUrl = "https://9tsu.in/?s=${cleanQuery.replace(" ", "+")}"
         try {
-            val ddgUrl = "https://html.duckduckgo.com/html/?q=site:9tsu.vip+${cleanQuery.replace(" ", "+")}"
-            val ddgRes = app.get(ddgUrl, headers = mapOf("User-Agent" to userAgent))
-            val doc = ddgRes.document
-            doc.select(".result").forEach { result ->
-                val titleElement = result.selectFirst(".result__a")
-                val title = titleElement?.text()?.trim() ?: return@forEach
-                val href = titleElement?.attr("href") ?: return@forEach
-                val realUrl = URLDecoder.decode(href.replace("/l/?uddg=", ""), "UTF-8")
-                if (realUrl.contains(mainUrl) && !invalidTitles.any { title.contains(it, ignoreCase = true) }) {
-                    results.add(newTvSeriesSearchResponse(title, realUrl, TvType.TvSeries) {
-                        this.posterUrl = null
+            val doc = app.get(searchUrl, headers = mapOf("User-Agent" to userAgent)).document
+            doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item").forEach { element ->
+                val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
+                    ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
+                    ?: return@forEach
+                val title = titleElement.text().trim()
+                var link = titleElement.attr("href")
+                if (link.isBlank()) return@forEach
+
+                // Ubah domain 9tsu.in menjadi 9tsu.vip dan hilangkan /douga/
+                if (link.startsWith("https://9tsu.in/douga/")) {
+                    link = link.replace("https://9tsu.in/douga/", "https://9tsu.vip/")
+                } else if (link.startsWith("https://9tsu.in/")) {
+                    link = link.replace("https://9tsu.in/", "https://9tsu.vip/")
+                } else if (link.startsWith("http://9tsu.in/")) {
+                    link = link.replace("http://9tsu.in/", "https://9tsu.vip/")
+                }
+
+                if (title.isNotBlank() && link.startsWith("https://9tsu.vip/")) {
+                    val imgElement = element.selectFirst("img")
+                    var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
+                    if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+                    results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                        this.posterUrl = posterUrl
                     })
                 }
             }
-        } catch (e: Exception) { e.printStackTrace() }
-
-        // 2. REST API
-        if (results.isEmpty()) {
-            try {
-                val apiUrl = "$mainUrl/wp-json/wp/v2/posts?search=${cleanQuery.replace(" ", "+")}&_embed&per_page=50"
-                val apiRes = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent, "X-Requested-With" to "XMLHttpRequest"))
-                if (apiRes.code == 200 && apiRes.text.trim().startsWith("[")) {
-                    val jsonArray = JSONArray(apiRes.text)
-                    for (i in 0 until jsonArray.length()) {
-                        val item = jsonArray.getJSONObject(i)
-                        val titleRaw = item.getJSONObject("title").optString("rendered", "")
-                        val title = titleRaw.replace(Regex("<[^>]*>"), "").replace("&#8211;", "-").trim()
-                        val link = item.optString("link", "")
-                        if (invalidTitles.any { title.equals(it, ignoreCase = true) }) continue
-                        var posterUrl: String? = null
-                        if (item.has("_embedded")) {
-                            val embedded = item.getJSONObject("_embedded")
-                            if (embedded.has("wp:featuredmedia")) {
-                                val mediaArray = embedded.getJSONArray("wp:featuredmedia")
-                                if (mediaArray.length() > 0) {
-                                    posterUrl = mediaArray.getJSONObject(0).optString("source_url", null)
-                                }
-                            }
-                        }
-                        if (title.isNotBlank() && link.isNotBlank()) {
-                            results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = posterUrl })
-                        }
-                    }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-
-        // 3. Admin AJAX
-        if (results.isEmpty()) {
-            try {
-                val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-                val actions = listOf("search", "search_posts", "loadmore", "search_results", "load_posts")
-                for (action in actions) {
-                    try {
-                        val params = mapOf("action" to action, "s" to cleanQuery, "keyword" to cleanQuery, "search" to cleanQuery)
-                        val ajaxRes = app.post(
-                            ajaxUrl,
-                            data = params,
-                            headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "X-Requested-With" to "XMLHttpRequest",
-                                "Content-Type" to "application/x-www-form-urlencoded"
-                            )
-                        )
-                        if (ajaxRes.code == 200) {
-                            val text = ajaxRes.text.trim()
-                            if (text.startsWith("{")) {
-                                val json = JSONObject(text)
-                                val html = json.optString("html", null) ?: json.optString("data", null) ?: json.optString("content", null)
-                                if (html != null) {
-                                    val fragment = org.jsoup.Jsoup.parse(html)
-                                    extractItemsFromDocument(fragment, results, invalidTitles)
-                                } else {
-                                    val posts = json.optJSONArray("posts") ?: json.optJSONArray("results") ?: json.optJSONArray("items")
-                                    if (posts != null) {
-                                        for (j in 0 until posts.length()) {
-                                            val post = posts.getJSONObject(j)
-                                            val title = post.optString("title", "").trim()
-                                            val link = post.optString("link", "").trim()
-                                            val poster = post.optString("image", null) ?: post.optString("thumbnail", null)
-                                            if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
-                                                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if (text.startsWith("[")) {
-                                val jsonArray = JSONArray(text)
-                                for (j in 0 until jsonArray.length()) {
-                                    val item = jsonArray.getJSONObject(j)
-                                    val title = item.optString("title", "").trim()
-                                    val link = item.optString("link", "").trim()
-                                    val poster = item.optString("image", null) ?: item.optString("thumbnail", null)
-                                    if (title.isNotBlank() && link.isNotBlank() && !invalidTitles.any { title.equals(it, ignoreCase = true) }) {
-                                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) { this.posterUrl = poster })
-                                    }
-                                }
-                            } else {
-                                val doc = org.jsoup.Jsoup.parse(text)
-                                extractItemsFromDocument(doc, results, invalidTitles)
-                            }
-                            if (results.isNotEmpty()) break
-                        }
-                    } catch (e: Exception) { /* ignore */ }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-
-        // 4. HTML fallback
-        if (results.isEmpty()) {
-            try {
-                val searchUrls = listOf(
-                    "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
-                    "$mainUrl/search/${cleanQuery.replace(" ", "+")}/",
-                    "$mainUrl/search/${cleanQuery.replace(" ", "+")}"
-                )
-                for (url in searchUrls) {
-                    val res = app.get(url, headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "X-Requested-With" to "XMLHttpRequest"
-                    ))
-                    val doc = res.document
-                    extractItemsFromDocument(doc, results, invalidTitles)
-                    if (results.isNotEmpty()) break
-                }
-            } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
 
         return results.distinctBy { it.url }
     }
+    // ====================================================================
 
-    private fun extractItemsFromDocument(doc: Document, results: MutableList<SearchResponse>, invalidTitles: List<String>) {
-        doc.select("article, .post, .entry, .type-post, .item, .result-item, .video-block, .search-item, .blog-item, .hentry, .list-item").forEach { element ->
-            val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
-                ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
-                ?: return@forEach
-
-            val title = titleElement.text().trim()
-            val href = titleElement.attr("href")
-
-            if (title.isBlank() || href.isBlank() || !href.contains(mainUrl)) return@forEach
-            if (invalidTitles.any { title.contains(it, ignoreCase = true) }) return@forEach
-
-            val imgElement = element.selectFirst("img")
-            var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
-            if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-            results.add(newTvSeriesSearchResponse(title, href, TvType.TvSeries) { this.posterUrl = posterUrl })
-        }
-    }
-
-    // ==================== DREMOXA DEBUG ====================
-    private suspend fun debugDremoxa(embedUrl: String): String {
+    // ==================== DEBUG (untuk ditampilkan di deskripsi) ====================
+    private suspend fun generateDebugInfo(url: String): String {
         val debug = StringBuilder()
-        debug.append("========== DREMOXA DEBUG ==========\n")
-        debug.append("Embed URL: $embedUrl\n")
+        debug.append("========== DEBUG 9tsu ==========\n")
+        debug.append("URL: $url\n\n")
 
         try {
-            // 1. Base URL
-            val baseUrl = getBaseUrl(embedUrl)
-            debug.append("Base URL: $baseUrl\n")
+            val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
-            // 2. Short ID
-            val shortIdPattern = Regex("""/(?:embed/|e/|v/)([^/?]+)""")
-            val shortIdMatch = shortIdPattern.find(embedUrl)
-            val shortId = shortIdMatch?.groupValues?.get(1)
-            debug.append("Short ID (from URL): $shortId\n")
-
-            // 3. Long ID (32 hex)
-            val longId = extractLongIdFromEmbed(embedUrl)
-            if (longId != null) {
-                debug.append("Long ID (extracted): $longId\n")
-            } else {
-                debug.append("Long ID: NOT FOUND\n")
-                return debug.toString()
+            val iframeUrls = doc.select("iframe").mapNotNull { iframe ->
+                val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+                if (src.isNotBlank()) src else null
             }
 
-            // 4. Token
-            val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
-            val token = tokenMatch?.groupValues?.get(1)
-            debug.append("Token: $token\n")
-
-            // 5. x-hash - Ekstrak dari embed dulu
-            var xHash = extractXHashFromEmbed(embedUrl)
-            if (xHash != null) {
-                debug.append("x-hash (extracted): $xHash\n")
-            } else {
-                debug.append("x-hash: NOT FOUND in embed, trying to generate variants...\n")
-                val variants = generateXHashVariants(longId, token ?: "")
-                variants.forEach { (name, hash) ->
-                    debug.append("  $name: $hash\n")
-                }
-                debug.append("Also using HARDCODED_XHASH: $HARDCODED_XHASH\n")
-                // Gunakan hardcode sebagai fallback
-                xHash = HARDCODED_XHASH
-                debug.append("Using HARDCODED_XHASH as fallback\n")
-            }
-
-            // 6. API URL dan body
-            val apiUrl = "$baseUrl/ajax/getSources"
-            debug.append("API URL: $apiUrl (POST)\n")
-            val body = mapOf("id" to longId)
-            debug.append("Body: id=$longId\n")
-
-            // 7. Headers - Meniru persis dari browser capture
-            val headers = mutableMapOf<String, String>()
-            headers["Referer"] = baseUrl ?: ""
-            headers["X-Requested-With"] = "XMLHttpRequest"
-            headers["User-Agent"] = userAgent
-            headers["Origin"] = baseUrl ?: ""
-            headers["Accept"] = "*/*"
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-            headers["Accept-Language"] = "en-US,en;q=0.9"
-            headers["Accept-Encoding"] = "gzip, deflate, br"
-            headers["DNT"] = "1"
-            headers["sec-ch-ua"] = "\"Google Chrome\";v=\"124\""
-            headers["sec-ch-ua-mobile"] = "?1"
-            headers["sec-ch-ua-platform"] = "\"Android\""
-            headers["sec-fetch-dest"] = "empty"
-            headers["sec-fetch-mode"] = "cors"
-            headers["sec-fetch-site"] = "same-origin"
-            headers["x-hash"] = xHash ?: ""
-
-            val headersString = headers.entries.joinToString(", ") { "${it.key}=${it.value.take(30)}..." }
-            debug.append("Headers: $headersString\n")
-
-            // 8. Execute request
-            val response = app.post(apiUrl, headers = headers, data = body)
-            debug.append("Response Code: ${response.code}\n")
-
-            if (response.code == 200) {
-                val rawText = response.text
-                debug.append("Raw Response (first 300 chars): ${rawText.take(300)}${if (rawText.length > 300) "..." else ""}\n")
-
-                try {
-                    val json = JSONObject(rawText)
-                    val encryptedPlaylist = json.optString("playlist", null)
-                    val tracks = json.optJSONArray("tracks")
-
-                    debug.append("Encrypted Playlist: ${encryptedPlaylist?.take(50) ?: "null"}...\n")
-                    debug.append("Tracks count: ${tracks?.length() ?: 0}\n")
-
-                    if (!encryptedPlaylist.isNullOrBlank()) {
-                        val parts = encryptedPlaylist.split(":")
-                        debug.append("Parts count: ${parts.size}\n")
-                        if (parts.size >= 2) {
-                            debug.append("Part1 (truncated): ${parts[1].take(80)}...\n")
-
-                            // TEA Decrypt
-                            debug.append("Attempting TEA decryption...\n")
-                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
-                            if (decrypted != null) {
-                                debug.append("TEA Decrypted: $decrypted\n")
-                                val extracted = extractVideoUrls(decrypted)
-                                if (extracted.isNotEmpty()) {
-                                    debug.append("Extracted URLs: ${extracted.joinToString(", ")}\n")
+            debug.append("Jumlah iframe ditemukan: ${iframeUrls.size}\n")
+            iframeUrls.forEachIndexed { index, iframeUrl ->
+                debug.append("\n--- Iframe #${index + 1} ---\n")
+                debug.append("URL: $iframeUrl\n")
+                when {
+                    iframeUrl.contains("ok.ru") -> debug.append("Provider: Ok.ru (akan diproses oleh loadExtractor)\n")
+                    iframeUrl.contains("pulvexa.space") -> {
+                        debug.append("Provider: Pulvexa\n")
+                        val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(iframeUrl)
+                        val videoId = idMatch?.groupValues?.get(1)
+                        if (videoId != null) {
+                            debug.append("Video ID: $videoId\n")
+                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                            debug.append("API URL: $apiUrl\n")
+                            // Coba cek response
+                            try {
+                                val test = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+                                if (test.code == 200) {
+                                    val preview = test.text.take(80)
+                                    debug.append("Response preview: $preview...\n")
                                 } else {
-                                    debug.append("No URLs in decrypted text\n")
+                                    debug.append("Response code: ${test.code}\n")
                                 }
-                            } else {
-                                debug.append("TEA decryption FAILED\n")
-                            }
-
-                            // Base64 fallback
-                            if (decrypted == null || extractVideoUrls(decrypted).isEmpty()) {
-                                try {
-                                    val base64Decoded = String(Base64.getDecoder().decode(parts[1]))
-                                    debug.append("Base64 Decoded: ${base64Decoded.take(100)}...\n")
-                                    val extractedBase64 = extractVideoUrls(base64Decoded)
-                                    if (extractedBase64.isNotEmpty()) {
-                                        debug.append("Extracted from base64: ${extractedBase64.joinToString(", ")}\n")
-                                    }
-                                } catch (e: Exception) {
-                                    debug.append("Base64 decode failed: ${e.message}\n")
-                                }
+                            } catch (e: Exception) {
+                                debug.append("Gagal test API: ${e.message}\n")
                             }
                         } else {
-                            debug.append("Parts < 2, cannot decrypt\n")
+                            debug.append("Video ID tidak ditemukan.\n")
                         }
-                    } else {
-                        debug.append("No encrypted playlist found\n")
                     }
-                } catch (e: Exception) {
-                    debug.append("JSON Parse Error: ${e.message}\n")
-                    val extracted = extractVideoUrls(rawText)
-                    if (extracted.isNotEmpty()) {
-                        debug.append("Extracted from raw text: ${extracted.joinToString(", ")}\n")
-                    }
+                    else -> debug.append("Provider: Lainnya (akan dicoba dengan loadExtractor atau ekstraksi manual)\n")
                 }
-            } else {
-                debug.append("Response not 200\n")
-                debug.append("Response text: ${response.text.take(200)}\n")
             }
+
+            // Tambahkan info jika ada video langsung di halaman
+            val videoSrcs = doc.select("video source, video").mapNotNull { v ->
+                v.attr("src").ifBlank { v.attr("data-src") }.takeIf { it.isNotBlank() }
+            }
+            if (videoSrcs.isNotEmpty()) {
+                debug.append("\nVideo source ditemukan di halaman:\n")
+                videoSrcs.forEach { debug.append("  $it\n") }
+            }
+
         } catch (e: Exception) {
-            debug.append("Exception: ${e.message}\n")
-            e.printStackTrace()
+            debug.append("Error saat debug: ${e.message}\n")
         }
+
+        debug.append("\n========== END DEBUG ==========")
         return debug.toString()
     }
-    // ========================================================
+    // =================================================================================
 
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
@@ -630,14 +221,11 @@ class NineTsuProvider : MainAPI() {
 
         var description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim() ?: ""
 
-        // Cek apakah ada iframe dremoxa
-        val iframe = doc.selectFirst("iframe[src*='dremoxa'], iframe[src*='demoxa'], iframe[src*='vtbe']")
-        if (iframe != null) {
-            val embedUrl = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (embedUrl.isNotBlank()) {
-                val debug = debugDremoxa(embedUrl)
-                description += "\n\n$debug"
-            }
+        // Tambahkan debug ke deskripsi
+        try {
+            description += "\n\n" + generateDebugInfo(url)
+        } catch (e: Exception) {
+            description += "\n\nGagal generate debug: ${e.message}"
         }
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
@@ -646,102 +234,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // ==================== EKSTRAKSI DREMOXA ====================
-    private suspend fun extractDremoxaLinks(embedUrl: String, parentUrl: String): List<String> {
-        val result = mutableListOf<String>()
-        try {
-            val longId = extractLongIdFromEmbed(embedUrl)
-            if (longId == null) {
-                return result
-            }
-
-            val baseUrl = getBaseUrl(embedUrl)
-            if (baseUrl == null) {
-                return result
-            }
-
-            val tokenMatch = Regex("""token=([^&]+)""").find(embedUrl)
-            val token = tokenMatch?.groupValues?.get(1) ?: ""
-
-            // Prioritas: ekstrak x-hash dari embed, jika gagal gunakan hardcode
-            var xHash = extractXHashFromEmbed(embedUrl)
-            if (xHash == null) {
-                // Coba generate varian, tapi karena masih 400 kita gunakan hardcode dulu
-                xHash = HARDCODED_XHASH
-            }
-
-            val apiUrl = "$baseUrl/ajax/getSources"
-            val body = mapOf("id" to longId)
-
-            val headers = mutableMapOf<String, String>()
-            headers["Referer"] = baseUrl
-            headers["X-Requested-With"] = "XMLHttpRequest"
-            headers["User-Agent"] = userAgent
-            headers["Origin"] = baseUrl
-            headers["Accept"] = "*/*"
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-            headers["Accept-Language"] = "en-US,en;q=0.9"
-            headers["DNT"] = "1"
-            headers["sec-ch-ua"] = "\"Google Chrome\";v=\"124\""
-            headers["sec-ch-ua-mobile"] = "?1"
-            headers["sec-ch-ua-platform"] = "\"Android\""
-            headers["x-hash"] = xHash
-
-            val response = app.post(apiUrl, headers = headers, data = body)
-
-            if (response.code == 200) {
-                val text = response.text
-                try {
-                    val json = JSONObject(text)
-                    val encryptedPlaylist = json.optString("playlist", null)
-                    val tracks = json.optJSONArray("tracks")
-
-                    if (!encryptedPlaylist.isNullOrBlank()) {
-                        val parts = encryptedPlaylist.split(":")
-                        if (parts.size >= 2) {
-                            val decrypted = teaDecryptString(parts[1], TEA_KEY)
-                            if (decrypted != null) {
-                                result.addAll(extractVideoUrls(decrypted))
-                                if (decrypted.contains(".m3u8")) {
-                                    result.add(decrypted)
-                                }
-                            }
-
-                            if (result.isEmpty()) {
-                                val fullDecrypted = teaDecryptString(encryptedPlaylist, TEA_KEY)
-                                if (fullDecrypted != null) {
-                                    result.addAll(extractVideoUrls(fullDecrypted))
-                                }
-                            }
-
-                            if (result.isEmpty()) {
-                                try {
-                                    val decoded = String(Base64.getDecoder().decode(parts[1]))
-                                    result.addAll(extractVideoUrls(decoded))
-                                } catch (e: Exception) {}
-                            }
-                        }
-                    }
-
-                    if (tracks != null) {
-                        for (i in 0 until tracks.length()) {
-                            val track = tracks.getJSONObject(i)
-                            val file = track.optString("file", null)
-                            if (file != null && file.isNotBlank()) result.add(file)
-                        }
-                    }
-
-                } catch (e: Exception) {
-                    result.addAll(extractVideoUrls(text))
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return result.distinct()
-    }
-    // ========================================================
-
+    // ==================== loadLinks (gabungan dari file lama + Pulvexa) ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -761,11 +254,33 @@ class NineTsuProvider : MainAPI() {
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("dremoxa") || src.contains("demoxa") || src.contains("vtbe") ||
-                    src.contains("dood") || src.contains("streamtape") || src.contains("mixdrop")) {
-                    embedUrls.add(src)
+                // Jika Pulvexa, tangani langsung di sini (karena API mengembalikan M3U8)
+                if (src.contains("pulvexa.space")) {
+                    val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(src)
+                    val videoId = idMatch?.groupValues?.get(1)
+                    if (videoId != null) {
+                        try {
+                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                            // API langsung mengembalikan M3U8, jadi kita gunakan URL API sebagai playlist
+                            callback.invoke(
+                                newExtractorLink(
+                                    name = "Pulvexa",
+                                    source = this.name,
+                                    url = apiUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = data
+                                    this.quality = Qualities.Unknown.value
+                                }
+                            )
+                            // Tidak perlu tambahkan ke allUrls karena sudah ditangani
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
                 } else {
-                    allUrls.add(src)
+                    // Untuk iframe lainnya, simpan untuk diproses nanti
+                    embedUrls.add(src)
                 }
             }
         }
@@ -829,33 +344,27 @@ class NineTsuProvider : MainAPI() {
         // 5. general regex on full html
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses embed URLs
+        // 6. Proses embed URLs (non-Pulvexa)
         for (embedUrl in embedUrls) {
-            val isDremoxa = embedUrl.contains("dremoxa") || embedUrl.contains("demoxa") || embedUrl.contains("vtbe")
-            if (isDremoxa) {
-                val dremoxaUrls = extractDremoxaLinks(embedUrl, data)
-                dremoxaUrls.forEach { url -> allUrls.add(url) }
-            } else {
+            try {
+                val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to data,
+                    "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+                ))
+                val embedHtml = embedRes.text
+                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                 try {
-                    val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "Referer" to data,
-                        "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-                    ))
-                    val embedHtml = embedRes.text
-                    extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                    try {
-                        val unpacked = getAndUnpack(embedHtml)
-                        if (unpacked.isNotBlank()) {
-                            extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
-                        }
-                    } catch (e: Exception) {}
-                    val decodedEmbed = decodeBase64IfPossible(embedHtml)
-                    if (decodedEmbed != embedHtml) {
-                        extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
+                    val unpacked = getAndUnpack(embedHtml)
+                    if (unpacked.isNotBlank()) {
+                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
                     }
-                } catch (e: Exception) { e.printStackTrace() }
-            }
+                } catch (e: Exception) {}
+                val decodedEmbed = decodeBase64IfPossible(embedHtml)
+                if (decodedEmbed != embedHtml) {
+                    extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
+                }
+            } catch (e: Exception) { e.printStackTrace() }
         }
 
         // 7. API endpoint jika ada ID di URL
@@ -899,18 +408,20 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // Proses semua URL yang ditemukan
+        // Proses semua URL yang ditemukan (termasuk iframe yang bukan Pulvexa)
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
+            // Coba loadExtractor (ini yang menangani Ok.ru dan lainnya)
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
+            // Jika tidak, coba langsung sebagai M3U8/MP4
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
