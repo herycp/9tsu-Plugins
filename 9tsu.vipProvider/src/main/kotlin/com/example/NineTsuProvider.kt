@@ -158,10 +158,8 @@ class NineTsuProvider : MainAPI() {
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Deskripsi diambil dari .body-content sebagai prioritas utama, fallback ke .entry-content atau .post-content
-        val descriptionElement = doc.selectFirst(".body-content")
-            ?: doc.selectFirst(".entry-content")
-            ?: doc.selectFirst(".post-content")
+        // Ambil deskripsi dari .body-content, fallback ke .entry-content atau .post-content
+        val descriptionElement = doc.selectFirst(".body-content, .entry-content, .post-content")
         val description = descriptionElement?.text()?.trim() ?: ""
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
@@ -295,17 +293,13 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba loadExtractor (untuk Ok.ru dan lainnya), bersihkan nama link dari "Episode 0"
-            val wrappedCallback: (ExtractorLink) -> Unit = { link ->
-                val cleanName = cleanTitle(link.name)
-                callback.invoke(link.copy(name = cleanName))
-            }
-            if (loadExtractor(cleanUrl, subtitleCallback, wrappedCallback)) {
+            // Coba loadExtractor (untuk Ok.ru dan lainnya)
+            if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
-            // Jika tidak, coba langsung sebagai M3U8/MP4 dengan nama bersih
+            // Jika tidak, coba langsung sebagai M3U8/MP4
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
