@@ -170,42 +170,7 @@ class NineTsuProvider : MainAPI() {
                 when {
                     iframeUrl.contains("ok.ru") -> {
                         debug.append("Provider: Ok.ru\n")
-                        try {
-                            // Coba loadExtractor
-                            var success = false
-                            try {
-                                // Kita tidak bisa memanggil loadExtractor di sini karena butuh callback,
-                                // jadi kita hanya catat bahwa kita akan mencoba.
-                                debug.append("Mencoba loadExtractor untuk Ok.ru...\n")
-                                // Kita tidak bisa mengecek hasilnya di sini tanpa callback, jadi kita asumsikan berhasil jika tidak exception.
-                                success = true
-                            } catch (e: Exception) {
-                                debug.append("loadExtractor gagal: ${e.message}\n")
-                            }
-                            if (success) {
-                                debug.append("loadExtractor berhasil dipanggil (link akan diproses di loadLinks).\n")
-                            } else {
-                                // Fallback ekstrak manual
-                                try {
-                                    val embedRes = app.get(iframeUrl, referer = url, headers = mapOf(
-                                        "User-Agent" to userAgent,
-                                        "Referer" to url
-                                    ))
-                                    val embedHtml = embedRes.text
-                                    val urls = extractVideoUrls(embedHtml)
-                                    if (urls.isNotEmpty()) {
-                                        debug.append("Ekstrak manual menemukan URL:\n")
-                                        urls.forEach { debug.append("  $it\n") }
-                                    } else {
-                                        debug.append("Ekstrak manual tidak menemukan URL.\n")
-                                    }
-                                } catch (e: Exception) {
-                                    debug.append("Ekstrak manual gagal: ${e.message}\n")
-                                }
-                            }
-                        } catch (e: Exception) {
-                            debug.append("Error: ${e.message}\n")
-                        }
+                        debug.append("loadExtractor akan dipanggil untuk Ok.ru.\n")
                     }
                     iframeUrl.contains("pulvexa.space") -> {
                         debug.append("Provider: Pulvexa\n")
@@ -219,38 +184,20 @@ class NineTsuProvider : MainAPI() {
                                 val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
                                 debug.append("Response code: ${apiResponse.code}\n")
                                 if (apiResponse.code == 200) {
-                                    val json = JSONObject(apiResponse.text)
-                                    debug.append("Response JSON: ${apiResponse.text.take(200)}...\n")
-                                    val playlistUrl = json.optString("playlist", null)
-                                        ?: json.optString("url", null)
-                                        ?: json.optString("file", null)
-                                    if (!playlistUrl.isNullOrBlank()) {
-                                        debug.append("Playlist URL ditemukan: $playlistUrl\n")
+                                    val m3u8 = apiResponse.text.trim()
+                                    if (m3u8.startsWith("http") && m3u8.contains(".m3u8")) {
+                                        debug.append("M3U8 URL: $m3u8\n")
                                     } else {
-                                        debug.append("Tidak ada field playlist/url/file di response.\n")
-                                        // Cek sources array
-                                        val sources = json.optJSONArray("sources")
-                                        if (sources != null) {
-                                            debug.append("sources array ditemukan, jumlah: ${sources.length()}\n")
-                                            for (i in 0 until sources.length()) {
-                                                val srcObj = sources.getJSONObject(i)
-                                                val src = srcObj.optString("file", null) ?: srcObj.optString("url", null)
-                                                if (src != null) {
-                                                    debug.append("  Source $i: $src\n")
-                                                }
-                                            }
-                                        } else {
-                                            debug.append("Tidak ada sources array.\n")
-                                        }
+                                        debug.append("Response bukan M3U8: ${m3u8.take(100)}\n")
                                     }
                                 } else {
-                                    debug.append("Response bukan 200, text: ${apiResponse.text.take(100)}\n")
+                                    debug.append("API error, text: ${apiResponse.text.take(100)}\n")
                                 }
                             } catch (e: Exception) {
-                                debug.append("Error saat memanggil API: ${e.message}\n")
+                                debug.append("Error API: ${e.message}\n")
                             }
                         } else {
-                            debug.append("Tidak dapat mengekstrak video ID dari URL.\n")
+                            debug.append("Video ID tidak ditemukan.\n")
                         }
                     }
                     else -> {
@@ -263,19 +210,19 @@ class NineTsuProvider : MainAPI() {
                             val embedHtml = embedRes.text
                             val urls = extractVideoUrls(embedHtml)
                             if (urls.isNotEmpty()) {
-                                debug.append("Ekstrak menemukan URL:\n")
+                                debug.append("URL ditemukan:\n")
                                 urls.forEach { debug.append("  $it\n") }
                             } else {
-                                debug.append("Tidak menemukan URL di iframe.\n")
+                                debug.append("Tidak ada URL.\n")
                             }
                         } catch (e: Exception) {
-                            debug.append("Error saat mengakses iframe: ${e.message}\n")
+                            debug.append("Error: ${e.message}\n")
                         }
                     }
                 }
             }
 
-            // Tambahkan juga info fallback dari seluruh halaman
+            // Fallback seluruh halaman
             debug.append("\n--- Fallback seluruh halaman ---\n")
             val allUrls = mutableSetOf<String>()
             doc.select("script").forEach { script ->
@@ -300,15 +247,14 @@ class NineTsuProvider : MainAPI() {
             }
             extractVideoUrls(docRes.text).forEach { url -> allUrls.add(url) }
             if (allUrls.isNotEmpty()) {
-                debug.append("URL tambahan dari fallback:\n")
+                debug.append("URL tambahan:\n")
                 allUrls.forEach { debug.append("  $it\n") }
             } else {
-                debug.append("Tidak ada URL dari fallback.\n")
+                debug.append("Tidak ada URL.\n")
             }
 
         } catch (e: Exception) {
             debug.append("Error umum: ${e.message}\n")
-            e.printStackTrace()
         }
 
         debug.append("\n========== END DEBUG ==========")
@@ -373,6 +319,7 @@ class NineTsuProvider : MainAPI() {
                             continue
                         }
                     } catch (e: Exception) {
+                        println("Ok.ru loadExtractor error: ${e.message}")
                         e.printStackTrace()
                     }
                     // Jika gagal, coba ekstrak manual
@@ -399,7 +346,9 @@ class NineTsuProvider : MainAPI() {
                                 linkFound = true
                             }
                         }
-                    } catch (e: Exception) { e.printStackTrace() }
+                    } catch (e: Exception) {
+                        println("Ok.ru manual extract error: ${e.message}")
+                    }
                     continue
                 }
 
@@ -412,16 +361,13 @@ class NineTsuProvider : MainAPI() {
                             val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                             val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
                             if (apiResponse.code == 200) {
-                                val json = JSONObject(apiResponse.text)
-                                val playlistUrl = json.optString("playlist", null)
-                                    ?: json.optString("url", null)
-                                    ?: json.optString("file", null)
-                                if (!playlistUrl.isNullOrBlank()) {
+                                val m3u8 = apiResponse.text.trim()
+                                if (m3u8.startsWith("http") && m3u8.contains(".m3u8")) {
                                     callback.invoke(
                                         newExtractorLink(
                                             name = "Pulvexa",
                                             source = this.name,
-                                            url = playlistUrl,
+                                            url = m3u8,
                                             type = ExtractorLinkType.M3U8
                                         ) {
                                             this.referer = data
@@ -430,30 +376,15 @@ class NineTsuProvider : MainAPI() {
                                     )
                                     linkFound = true
                                 } else {
-                                    val sources = json.optJSONArray("sources")
-                                    if (sources != null) {
-                                        for (i in 0 until sources.length()) {
-                                            val srcObj = sources.getJSONObject(i)
-                                            val src = srcObj.optString("file", null) ?: srcObj.optString("url", null)
-                                            if (src != null) {
-                                                callback.invoke(
-                                                    newExtractorLink(
-                                                        name = "Pulvexa",
-                                                        source = this.name,
-                                                        url = src,
-                                                        type = ExtractorLinkType.M3U8
-                                                    ) {
-                                                        this.referer = data
-                                                        this.quality = Qualities.Unknown.value
-                                                    }
-                                                )
-                                                linkFound = true
-                                            }
-                                        }
-                                    }
+                                    println("Pulvexa response bukan M3U8: $m3u8")
                                 }
+                            } else {
+                                println("Pulvexa API error code ${apiResponse.code}")
                             }
-                        } catch (e: Exception) { e.printStackTrace() }
+                        } catch (e: Exception) {
+                            println("Pulvexa API error: ${e.message}")
+                            e.printStackTrace()
+                        }
                     }
                     continue
                 }
@@ -482,7 +413,9 @@ class NineTsuProvider : MainAPI() {
                             linkFound = true
                         }
                     }
-                } catch (e: Exception) { e.printStackTrace() }
+                } catch (e: Exception) {
+                    println("Fallback iframe error: ${e.message}")
+                }
             }
         }
 
