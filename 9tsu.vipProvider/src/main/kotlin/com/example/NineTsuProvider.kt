@@ -57,6 +57,11 @@ class NineTsuProvider : MainAPI() {
         return urls.distinct()
     }
 
+    // Membersihkan judul dari "Episode 0", "第0話", "Ep 0", "Eps 0"
+    private fun cleanTitle(title: String): String {
+        return title.replace(Regex("""(?:第\s*0\s*話|Episode\s*0|Ep\s*0|Eps\s*0)""", RegexOption.IGNORE_CASE), "").trim()
+    }
+
     override val mainPage = mainPageOf(
         "$mainUrl/" to "Terbaru",
         "$mainUrl/daily" to "Harian (Daily)",
@@ -142,61 +147,20 @@ class NineTsuProvider : MainAPI() {
     }
     // ====================================================================
 
-    // ==================== DEBUG ====================
-    private suspend fun generateDebugInfo(url: String): String {
-        val debug = StringBuilder()
-        debug.append("========== DEBUG 9tsu ==========\n")
-        debug.append("URL: $url\n\n")
-
-        try {
-            val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-
-            val iframeUrls = doc.select("iframe").mapNotNull { iframe ->
-                val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-                if (src.isNotBlank()) src else null
-            }
-
-            debug.append("Jumlah iframe ditemukan: ${iframeUrls.size}\n")
-            iframeUrls.forEachIndexed { index, iframeUrl ->
-                debug.append("\n--- Iframe #${index + 1} ---\n")
-                debug.append("URL: $iframeUrl\n")
-                when {
-                    iframeUrl.contains("ok.ru") -> debug.append("Provider: Ok.ru\n")
-                    iframeUrl.contains("pulvexa.space") -> {
-                        debug.append("Provider: Pulvexa\n")
-                        val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(iframeUrl)
-                        val videoId = idMatch?.groupValues?.get(1)
-                        if (videoId != null) {
-                            debug.append("Video ID: $videoId\n")
-                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            debug.append("API URL: $apiUrl\n")
-                        }
-                    }
-                    else -> debug.append("Provider: Lainnya\n")
-                }
-            }
-        } catch (e: Exception) {
-            debug.append("Error debug: ${e.message}\n")
-        }
-
-        debug.append("\n========== END DEBUG ==========")
-        return debug.toString()
-    }
-    // =================================================
-
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
+        val rawTitle = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
+        val title = cleanTitle(rawTitle)
+
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        var description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim() ?: ""
-        try {
-            description += "\n\n" + generateDebugInfo(url)
-        } catch (e: Exception) {}
+        // Ambil deskripsi dari .body-content, fallback ke .entry-content atau .post-content
+        val descriptionElement = doc.selectFirst(".body-content, .entry-content, .post-content")
+        val description = descriptionElement?.text()?.trim() ?: ""
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
@@ -204,7 +168,7 @@ class NineTsuProvider : MainAPI() {
         }
     }
 
-    // ==================== loadLinks FINAL ====================
+    // ==================== loadLinks ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -279,7 +243,7 @@ class NineTsuProvider : MainAPI() {
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. Ekstrak dari script (seperti di file lama)
+        // 3. Ekstrak dari script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
