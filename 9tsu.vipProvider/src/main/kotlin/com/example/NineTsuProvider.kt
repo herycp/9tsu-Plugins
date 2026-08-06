@@ -189,8 +189,8 @@ class NineTsuProvider : MainAPI() {
             if (src.isNotBlank()) {
                 when {
                     // Pulvexa - langsung API
-                    src.contains("pulvexa.space") -> {
-                        val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(src)
+                    src.contains("norqeli.space") -> {
+                        val idMatch = Regex("""norqeli\.space/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
