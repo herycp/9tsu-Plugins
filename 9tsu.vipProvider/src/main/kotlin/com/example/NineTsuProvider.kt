@@ -188,7 +188,7 @@ class NineTsuProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // Pulvexa - langsung API
+                    // norqeli - langsung API
                     src.contains("norqeli.space") -> {
                         val idMatch = Regex("""norqeli\.space/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
@@ -197,7 +197,7 @@ class NineTsuProvider : MainAPI() {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "Pulvexa",
+                                        name = "norqeli",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
