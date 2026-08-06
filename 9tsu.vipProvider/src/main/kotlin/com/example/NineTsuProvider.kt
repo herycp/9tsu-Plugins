@@ -21,6 +21,9 @@ class NineTsuProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
+    // Untuk menyimpan debug Ok.ru
+    private var okRuDebug = ""
+
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -171,6 +174,11 @@ class NineTsuProvider : MainAPI() {
                     iframeUrl.contains("ok.ru") -> {
                         debug.append("Provider: Ok.ru\n")
                         debug.append("loadExtractor akan dipanggil untuk Ok.ru.\n")
+                        // Tambahkan info dari loadExtractor jika ada
+                        if (okRuDebug.isNotEmpty()) {
+                            debug.append("\nHasil loadExtractor:\n")
+                            debug.append(okRuDebug)
+                        }
                     }
                     iframeUrl.contains("pulvexa.space") -> {
                         debug.append("Provider: Pulvexa\n")
@@ -178,23 +186,19 @@ class NineTsuProvider : MainAPI() {
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             debug.append("Video ID: $videoId\n")
+                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                            debug.append("API URL: $apiUrl\n")
+                            debug.append("Link akan menggunakan URL API sebagai playlist (karena API mengembalikan M3U8).\n")
+                            // Opsional: coba cek apakah API merespon M3U8
                             try {
-                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                                debug.append("Memanggil API: $apiUrl\n")
-                                val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
-                                debug.append("Response code: ${apiResponse.code}\n")
-                                if (apiResponse.code == 200) {
-                                    val m3u8 = apiResponse.text.trim()
-                                    if (m3u8.startsWith("http") && m3u8.contains(".m3u8")) {
-                                        debug.append("M3U8 URL: $m3u8\n")
-                                    } else {
-                                        debug.append("Response bukan M3U8: ${m3u8.take(100)}\n")
-                                    }
-                                } else {
-                                    debug.append("API error, text: ${apiResponse.text.take(100)}\n")
+                                val testResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+                                debug.append("Test response code: ${testResponse.code}\n")
+                                if (testResponse.code == 200) {
+                                    val preview = testResponse.text.take(50)
+                                    debug.append("Preview konten: $preview...\n")
                                 }
                             } catch (e: Exception) {
-                                debug.append("Error API: ${e.message}\n")
+                                debug.append("Test API gagal: ${e.message}\n")
                             }
                         } else {
                             debug.append("Video ID tidak ditemukan.\n")
@@ -273,6 +277,9 @@ class NineTsuProvider : MainAPI() {
 
         var description = doc.selectFirst(".entry-content, .post-content")?.text()?.trim() ?: ""
 
+        // Reset debug
+        okRuDebug = ""
+
         // Tambahkan debug info ke deskripsi
         try {
             val debugInfo = generateDebugInfo(url)
@@ -312,32 +319,63 @@ class NineTsuProvider : MainAPI() {
             for (iframeUrl in iframeUrls) {
                 // --- Ok.ru ---
                 if (iframeUrl.contains("ok.ru")) {
+                    val okDebug = StringBuilder()
+                    okDebug.append("Ok.ru Debug:\n")
+                    okDebug.append("  iframe URL: $iframeUrl\n")
+
                     try {
-                        val success = loadExtractor(iframeUrl, subtitleCallback, callback)
-                        if (success) {
+                        okDebug.append("  Mencoba loadExtractor...\n")
+                        var extractorSuccess = false
+
+                        // Buat custom callback untuk menangkap link dari loadExtractor
+                        val capturedLinks = mutableListOf<ExtractorLink>()
+                        val captureCallback: (ExtractorLink) -> Unit = { link ->
+                            capturedLinks.add(link)
+                            callback.invoke(link)
+                        }
+
+                        val success = loadExtractor(iframeUrl, subtitleCallback, captureCallback)
+                        if (success && capturedLinks.isNotEmpty()) {
+                            okDebug.append("  ✅ loadExtractor berhasil!\n")
+                            okDebug.append("  Jumlah link ditemukan: ${capturedLinks.size}\n")
+                            capturedLinks.forEachIndexed { index, link ->
+                                okDebug.append("    Link #${index + 1}: ${link.url}\n")
+                                okDebug.append("      Name: ${link.name}\n")
+                                okDebug.append("      Type: ${link.type}\n")
+                                okDebug.append("      Quality: ${link.quality}\n")
+                            }
                             linkFound = true
+                            okRuDebug = okDebug.toString()
                             continue
+                        } else {
+                            okDebug.append("  ❌ loadExtractor gagal atau tidak menemukan link.\n")
                         }
                     } catch (e: Exception) {
-                        println("Ok.ru loadExtractor error: ${e.message}")
+                        okDebug.append("  ❌ loadExtractor error: ${e.message}\n")
                         e.printStackTrace()
                     }
-                    // Jika gagal, coba ekstrak manual
+
+                    // Jika gagal, coba ekstrak manual dari halaman iframe
                     try {
+                        okDebug.append("  Mencoba ekstraksi manual...\n")
                         val embedRes = app.get(iframeUrl, referer = data, headers = mapOf(
                             "User-Agent" to userAgent,
                             "Referer" to data
                         ))
                         val embedHtml = embedRes.text
+                        okDebug.append("  Panjang HTML iframe: ${embedHtml.length}\n")
+
                         val urls = extractVideoUrls(embedHtml)
-                        for (videoUrl in urls) {
-                            if (videoUrl.isNotBlank()) {
+                        if (urls.isNotEmpty()) {
+                            okDebug.append("  ✅ Manual extraction menemukan ${urls.size} URL:\n")
+                            urls.forEachIndexed { index, url ->
+                                okDebug.append("    URL #${index + 1}: $url\n")
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "Ok.ru",
+                                        name = "Ok.ru (manual)",
                                         source = this.name,
-                                        url = videoUrl,
-                                        type = if (videoUrl.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                        url = url,
+                                        type = if (url.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                     ) {
                                         this.referer = data
                                         this.quality = Qualities.Unknown.value
@@ -345,10 +383,16 @@ class NineTsuProvider : MainAPI() {
                                 )
                                 linkFound = true
                             }
+                        } else {
+                            okDebug.append("  ❌ Manual extraction tidak menemukan URL.\n")
+                            // Tampilkan preview HTML untuk debug
+                            okDebug.append("  Preview HTML: ${embedHtml.take(500)}...\n")
                         }
                     } catch (e: Exception) {
-                        println("Ok.ru manual extract error: ${e.message}")
+                        okDebug.append("  ❌ Manual extraction error: ${e.message}\n")
                     }
+
+                    okRuDebug = okDebug.toString()
                     continue
                 }
 
@@ -359,30 +403,21 @@ class NineTsuProvider : MainAPI() {
                     if (videoId != null) {
                         try {
                             val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            val apiResponse = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
-                            if (apiResponse.code == 200) {
-                                val m3u8 = apiResponse.text.trim()
-                                if (m3u8.startsWith("http") && m3u8.contains(".m3u8")) {
-                                    callback.invoke(
-                                        newExtractorLink(
-                                            name = "Pulvexa",
-                                            source = this.name,
-                                            url = m3u8,
-                                            type = ExtractorLinkType.M3U8
-                                        ) {
-                                            this.referer = data
-                                            this.quality = Qualities.Unknown.value
-                                        }
-                                    )
-                                    linkFound = true
-                                } else {
-                                    println("Pulvexa response bukan M3U8: $m3u8")
+                            // API langsung mengembalikan konten M3U8, jadi kita gunakan URL API sebagai playlist.
+                            callback.invoke(
+                                newExtractorLink(
+                                    name = "Pulvexa",
+                                    source = this.name,
+                                    url = apiUrl,
+                                    type = ExtractorLinkType.M3U8
+                                ) {
+                                    this.referer = data
+                                    this.quality = Qualities.Unknown.value
                                 }
-                            } else {
-                                println("Pulvexa API error code ${apiResponse.code}")
-                            }
+                            )
+                            linkFound = true
                         } catch (e: Exception) {
-                            println("Pulvexa API error: ${e.message}")
+                            println("Pulvexa error: ${e.message}")
                             e.printStackTrace()
                         }
                     }
