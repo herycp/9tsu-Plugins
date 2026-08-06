@@ -158,9 +158,17 @@ class NineTsuProvider : MainAPI() {
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Ambil deskripsi dari .body-content, fallback ke .entry-content atau .post-content
-        val descriptionElement = doc.selectFirst(".body-content, .entry-content, .post-content")
-        val description = descriptionElement?.text()?.trim() ?: ""
+        // Ambil deskripsi dari .body-content, bersihkan dan gabungkan semua teks
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            // Hapus elemen tersembunyi dan ambil teks, lalu rapikan
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            // Fallback ke .entry-content atau .post-content
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
 
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
@@ -188,7 +196,7 @@ class NineTsuProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // norqeli - langsung API
+                    // norqeli (sebelumnya pulvexa.space) - langsung API
                     src.contains("norqeli.space") -> {
                         val idMatch = Regex("""norqeli\.space/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
