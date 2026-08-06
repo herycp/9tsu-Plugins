@@ -172,7 +172,6 @@ class NineTsuProvider : MainAPI() {
                             debug.append("Video ID: $videoId\n")
                             val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                             debug.append("API URL: $apiUrl\n")
-                            // Coba cek response
                             try {
                                 val test = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
                                 if (test.code == 200) {
@@ -248,50 +247,90 @@ class NineTsuProvider : MainAPI() {
         val doc = docRes.document
 
         val allUrls = mutableSetOf<String>()
-        val embedUrls = mutableSetOf<String>()
 
-        // 1. iframe
-        doc.select("iframe").forEach { iframe ->
+        // 1. Kumpulkan semua iframe
+        val iframeUrls = doc.select("iframe").mapNotNull { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (src.isNotBlank()) {
-                // Jika Pulvexa, tangani langsung di sini (karena API mengembalikan M3U8)
-                if (src.contains("pulvexa.space")) {
-                    val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(src)
-                    val videoId = idMatch?.groupValues?.get(1)
-                    if (videoId != null) {
-                        try {
-                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            // API langsung mengembalikan M3U8, jadi kita gunakan URL API sebagai playlist
-                            callback.invoke(
-                                newExtractorLink(
-                                    name = "Pulvexa",
-                                    source = this.name,
-                                    url = apiUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = data
-                                    this.quality = Qualities.Unknown.value
-                                }
-                            )
-                            // Tidak perlu tambahkan ke allUrls karena sudah ditangani
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                        }
+            if (src.isNotBlank()) src else null
+        }
+
+        for (iframeUrl in iframeUrls) {
+            // --- Pulvexa ---
+            if (iframeUrl.contains("pulvexa.space")) {
+                val idMatch = Regex("""pulvexa\.space/embed/([^?]+)""").find(iframeUrl)
+                val videoId = idMatch?.groupValues?.get(1)
+                if (videoId != null) {
+                    try {
+                        val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                        // API langsung mengembalikan M3U8, jadi gunakan URL API sebagai playlist
+                        callback.invoke(
+                            newExtractorLink(
+                                name = "Pulvexa",
+                                source = this.name,
+                                url = apiUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.referer = data
+                                this.quality = Qualities.Unknown.value
+                            }
+                        )
+                        // Sudah ditangani, lanjut ke iframe berikutnya
+                        continue
+                    } catch (e: Exception) {
+                        e.printStackTrace()
                     }
-                } else {
-                    // Untuk iframe lainnya, simpan untuk diproses nanti
-                    embedUrls.add(src)
                 }
+                // Jika gagal, lanjutkan ke iframe berikutnya (tidak perlu ekstraksi biasa)
+                continue
+            }
+
+            // --- Iframe lainnya (termasuk ok.ru dan lainnya) ---
+            try {
+                // Muat konten iframe
+                val embedRes = app.get(iframeUrl, referer = data, headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "Referer" to data,
+                    "Origin" to iframeUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
+                ))
+                val embedHtml = embedRes.text
+
+                // Ekstrak URL dari konten iframe
+                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+
+                // Coba unpack script jika ada
+                try {
+                    val unpacked = getAndUnpack(embedHtml)
+                    if (unpacked.isNotBlank()) {
+                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
+                    }
+                } catch (e: Exception) {}
+
+                // Decode base64
+                val decodedEmbed = decodeBase64IfPossible(embedHtml)
+                if (decodedEmbed != embedHtml) {
+                    extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
+                }
+
+                // Tambahan: cari elemen video di iframe
+                val videoDoc = org.jsoup.Jsoup.parse(embedHtml)
+                videoDoc.select("video source, video").forEach { v ->
+                    val src = v.attr("src").ifBlank { v.attr("data-src") }
+                    if (src.isNotBlank()) allUrls.add(src)
+                }
+
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
         }
 
-        // 2. video/source
+        // 2. Ekstrak dari seluruh halaman (seperti di file lama)
+        // video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script
+        // script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -335,39 +374,16 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 4. data-* attributes
+        // data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex on full html
+        // general regex on full html
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses embed URLs (non-Pulvexa)
-        for (embedUrl in embedUrls) {
-            try {
-                val embedRes = app.get(embedUrl, referer = data, headers = mapOf(
-                    "User-Agent" to userAgent,
-                    "Referer" to data,
-                    "Origin" to embedUrl.substringBefore("/", "").replace("https://", "").replace("http://", "")
-                ))
-                val embedHtml = embedRes.text
-                extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                try {
-                    val unpacked = getAndUnpack(embedHtml)
-                    if (unpacked.isNotBlank()) {
-                        extractVideoUrls(unpacked).forEach { url -> allUrls.add(url) }
-                    }
-                } catch (e: Exception) {}
-                val decodedEmbed = decodeBase64IfPossible(embedHtml)
-                if (decodedEmbed != embedHtml) {
-                    extractVideoUrls(decodedEmbed).forEach { url -> allUrls.add(url) }
-                }
-            } catch (e: Exception) { e.printStackTrace() }
-        }
-
-        // 7. API endpoint jika ada ID di URL
+        // API endpoint (jika ada)
         val postId = doc.selectFirst("article")?.attr("id")?.replace("post-", "") ?: doc.selectFirst("[data-post-id]")?.attr("data-post-id")
         if (postId != null) {
             val apiEndpoints = listOf(
@@ -384,7 +400,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 8. Cari link di elemen dengan class 'player' atau 'video-container'
+        // Cari link di elemen player
         doc.select(".player, .video-container, .embed-container").forEach { container ->
             container.select("a[href], source, iframe").forEach { el ->
                 val link = el.attr("href").ifBlank { el.attr("src") }.ifBlank { el.attr("data-src") }
@@ -392,7 +408,7 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 9. Coba endpoint /get_player atau /api/source
+        // Coba endpoint get_player
         val playerScript = doc.select("script").find { it.data().contains("get_player") || it.data().contains("api/source") }
         if (playerScript != null) {
             val match = Regex("""get_player\s*\(\s*['"]([^'"]+)['"]\s*\)""").find(playerScript.data())
@@ -408,14 +424,14 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // Proses semua URL yang ditemukan (termasuk iframe yang bukan Pulvexa)
+        // Proses semua URL yang ditemukan
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba loadExtractor (ini yang menangani Ok.ru dan lainnya)
+            // Coba loadExtractor (untuk ok.ru dan lainnya)
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
