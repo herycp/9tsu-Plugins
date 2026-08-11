@@ -198,7 +198,7 @@ class NineTsuProvider : MainAPI() {
                 when {
                     // qevrinto (sebelumnya pulvexa.space) - langsung API
                     src.contains("qevrinto.guru") -> {
-                        val idMatch = Regex("""qevrinto\.space/embed/([^?]+)""").find(src)
+                        val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
