@@ -131,17 +131,43 @@ class NineTsuInProvider : MainAPI() {
     }
     // ====================================================================
 
-    override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
-        val doc = response.document
+    // ==================== FUNGSI PEMBANTU UNTUK LOAD ====================
 
+    private fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
+        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        val episodes = episodeLinks.map { link ->
+            val episodeElement = doc.select("a[href='$link']").firstOrNull()
+            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
+            Episode(episodeTitle, link)
+        }
+
+        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    private fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
         val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Ambil deskripsi dari .body-content
         val descriptionElement = doc.selectFirst(".body-content")
         val description = if (descriptionElement != null) {
             val cloned = descriptionElement.clone()
@@ -154,6 +180,81 @@ class NineTsuInProvider : MainAPI() {
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
             this.plot = description
+        }
+    }
+
+    // ================================================================
+
+    override suspend fun load(url: String): LoadResponse {
+        val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
+        val doc = response.document
+
+        if (url.contains("/douga/")) {
+            val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+            var seriesUrl: String? = null
+
+            if (breadcrumbNav != null) {
+                val links = breadcrumbNav.select("a")
+                if (links.size >= 2) {
+                    val seriesLink = links[links.size - 2]
+                    val href = seriesLink.attr("href")
+                    if (href.isNotBlank() && !href.contains("/douga/") && !href.equals(mainUrl)) {
+                        seriesUrl = href
+                    }
+                }
+            }
+
+            if (seriesUrl == null) {
+                val categoryLink = doc.select("a[rel='category']").firstOrNull()
+                if (categoryLink != null) {
+                    val href = categoryLink.attr("href")
+                    if (href.isNotBlank() && !href.contains("/douga/")) {
+                        seriesUrl = href
+                    }
+                }
+            }
+
+            if (seriesUrl != null && seriesUrl != url) {
+                val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                val episodeLinks = seriesDoc.select("div.cactus-sub-wrap article.cactus-post-item a[href*='/douga/']")
+                    .mapNotNull { element ->
+                        val href = element.attr("href")
+                        when {
+                            href.startsWith("http") -> href
+                            href.startsWith("/") -> "https://9tsu.in$href"
+                            else -> null
+                        }
+                    }.distinct()
+
+                if (episodeLinks.isNotEmpty()) {
+                    val seriesBreadcrumb = seriesDoc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+                    val hasSeriesLevel = seriesBreadcrumb?.select("a")?.size ?: 0 >= 3
+                    if (hasSeriesLevel) {
+                        return buildSeriesResponse(seriesDoc, seriesUrl, episodeLinks)
+                    }
+                }
+            }
+
+            return loadSinglePage(doc, url)
+        } else {
+            val episodeLinks = doc.select("div.cactus-sub-wrap article.cactus-post-item a[href*='/douga/']")
+                .mapNotNull { element ->
+                    val href = element.attr("href")
+                    when {
+                        href.startsWith("http") -> href
+                        href.startsWith("/") -> "https://9tsu.in$href"
+                        else -> null
+                    }
+                }.distinct()
+
+            val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+            val isSeriesPage = breadcrumbNav?.select("a")?.size ?: 0 >= 3
+
+            if (episodeLinks.isNotEmpty() && isSeriesPage) {
+                return buildSeriesResponse(doc, url, episodeLinks)
+            } else {
+                return loadSinglePage(doc, url)
+            }
         }
     }
 
@@ -177,16 +278,16 @@ class NineTsuInProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // qevrinto.guru - langsung API
-                    src.contains("qevrinto.guru") -> {
-                        val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
+                    // quverinto.guru (sebelumnya norqeli.space) - langsung API
+                    src.contains("quverinto.guru") -> {
+                        val idMatch = Regex("""quverinto\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "qevrinto",
+                                        name = "quverinto",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
