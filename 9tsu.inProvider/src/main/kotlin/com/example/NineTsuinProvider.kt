@@ -13,9 +13,9 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
 
-class NineTsuProvider : MainAPI() {
-    override var mainUrl = "https://9tsu.vip"
-    override var name = "9tsu"
+class NineTsuInProvider : MainAPI() {
+    override var mainUrl = "https://9tsu.in"
+    override var name = "9tsu.in"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
@@ -57,23 +57,18 @@ class NineTsuProvider : MainAPI() {
         return urls.distinct()
     }
 
-    // Membersihkan judul dari "Episode 0", "第0話", "Ep 0", "Eps 0"
-    private fun cleanTitle(title: String): String {
-        return title.replace(Regex("""(?:第\s*0\s*話|Episode\s*0|Ep\s*0|Eps\s*0)""", RegexOption.IGNORE_CASE), "").trim()
-    }
-
     override val mainPage = mainPageOf(
-        "$mainUrl/" to "Terbaru",
-        "$mainUrl/daily" to "Harian (Daily)",
-        "$mainUrl/drama-monday1" to "Drama Senin",
-        "$mainUrl/drama-tuesday1" to "Drama Selasa",
-        "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
-        "$mainUrl/drama-thursdaydouga" to "Drama Kamis",
-        "$mainUrl/drama-fridaydouga" to "Drama Jumat",
-        "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
-        "$mainUrl/drama-sundaydouga" to "Drama Minggu",
-        "$mainUrl/dramaend" to "Drama Tamat (End)",
-        "$mainUrl/premium" to "Kategori Premium"
+        "$mainUrl/drama" to "Drama",
+        "$mainUrl/monday" to "Monday",
+        "$mainUrl/tuesday" to "Tuesday",
+        "$mainUrl/wednesday" to "Wednesday",
+        "$mainUrl/thursday" to "Thursday",
+        "$mainUrl/friday" to "Friday",
+        "$mainUrl/saturday" to "Saturday",
+        "$mainUrl/sunday" to "Sunday",
+        "$mainUrl/daily" to "Daily",
+        "$mainUrl/movie" to "Movie",
+        "$mainUrl/spmovies" to "SP Movies"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -103,13 +98,13 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN (via 9tsu.in) ====================
+    // ==================== PENCARIAN (langsung di 9tsu.in) ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return emptyList()
 
-        val searchUrl = "https://9tsu.in/?s=${cleanQuery.replace(" ", "+")}"
+        val searchUrl = "$mainUrl/?s=${cleanQuery.replace(" ", "+")}"
         try {
             val doc = app.get(searchUrl, headers = mapOf("User-Agent" to userAgent)).document
             doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item").forEach { element ->
@@ -117,27 +112,16 @@ class NineTsuProvider : MainAPI() {
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                     ?: return@forEach
                 val title = titleElement.text().trim()
-                var link = titleElement.attr("href")
-                if (link.isBlank()) return@forEach
+                val link = titleElement.attr("href")
+                if (title.isBlank() || link.isBlank() || !link.startsWith("http")) return@forEach
 
-                // Ubah domain 9tsu.in menjadi 9tsu.vip dan hilangkan /douga/
-                if (link.startsWith("https://9tsu.in/douga/")) {
-                    link = link.replace("https://9tsu.in/douga/", "https://9tsu.vip/")
-                } else if (link.startsWith("https://9tsu.in/")) {
-                    link = link.replace("https://9tsu.in/", "https://9tsu.vip/")
-                } else if (link.startsWith("http://9tsu.in/")) {
-                    link = link.replace("http://9tsu.in/", "https://9tsu.vip/")
-                }
+                val imgElement = element.selectFirst("img")
+                var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
+                if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                if (title.isNotBlank() && link.startsWith("https://9tsu.vip/")) {
-                    val imgElement = element.selectFirst("img")
-                    var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
-                    if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-                    results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
-                        this.posterUrl = posterUrl
-                    })
-                }
+                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                    this.posterUrl = posterUrl
+                })
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -151,22 +135,19 @@ class NineTsuProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        val rawTitle = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
-        val title = cleanTitle(rawTitle)
+        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Ambil deskripsi dari .body-content, bersihkan dan gabungkan semua teks
+        // Ambil deskripsi dari .body-content
         val descriptionElement = doc.selectFirst(".body-content")
         val description = if (descriptionElement != null) {
-            // Hapus elemen tersembunyi dan ambil teks, lalu rapikan
             val cloned = descriptionElement.clone()
             cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
             cloned.text().trim().replace(Regex("\\s+"), " ")
         } else {
-            // Fallback ke .entry-content atau .post-content
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
@@ -196,16 +177,16 @@ class NineTsuProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // qevrinto (sebelumnya pulvexa.space) - langsung API
-                    src.contains("qevrinto.guru") -> {
-                        val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
+                    // norqeli - langsung API
+                    src.contains("norqeli.space") -> {
+                        val idMatch = Regex("""norqeli\.space/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "qevrinto",
+                                        name = "norqeli",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
@@ -217,10 +198,9 @@ class NineTsuProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru - tambahkan URL iframe ke allUrls agar loadExtractor menangani
+                    // Ok.ru
                     src.contains("ok.ru") -> {
                         allUrls.add(src)
-                        // Juga ekstrak konten iframe sebagai cadangan
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
                                 "User-Agent" to userAgent,
@@ -230,7 +210,7 @@ class NineTsuProvider : MainAPI() {
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
-                    // Iframe lainnya - ekstrak konten
+                    // Iframe lainnya
                     else -> {
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
@@ -245,13 +225,13 @@ class NineTsuProvider : MainAPI() {
             }
         }
 
-        // 2. Ekstrak dari elemen video di halaman
+        // 2. video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. Ekstrak dari script
+        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -265,7 +245,6 @@ class NineTsuProvider : MainAPI() {
             if (decoded != scriptData) scriptData = decoded
             extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
 
-            // Cari JSON object di script
             val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
             jsonPattern.findAll(scriptData).forEach { match ->
                 try {
@@ -294,25 +273,23 @@ class NineTsuProvider : MainAPI() {
         // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses semua URL yang dikumpulkan
+        // 6. Proses semua URL
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba loadExtractor (untuk Ok.ru dan lainnya)
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
-            // Jika tidak, coba langsung sebagai M3U8/MP4
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
                     newExtractorLink(
-                        name = if (isM3) "9tsu - HLS" else "9tsu - MP4",
+                        name = if (isM3) "9tsu.in - HLS" else "9tsu.in - MP4",
                         source = this.name,
                         url = cleanUrl,
                         type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
