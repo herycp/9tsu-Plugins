@@ -13,7 +13,7 @@ import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
 
-class NineTsuInProvider : MainAPI() {
+class NineTsuFixProvider : MainAPI() {
     override var mainUrl = "https://9tsu.in"
     override var name = "9tsu.in"
     override val hasMainPage = true
