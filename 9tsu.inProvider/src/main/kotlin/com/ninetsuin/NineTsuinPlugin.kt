@@ -8,6 +8,6 @@ import android.content.Context
 class NineTsuinPlugin : Plugin() {
     override fun load(context: Context) {
         // Mendaftarkan provider 9tsu
-        registerMainAPI(NineTsuinProvider())
+        registerMainAPI(NineTsuInProvider())
     }
 }
