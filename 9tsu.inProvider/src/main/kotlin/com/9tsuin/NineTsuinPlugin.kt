@@ -1,4 +1,4 @@
-package com.example
+package com.9tsuin
 
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
