@@ -1,4 +1,4 @@
-package com.9tsuin
+package com.ninetsuin
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
