@@ -21,7 +21,6 @@ class NineTsuFixProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Daftar kategori yang HARUS dianggap single page (bukan series)
     private val categoryPages = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
@@ -105,7 +104,6 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -137,26 +135,61 @@ class NineTsuFixProvider : MainAPI() {
         return results.distinctBy { it.url }
     }
 
-    // ==================== CEK APAKAH URL ADALAH KATEGORI ====================
     private fun isCategoryPage(url: String): Boolean {
         val path = url.replace(mainUrl, "").split("?")[0]
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    // ==================== EKSTRAK EPISODE LINKS ====================
-    private fun extractEpisodeLinks(doc: Document): List<String> {
-        return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
-            .mapNotNull { element ->
+    // ==================== EKSTRAK EPISODE LINKS & TITLES (PERBAIKAN) ====================
+    private fun extractEpisodes(doc: Element): List<Pair<String, String>> {
+        val episodes = mutableListOf<Pair<String, String>>()
+        
+        // Batasi pencarian hanya di area konten utama untuk menghindari link acak dari sidebar/footer
+        val mainContainer = doc.selectFirst("#main, .site-main, .content, .post-container, main") ?: doc
+
+        mainContainer.select("article, .post, .type-post, .item, .video-item").forEach { container ->
+            val linkElement = container.selectFirst("a[href*='/douga/']") ?: return@forEach
+            val href = linkElement.attr("href")
+            
+            val titleElement = container.selectFirst("h2 a, h3 a, h4 a, .entry-title a, .post-title a, h2, h3")
+            val title = titleElement?.text()?.trim()?.takeIf { it.isNotBlank() } 
+                ?: linkElement.text().trim().takeIf { it.isNotBlank() } 
+                ?: "Episode"
+                
+            val absoluteLink = when {
+                href.startsWith("http") -> href
+                href.startsWith("/") -> "https://9tsu.in$href"
+                else -> href
+            }
+            
+            if (absoluteLink.contains("/douga/")) {
+                episodes.add(absoluteLink to title)
+            }
+        }
+
+        // Fallback jika pencarian berdasarkan kontainer gagal
+        if (episodes.isEmpty()) {
+            mainContainer.select("a[href*='/douga/']").forEach { element ->
                 val href = element.attr("href")
-                when {
+                val title = element.text().trim().takeIf { it.isNotBlank() } ?: "Episode"
+                val absoluteLink = when {
                     href.startsWith("http") -> href
                     href.startsWith("/") -> "https://9tsu.in$href"
-                    else -> null
+                    else -> href
                 }
-            }.distinct()
+                // Pastikan link bukan dari widget sidebar
+                if (absoluteLink.contains("/douga/") && !element.parents().hasClass("sidebar") && !element.parents().hasClass("widget")) {
+                    episodes.add(absoluteLink to title)
+                }
+            }
+        }
+        
+        // Hapus duplikat URL, tapi pertahankan judul yang paling baik
+        return episodes.groupBy { it.first }.map { group ->
+            group.value.maxByOrNull { if (it.second == "Episode") 0 else 1 } ?: group.value.first()
+        }
     }
 
-    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB ====================
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
@@ -172,94 +205,96 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES DENGAN AJAX (DENGAN DETEKSI AKHIR) ====================
-    private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
-        val allLinks = mutableListOf<String>()
-
-        // Perbaikan ekstrak slug agar tidak menghasilkan string kosong
+    // ==================== LOAD ALL EPISODES (HYBRID GET & AJAX) ====================
+    private suspend fun loadAllEpisodes(seriesUrl: String): List<Pair<String, String>> {
+        val allEpisodes = mutableListOf<Pair<String, String>>()
         val slug = seriesUrl.removePrefix(mainUrl).split("/").lastOrNull { it.isNotBlank() } ?: return emptyList()
 
         try {
             val firstDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-            val initialLinks = extractEpisodeLinks(firstDoc)
-            allLinks.addAll(initialLinks)
+            allEpisodes.addAll(extractEpisodes(firstDoc))
 
             var page = 1
             var hasMore = true
             while (hasMore) {
                 page++
                 try {
-                    val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
-                    val params = mutableMapOf<String, String>()
-                    params["action"] = "load_more"
-                    params["page"] = page.toString()
-                    params["template"] = "html/loop/content"
-                    params["vars[category_name]"] = slug
-
-                    val response = app.post(
-                        ajaxUrl,
-                        data = params,
-                        headers = mapOf(
-                            "User-Agent" to userAgent,
-                            "X-Requested-With" to "XMLHttpRequest",
-                            "Content-Type" to "application/x-www-form-urlencoded",
-                            "Referer" to seriesUrl
-                        )
-                    )
-
-                    if (response.code == 200) {
-                        val text = response.text
-                        if (text.isBlank() || text.length < 20) {
-                            hasMore = false
-                            break
-                        }
-
-                        // Deteksi akhir: cari div dengan class "invi no-posts" atau teks "no-posts"
-                        if (text.contains("invi no-posts") || text.contains("no-posts") || text.contains("no more posts", ignoreCase = true)) {
-                            hasMore = false
-                            break
-                        }
-
-                        val fragment = org.jsoup.Jsoup.parse(text)
-                        val links = extractEpisodeLinks(fragment)
-                        if (links.isNotEmpty()) {
-                            allLinks.addAll(links)
+                    // Prioritas 1: Gunakan Standard GET Pagination (Paling aman dari blokir Cloudflare)
+                    val getPageUrl = if (seriesUrl.endsWith("/")) "${seriesUrl}page/$page/" else "$seriesUrl/page/$page/"
+                    val getResponse = app.get(getPageUrl, headers = mapOf("User-Agent" to userAgent))
+                    
+                    if (getResponse.code == 200) {
+                        val newEpisodes = extractEpisodes(getResponse.document)
+                        if (newEpisodes.isNotEmpty()) {
+                            allEpisodes.addAll(newEpisodes)
+                            kotlinx.coroutines.delay(500) // Delay dinaikkan agar tidak rate-limited
+                            continue
                         } else {
-                            // Coba cari link di article lain
-                            val altLinks = fragment.select("article a").map { it.attr("href") }
-                                .filter { it.contains("/douga/") }
-                                .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
-                                .distinct()
-                            if (altLinks.isNotEmpty()) {
-                                allLinks.addAll(altLinks)
-                            } else {
+                            // Jika GET mengembalikan halaman tanpa link, hentikan loop GET dan break.
+                            hasMore = false
+                            break
+                        }
+                    }
+                } catch (e: Exception) {
+                    // Fallback biarkan berlanjut ke AJAX jika GET melempar exception (misal 404)
+                }
+
+                // Prioritas 2: Fallback ke metode POST AJAX jika web menggunakan custom theme ajax
+                if (hasMore) {
+                    try {
+                        val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+                        val params = mapOf(
+                            "action" to "load_more",
+                            "page" to page.toString(),
+                            "template" to "html/loop/content",
+                            "vars[category_name]" to slug
+                        )
+
+                        val response = app.post(
+                            ajaxUrl,
+                            data = params,
+                            headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "X-Requested-With" to "XMLHttpRequest",
+                                "Referer" to seriesUrl
+                            )
+                        )
+
+                        if (response.code == 200) {
+                            val text = response.text
+                            if (text.isBlank() || text.contains("invi no-posts") || text.contains("no-posts")) {
                                 hasMore = false
                                 break
                             }
+                            val fragment = org.jsoup.Jsoup.parse(text)
+                            val newEpisodes = extractEpisodes(fragment)
+                            if (newEpisodes.isNotEmpty()) {
+                                allEpisodes.addAll(newEpisodes)
+                            } else {
+                                hasMore = false
+                            }
+                        } else {
+                            hasMore = false
                         }
-                    } else {
+                    } catch (e: Exception) {
                         hasMore = false
-                        break
                     }
-                } catch (e: Exception) {
-                    hasMore = false
-                    break
+                    kotlinx.coroutines.delay(500) 
                 }
-                kotlinx.coroutines.delay(200)
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
 
-        return allLinks.distinct()
+        return allEpisodes.distinctBy { it.first }
     }
 
-    // ==================== BUILD SERIES RESPONSE ====================
-    private suspend fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
+    // ==================== BUILD SERIES RESPONSE (DIUPDATE) ====================
+    private suspend fun buildSeriesResponse(doc: Document, url: String, episodesData: List<Pair<String, String>>): TvSeriesLoadResponse {
         val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
         val descriptionElement = doc.selectFirst(".body-content")
@@ -271,14 +306,15 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        val reversedEpisodes = episodeLinks.reversed()
+        // Reverse urutan agar episode terlama (Ep 1) berada di atas
+        val reversedEpisodes = episodesData.reversed()
 
-        val episodes = reversedEpisodes.map { link ->
-            val episodeElement = doc.select("a[href='$link']").firstOrNull()
-            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
-            val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
-            newEpisode(episodeTitle) {
-                this.data = absoluteLink
+        val episodes = reversedEpisodes.mapIndexed { index, data ->
+            val (link, title) = data
+            // Jika judul gagal diekstrak dan tetap "Episode", beri nomor fallback otomatis
+            val finalTitle = if (title == "Episode") "Episode ${index + 1}" else title
+            newEpisode(finalTitle) {
+                this.data = link
             }
         }
 
@@ -288,12 +324,11 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // ==================== LOAD SINGLE PAGE ====================
     private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
         val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
         val descriptionElement = doc.selectFirst(".body-content")
@@ -311,7 +346,6 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // ==================== LOAD ====================
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
@@ -330,7 +364,7 @@ class NineTsuFixProvider : MainAPI() {
                         return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
                     } else {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        val fallbackLinks = extractEpisodeLinks(seriesDoc)
+                        val fallbackLinks = extractEpisodes(seriesDoc)
                         if (fallbackLinks.isNotEmpty()) {
                             return buildSeriesResponse(seriesDoc, seriesUrl, fallbackLinks)
                         }
@@ -351,7 +385,7 @@ class NineTsuFixProvider : MainAPI() {
                             return buildSeriesResponse(seriesDoc, href, allEpisodes)
                         } else {
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            val fallbackLinks = extractEpisodeLinks(seriesDoc)
+                            val fallbackLinks = extractEpisodes(seriesDoc)
                             if (fallbackLinks.isNotEmpty()) {
                                 return buildSeriesResponse(seriesDoc, href, fallbackLinks)
                             }
@@ -363,7 +397,7 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url)
         }
 
-        val episodeLinks = extractEpisodeLinks(doc)
+        val episodeLinks = extractEpisodes(doc)
 
         if (episodeLinks.isNotEmpty()) {
             val allEpisodes = loadAllEpisodes(url)
@@ -376,7 +410,6 @@ class NineTsuFixProvider : MainAPI() {
         return loadSinglePage(doc, url)
     }
 
-    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
