@@ -19,7 +19,7 @@ class NineTsuFixProvider : MainAPI() {
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
-    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
     // Daftar kategori yang HARUS dianggap sebagai single page (bukan series)
     private val categoryPages = setOf(
@@ -159,9 +159,7 @@ class NineTsuFixProvider : MainAPI() {
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
-            // Ambil semua elemen a
             val links = breadcrumbNav.select("a")
-            // Cari link terakhir yang bukan home, bukan douga, dan bukan kategori
             for (i in links.size - 1 downTo 0) {
                 val link = links[i]
                 val href = link.attr("href")
@@ -171,6 +169,80 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
         return null
+    }
+
+    // ==================== LOAD ALL EPISODES DENGAN AJAX ====================
+    private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
+        val allLinks = mutableListOf<String>()
+
+        // Ambil slug dari URL series (contoh: /kazekaoru -> kazekaoru)
+        val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
+
+        // Ambil halaman pertama
+        try {
+            val firstDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+            val initialLinks = extractEpisodeLinks(firstDoc)
+            allLinks.addAll(initialLinks)
+
+            // Cek apakah ada indikasi halaman berikutnya (load more atau jumlah episode >= 30)
+            val loadMoreBtn = firstDoc.select(".load-more, .ajax-load-more, .alm-load-more, .navigation-ajax a")
+            val hasMoreIndicator = loadMoreBtn.isNotEmpty() || initialLinks.size >= 30
+
+            if (hasMoreIndicator) {
+                var page = 1
+                var hasMore = true
+                while (hasMore) {
+                    page++
+                    try {
+                        val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+                        val params = mutableMapOf<String, String>()
+                        params["action"] = "load_more"
+                        params["page"] = page.toString()
+                        params["template"] = "html/loop/content"
+                        params["vars[category_name]"] = slug
+
+                        val response = app.post(
+                            ajaxUrl,
+                            data = params,
+                            headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "X-Requested-With" to "XMLHttpRequest",
+                                "Content-Type" to "application/x-www-form-urlencoded",
+                                "Referer" to seriesUrl
+                            )
+                        )
+
+                        if (response.code == 200) {
+                            val text = response.text
+                            if (text.isBlank() || text.length < 50) {
+                                hasMore = false
+                                break
+                            }
+                            val fragment = org.jsoup.Jsoup.parse(text)
+                            val links = extractEpisodeLinks(fragment)
+                            if (links.isNotEmpty()) {
+                                allLinks.addAll(links)
+                            } else {
+                                hasMore = false
+                                break
+                            }
+                        } else {
+                            hasMore = false
+                            break
+                        }
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        hasMore = false
+                        break
+                    }
+                    kotlinx.coroutines.delay(150) // biar tidak kena rate limit
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return allLinks.distinct()
     }
 
     // ==================== BUILD SERIES RESPONSE ====================
@@ -190,7 +262,7 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // Balik urutan episode (karena halaman menampilkan episode terbaru di atas)
+        // Balik urutan episode karena halaman menampilkan episode terbaru di atas
         val reversedEpisodes = episodeLinks.reversed()
 
         val episodes = reversedEpisodes.map { link ->
@@ -236,24 +308,20 @@ class NineTsuFixProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        // Jika URL adalah kategori hari, langsung tampilkan single page
         if (isCategoryPage(url)) {
             return loadSinglePage(doc, url)
         }
 
-        // Jika URL adalah episode (/douga/)
         if (url.contains("/douga/")) {
-            // Coba dapatkan series URL dari breadcrumb
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
 
             if (seriesUrl != null && seriesUrl != url) {
                 try {
-                    val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                    val episodeLinks = extractEpisodeLinks(seriesDoc)
-
-                    if (episodeLinks.isNotEmpty()) {
+                    val allEpisodeLinks = loadAllEpisodes(seriesUrl)
+                    if (allEpisodeLinks.isNotEmpty()) {
                         if (!isCategoryPage(seriesUrl)) {
-                            return buildSeriesResponse(seriesDoc, seriesUrl, episodeLinks)
+                            val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                            return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodeLinks)
                         }
                     }
                 } catch (e: Exception) {
@@ -261,39 +329,35 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Jika breadcrumb gagal, coba cari link series dari rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
                 if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
                     try {
-                        val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                        val episodeLinks = extractEpisodeLinks(seriesDoc)
-                        if (episodeLinks.isNotEmpty()) {
-                            return buildSeriesResponse(seriesDoc, href, episodeLinks)
+                        val allEpisodeLinks = loadAllEpisodes(href)
+                        if (allEpisodeLinks.isNotEmpty()) {
+                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                            return buildSeriesResponse(seriesDoc, href, allEpisodeLinks)
                         }
                     } catch (e: Exception) { e.printStackTrace() }
                 }
             }
 
-            // Jika semua gagal, tampilkan single page
             return loadSinglePage(doc, url)
         }
 
-        // URL bukan episode dan bukan kategori
-        // Cek apakah ini halaman series (berisi banyak episode)
         val episodeLinks = extractEpisodeLinks(doc)
-
-        // Periksa breadcrumb: jika memiliki 3 level atau lebih (Home > Kategori > Series)
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         val breadcrumbLevels = breadcrumbNav?.select("a")?.size ?: 0
 
-        // Jika ada episode dan breadcrumb menunjukkan ini series (bukan kategori hari)
         if (episodeLinks.isNotEmpty() && breadcrumbLevels >= 3 && !isCategoryPage(url)) {
+            val allEpisodeLinks = loadAllEpisodes(url)
+            if (allEpisodeLinks.isNotEmpty()) {
+                return buildSeriesResponse(doc, url, allEpisodeLinks)
+            }
             return buildSeriesResponse(doc, url, episodeLinks)
         }
 
-        // Jika tidak ada episode atau ini kategori, tampilkan single page
         return loadSinglePage(doc, url)
     }
 
@@ -316,7 +380,6 @@ class NineTsuFixProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // qevrinto.guru - langsung API
                     src.contains("qevrinto.guru") -> {
                         val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
@@ -337,7 +400,6 @@ class NineTsuFixProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru
                     src.contains("ok.ru") -> {
                         allUrls.add(src)
                         try {
@@ -349,7 +411,6 @@ class NineTsuFixProvider : MainAPI() {
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
-                    // Iframe lainnya
                     else -> {
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
