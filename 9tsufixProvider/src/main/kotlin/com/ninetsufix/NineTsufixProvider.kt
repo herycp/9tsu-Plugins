@@ -21,7 +21,7 @@ class NineTsuFixProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Daftar kategori yang HARUS dianggap sebagai single page (bukan series)
+    // Daftar kategori yang HARUS dianggap single page (bukan series)
     private val categoryPages = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies"
@@ -155,7 +155,7 @@ class NineTsuFixProvider : MainAPI() {
             }.distinct()
     }
 
-    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB ====================
+    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB (untuk episode) ====================
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
@@ -178,8 +178,8 @@ class NineTsuFixProvider : MainAPI() {
         // Ambil slug dari URL series (contoh: /kazekaoru -> kazekaoru)
         val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
 
-        // Ambil halaman pertama
         try {
+            // Halaman pertama
             val firstDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
             val initialLinks = extractEpisodeLinks(firstDoc)
             allLinks.addAll(initialLinks)
@@ -235,7 +235,7 @@ class NineTsuFixProvider : MainAPI() {
                         hasMore = false
                         break
                     }
-                    kotlinx.coroutines.delay(150) // biar tidak kena rate limit
+                    kotlinx.coroutines.delay(150)
                 }
             }
         } catch (e: Exception) {
@@ -308,27 +308,29 @@ class NineTsuFixProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
+        // 1. Jika URL adalah kategori hari -> single page
         if (isCategoryPage(url)) {
             return loadSinglePage(doc, url)
         }
 
+        // 2. Jika URL adalah episode (/douga/)
         if (url.contains("/douga/")) {
+            // Cari series dari breadcrumb
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
 
             if (seriesUrl != null && seriesUrl != url) {
                 try {
                     val allEpisodeLinks = loadAllEpisodes(seriesUrl)
                     if (allEpisodeLinks.isNotEmpty()) {
-                        if (!isCategoryPage(seriesUrl)) {
-                            val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                            return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodeLinks)
-                        }
+                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodeLinks)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
             }
 
+            // Jika breadcrumb gagal, coba cari link series dari rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -343,21 +345,25 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
+            // Gagal menemukan series -> single page
             return loadSinglePage(doc, url)
         }
 
+        // 3. URL bukan kategori dan bukan episode -> cek apakah ini halaman series
         val episodeLinks = extractEpisodeLinks(doc)
-        val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
-        val breadcrumbLevels = breadcrumbNav?.select("a")?.size ?: 0
 
-        if (episodeLinks.isNotEmpty() && breadcrumbLevels >= 3 && !isCategoryPage(url)) {
+        // Jika ada episode links, anggap sebagai series (tidak perlu breadcrumb)
+        if (episodeLinks.isNotEmpty()) {
+            // Load semua episode dengan AJAX
             val allEpisodeLinks = loadAllEpisodes(url)
             if (allEpisodeLinks.isNotEmpty()) {
                 return buildSeriesResponse(doc, url, allEpisodeLinks)
             }
+            // Jika gagal load all, gunakan yang sudah ada
             return buildSeriesResponse(doc, url, episodeLinks)
         }
 
+        // Tidak ada episode -> single page
         return loadSinglePage(doc, url)
     }
 
