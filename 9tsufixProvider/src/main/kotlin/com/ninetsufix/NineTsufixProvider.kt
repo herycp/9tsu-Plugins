@@ -151,7 +151,7 @@ class NineTsuFixProvider : MainAPI() {
             val episodeElement = doc.select("a[href='$link']").firstOrNull()
             val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
             newEpisode(episodeTitle) {
-                this.url = link
+                this.data = link
             }
         }
 
