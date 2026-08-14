@@ -155,20 +155,28 @@ class NineTsuFixProvider : MainAPI() {
             }.distinct()
     }
 
-    // ==================== CARI SERIES URL DARI BREADCRUMB ====================
+    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB ====================
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
             val links = breadcrumbNav.select("a")
-            // Breadcrumb: Home > Kategori Hari > Series (link) > Episode (text)
-            // Kita cari link yang bukan root dan bukan kategori hari
-            for (link in links) {
-                val href = link.attr("href")
-                if (href.isNotBlank() && !href.equals(mainUrl) && !href.equals("$mainUrl/") && !isCategoryPage(href)) {
-                    // Pastikan link ini bukan episode
-                    if (!href.contains("/douga/")) {
+            // Breadcrumb: Home > Kategori > Series > Episode (teks)
+            // Link kedua dari terakhir adalah Series (jika ada)
+            if (links.size >= 3) {
+                val seriesLink = links[links.size - 2]
+                val href = seriesLink.attr("href")
+                if (href.isNotBlank() && !href.contains("/douga/") && !href.equals(mainUrl)) {
+                    if (!isCategoryPage(href)) {
                         return href
                     }
+                }
+            }
+            // Jika ukuran 2 (Home > Series), maka link terakhir adalah series
+            if (links.size == 2) {
+                val seriesLink = links[1]
+                val href = seriesLink.attr("href")
+                if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
+                    return href
                 }
             }
         }
@@ -192,11 +200,13 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        val episodes = episodeLinks.mapIndexed { index, link ->
+        val episodes = episodeLinks.map { link ->
             val episodeElement = doc.select("a[href='$link']").firstOrNull()
-            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode ${index + 1}"
+            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
+            // Gunakan link absolut
+            val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
             newEpisode(episodeTitle) {
-                this.data = link
+                this.data = absoluteLink
             }
         }
 
@@ -239,20 +249,54 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url)
         }
 
-        // Cari series URL dari breadcrumb
-        val seriesUrl = getSeriesUrlFromBreadcrumb(doc)
+        // Jika URL adalah episode (/douga/)
+        if (url.contains("/douga/")) {
+            // Coba dapatkan series URL dari breadcrumb
+            var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
 
-        if (seriesUrl != null && seriesUrl != url) {
-            // Load halaman series
-            val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-            val episodeLinks = extractEpisodeLinks(seriesDoc)
+            if (seriesUrl != null && seriesUrl != url) {
+                val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                val episodeLinks = extractEpisodeLinks(seriesDoc)
 
-            if (episodeLinks.isNotEmpty()) {
-                return buildSeriesResponse(seriesDoc, seriesUrl, episodeLinks)
+                if (episodeLinks.isNotEmpty()) {
+                    // Pastikan ini bukan kategori
+                    if (!isCategoryPage(seriesUrl)) {
+                        return buildSeriesResponse(seriesDoc, seriesUrl, episodeLinks)
+                    }
+                }
             }
+
+            // Jika breadcrumb gagal, coba cari link series dari rel='category'
+            val seriesLink = doc.select("a[rel='category']").firstOrNull()
+            if (seriesLink != null) {
+                val href = seriesLink.attr("href")
+                if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
+                    val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                    val episodeLinks = extractEpisodeLinks(seriesDoc)
+                    if (episodeLinks.isNotEmpty()) {
+                        return buildSeriesResponse(seriesDoc, href, episodeLinks)
+                    }
+                }
+            }
+
+            // Jika semua gagal, tampilkan single page
+            return loadSinglePage(doc, url)
         }
 
-        // Jika tidak ada series URL atau tidak ada episode, tampilkan single page
+        // URL bukan episode dan bukan kategori
+        // Cek apakah ini halaman series (berisi banyak episode)
+        val episodeLinks = extractEpisodeLinks(doc)
+
+        // Periksa breadcrumb: jika memiliki 3 level atau lebih (Home > Kategori > Series)
+        val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+        val breadcrumbLevels = breadcrumbNav?.select("a")?.size ?: 0
+
+        // Jika ada episode dan breadcrumb menunjukkan ini series (bukan kategori hari)
+        if (episodeLinks.isNotEmpty() && breadcrumbLevels >= 3 && !isCategoryPage(url)) {
+            return buildSeriesResponse(doc, url, episodeLinks)
+        }
+
+        // Jika tidak ada episode atau ini kategori, tampilkan single page
         return loadSinglePage(doc, url)
     }
 
@@ -275,7 +319,7 @@ class NineTsuFixProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // qevrinto.guru - langsung API
+                    // qevrinto.guru - langsung API (perbaiki domain)
                     src.contains("qevrinto.guru") -> {
                         val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
