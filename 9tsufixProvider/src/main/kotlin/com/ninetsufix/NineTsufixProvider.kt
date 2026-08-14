@@ -130,6 +130,60 @@ class NineTsuFixProvider : MainAPI() {
         return results.distinctBy { it.url }
     }
 
+    // ==================== BUILD SERIES RESPONSE ====================
+    private suspend fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
+        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        val episodes = episodeLinks.map { link ->
+            val episodeElement = doc.select("a[href='$link']").firstOrNull()
+            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
+            newEpisode(episodeTitle) {
+                this.url = link
+            }
+        }
+
+        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    // ==================== LOAD SINGLE PAGE ====================
+    private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
+        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
     // ==================== LOAD ====================
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
@@ -203,59 +257,6 @@ class NineTsuFixProvider : MainAPI() {
             } else {
                 return loadSinglePage(doc, url)
             }
-        }
-    }
-
-    // ==================== BUILD SERIES RESPONSE ====================
-    private fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
-        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        // Build episodes using newEpisode method
-        val episodes = episodeLinks.map { link ->
-            val episodeElement = doc.select("a[href='$link']").firstOrNull()
-            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
-            newEpisode(episodeTitle, link)
-        }
-
-        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
-    // ==================== LOAD SINGLE PAGE ====================
-    private fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
-        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
-            this.posterUrl = posterUrl
-            this.plot = description
         }
     }
 
