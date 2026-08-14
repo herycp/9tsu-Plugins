@@ -142,6 +142,7 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
+    // Ekstrak episode info dari HTML (hanya untuk halaman pertama / fallback)
     private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
         return doc.select("article.cactus-post-item a[href*='/douga/']")
             .mapNotNull { element ->
@@ -172,6 +173,7 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
+    // loadAllEpisodes hanya menggunakan AJAX load_more, tanpa fallback HTML
     private suspend fun loadAllEpisodes(seriesUrl: String, debugInfo: StringBuilder): List<EpisodeInfo> {
         val allEpisodes = mutableListOf<EpisodeInfo>()
         val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
@@ -227,29 +229,16 @@ class NineTsuFixProvider : MainAPI() {
                         debugInfo.append("  📄 Found ${episodes.size} episodes in this page\n")
 
                         if (episodes.isNotEmpty()) {
-                            val sampleTitles = episodes.take(3).joinToString { it.title }
-                            debugInfo.append("  📝 Sample titles: $sampleTitles\n")
+                            // Log setiap episode yang ditemukan
+                            episodes.forEachIndexed { idx, ep ->
+                                debugInfo.append("    📝 [$idx] Title: \"${ep.title}\" → ${ep.link}\n")
+                            }
                             allEpisodes.addAll(episodes)
                             debugInfo.append("  📊 Total episodes so far: ${allEpisodes.size}\n")
                         } else {
-                            // Fallback: cari link saja
-                            val altLinks = fragment.select("article a").map { it.attr("href") }
-                                .filter { it.contains("/douga/") }
-                                .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
-                                .distinct()
-                            if (altLinks.isNotEmpty()) {
-                                val altEpisodes = altLinks.mapNotNull { link ->
-                                    val el = fragment.select("a[href='$link']").firstOrNull()
-                                    val title = el?.attr("title")?.takeIf { it.isNotBlank() } ?: el?.text()?.trim() ?: "Episode"
-                                    EpisodeInfo(link, title)
-                                }
-                                allEpisodes.addAll(altEpisodes)
-                                debugInfo.append("  🔄 Found ${altEpisodes.size} alt episodes, total: ${allEpisodes.size}\n")
-                            } else {
-                                debugInfo.append("  ❌ No episodes found, stopping.\n")
-                                hasMore = false
-                                break
-                            }
+                            debugInfo.append("  ❌ No episodes found in this page (even after fallback), stopping.\n")
+                            hasMore = false
+                            break
                         }
 
                         if (isEnd) {
@@ -303,18 +292,28 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        val sampleTitles = episodeList.take(5).joinToString { it.title }
-        debugInfo.append("📝 Sample episode titles: $sampleTitles\n")
-
-        description += "\n\n========== DEBUG INFO ==========\n${debugInfo.toString()}\n================================="
+        // Log detail setiap episode yang akan dibuat
+        debugInfo.append("\n--- Creating episodes from list (${episodeList.size} items) ---\n")
+        episodeList.forEachIndexed { idx, ep ->
+            debugInfo.append("  [$idx] Title: \"${ep.title}\" → ${ep.link}\n")
+        }
 
         // Balik urutan karena halaman menampilkan episode terbaru di atas
         val reversedEpisodes = episodeList.reversed()
 
-        // Gunakan newEpisode dengan dua parameter untuk memastikan nama dan URL terisi
-        val episodes = reversedEpisodes.map { episode ->
-            newEpisode(episode.title, episode.link)
+        val episodes = reversedEpisodes.mapIndexed { idx, episode ->
+            // Gunakan newEpisode dengan dua parameter (judul, link) - aman
+            // Namun karena newEpisode dengan 2 parameter mungkin tidak tersedia, kita pakai lambda
+            val ep = newEpisode(episode.title) {
+                this.data = episode.link
+            }
+            debugInfo.append("  🟢 Created episode #${idx + 1}: title=\"${episode.title}\", data=${episode.link}\n")
+            ep
         }
+
+        debugInfo.append("--- All episodes created successfully (${episodes.size} total) ---\n")
+
+        description += "\n\n========== DEBUG INFO ==========\n${debugInfo.toString()}\n================================="
 
         return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
@@ -361,17 +360,20 @@ class NineTsuFixProvider : MainAPI() {
             if (seriesUrl != null) {
                 debugInfo.append("🔗 Found series URL from breadcrumb: $seriesUrl\n")
                 try {
+                    // Hanya gunakan AJAX, tanpa fallback HTML
                     val allEpisodes = loadAllEpisodes(seriesUrl, debugInfo)
                     if (allEpisodes.isNotEmpty()) {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
                         return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes, debugInfo)
                     } else {
-                        debugInfo.append("⚠️ loadAllEpisodes returned empty, using fallback\n")
+                        debugInfo.append("⚠️ loadAllEpisodes returned empty, trying fallback from series page HTML (just in case)\n")
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
                         val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
                         if (fallbackEpisodes.isNotEmpty()) {
-                            debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback\n")
+                            debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback HTML\n")
                             return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes, debugInfo)
+                        } else {
+                            debugInfo.append("❌ Fallback also empty, showing single page\n")
                         }
                     }
                 } catch (e: Exception) {
@@ -380,6 +382,7 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
+            // Jika tidak ada series dari breadcrumb, coba rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -391,11 +394,11 @@ class NineTsuFixProvider : MainAPI() {
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
                             return buildSeriesResponse(seriesDoc, href, allEpisodes, debugInfo)
                         } else {
-                            debugInfo.append("⚠️ loadAllEpisodes returned empty, using fallback\n")
+                            debugInfo.append("⚠️ loadAllEpisodes returned empty, trying fallback HTML\n")
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
                             val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
                             if (fallbackEpisodes.isNotEmpty()) {
-                                debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback\n")
+                                debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback HTML\n")
                                 return buildSeriesResponse(seriesDoc, href, fallbackEpisodes, debugInfo)
                             }
                         }
@@ -407,18 +410,21 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url)
         }
 
-        val episodeList = extractEpisodeInfo(doc)
-        debugInfo.append("📄 Found ${episodeList.size} episodes on page\n")
+        // URL bukan episode dan bukan kategori -> cek apakah halaman series
+        // Gunakan AJAX load_more dari page 0, tanpa fallback HTML
+        val episodeList = extractEpisodeInfo(doc) // hanya untuk deteksi awal
+        debugInfo.append("📄 Found ${episodeList.size} episodes on page (from HTML)\n")
 
         if (episodeList.isNotEmpty()) {
-            debugInfo.append("🔄 Loading all episodes via AJAX...\n")
+            debugInfo.append("🔄 Loading all episodes via AJAX (starting from page 0)...\n")
             val allEpisodes = loadAllEpisodes(url, debugInfo)
             if (allEpisodes.isNotEmpty()) {
                 debugInfo.append("✅ Total episodes loaded: ${allEpisodes.size}\n")
                 return buildSeriesResponse(doc, url, allEpisodes, debugInfo)
+            } else {
+                debugInfo.append("⚠️ AJAX load returned empty, using fallback from HTML page\n")
+                return buildSeriesResponse(doc, url, episodeList, debugInfo)
             }
-            debugInfo.append("⚠️ AJAX load returned empty, using fallback\n")
-            return buildSeriesResponse(doc, url, episodeList, debugInfo)
         }
 
         debugInfo.append("❌ No episodes found, showing single page\n")
