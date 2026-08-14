@@ -151,7 +151,9 @@ class NineTsuFixProvider : MainAPI() {
                     href.startsWith("/") -> "https://9tsu.in$href"
                     else -> null
                 } ?: return@mapNotNull null
+                // Ambil judul dari attribute title, jika tidak ada dari text
                 val title = element.attr("title").takeIf { it.isNotBlank() } ?: element.text().trim()
+                if (title.isBlank()) return@mapNotNull null
                 EpisodeInfo(link, title)
             }.distinctBy { it.link }
     }
@@ -226,20 +228,24 @@ class NineTsuFixProvider : MainAPI() {
                         debugInfo.append("  📄 Found ${episodes.size} episodes in this page\n")
 
                         if (episodes.isNotEmpty()) {
+                            // Tampilkan beberapa judul untuk debug
+                            val sampleTitles = episodes.take(3).joinToString { it.title }
+                            debugInfo.append("  📝 Sample titles: $sampleTitles\n")
                             allEpisodes.addAll(episodes)
                             debugInfo.append("  📊 Total episodes so far: ${allEpisodes.size}\n")
-                            // Tampilkan judul pertama sebagai contoh
-                            if (episodes.isNotEmpty()) {
-                                debugInfo.append("  📝 Example title: ${episodes.first().title}\n")
-                            }
                         } else {
-                            // Fallback: cari link saja tanpa judul
+                            // Fallback: cari link saja
                             val altLinks = fragment.select("article a").map { it.attr("href") }
                                 .filter { it.contains("/douga/") }
                                 .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
                                 .distinct()
                             if (altLinks.isNotEmpty()) {
-                                val altEpisodes = altLinks.map { EpisodeInfo(it, "Episode") }
+                                // Untuk fallback, gunakan judul dari text atau attribute title jika ada
+                                val altEpisodes = altLinks.mapNotNull { link ->
+                                    val el = fragment.select("a[href='$link']").firstOrNull()
+                                    val title = el?.attr("title")?.takeIf { it.isNotBlank() } ?: el?.text()?.trim() ?: "Episode"
+                                    EpisodeInfo(link, title)
+                                }
                                 allEpisodes.addAll(altEpisodes)
                                 debugInfo.append("  🔄 Found ${altEpisodes.size} alt episodes, total: ${allEpisodes.size}\n")
                             } else {
@@ -300,13 +306,18 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
+        // Tambahkan sample judul episode ke debug
+        val sampleTitles = episodeList.take(5).joinToString { it.title }
+        debugInfo.append("📝 Sample episode titles: $sampleTitles\n")
+
         description += "\n\n========== DEBUG INFO ==========\n${debugInfo.toString()}\n================================="
 
         // Balik urutan karena halaman menampilkan episode terbaru di atas
         val reversedEpisodes = episodeList.reversed()
 
         val episodes = reversedEpisodes.map { episode ->
-            newEpisode(episode.title) {
+            val title = episode.title.takeIf { it.isNotBlank() } ?: "Episode"
+            newEpisode(title) {
                 this.data = episode.link
             }
         }
