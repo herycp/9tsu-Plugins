@@ -318,8 +318,9 @@ class NineTsuFixProvider : MainAPI() {
             debugInfo.append("  🟢 Creating episode: title=\"${episode.title}\", number=$episodeNumber\n")
             
             newEpisode(episode.title) {
+                this.name = episode.title // Penegasan paksa agar menggunakan string aslinya
                 this.data = episode.link
-                this.episode = episodeNumber
+                // this.episode = episodeNumber (Dihapus agar tidak tertimpa format otomatis)
             }
         }
 
