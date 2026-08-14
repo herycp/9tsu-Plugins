@@ -155,7 +155,7 @@ class NineTsuFixProvider : MainAPI() {
             }.distinct()
     }
 
-    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB (untuk episode) ====================
+    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB ====================
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
@@ -175,7 +175,6 @@ class NineTsuFixProvider : MainAPI() {
     private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
         val allLinks = mutableListOf<String>()
 
-        // Ambil slug dari URL series (contoh: /kazekaoru -> kazekaoru)
         val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
 
         try {
@@ -184,59 +183,64 @@ class NineTsuFixProvider : MainAPI() {
             val initialLinks = extractEpisodeLinks(firstDoc)
             allLinks.addAll(initialLinks)
 
-            // Cek apakah ada indikasi halaman berikutnya (load more atau jumlah episode >= 30)
-            val loadMoreBtn = firstDoc.select(".load-more, .ajax-load-more, .alm-load-more, .navigation-ajax a")
-            val hasMoreIndicator = loadMoreBtn.isNotEmpty() || initialLinks.size >= 30
+            var page = 1
+            var hasMore = true
+            while (hasMore) {
+                page++
+                try {
+                    val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+                    val params = mutableMapOf<String, String>()
+                    params["action"] = "load_more"
+                    params["page"] = page.toString()
+                    params["template"] = "html/loop/content"
+                    params["vars[category_name]"] = slug
 
-            if (hasMoreIndicator) {
-                var page = 1
-                var hasMore = true
-                while (hasMore) {
-                    page++
-                    try {
-                        val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
-                        val params = mutableMapOf<String, String>()
-                        params["action"] = "load_more"
-                        params["page"] = page.toString()
-                        params["template"] = "html/loop/content"
-                        params["vars[category_name]"] = slug
-
-                        val response = app.post(
-                            ajaxUrl,
-                            data = params,
-                            headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "X-Requested-With" to "XMLHttpRequest",
-                                "Content-Type" to "application/x-www-form-urlencoded",
-                                "Referer" to seriesUrl
-                            )
+                    val response = app.post(
+                        ajaxUrl,
+                        data = params,
+                        headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "Content-Type" to "application/x-www-form-urlencoded",
+                            "Referer" to seriesUrl
                         )
+                    )
 
-                        if (response.code == 200) {
-                            val text = response.text
-                            if (text.isBlank() || text.length < 50) {
-                                hasMore = false
-                                break
+                    if (response.code == 200) {
+                        val text = response.text
+                        if (text.isBlank() || text.length < 50) {
+                            hasMore = false
+                            break
+                        }
+                        // Coba parse sebagai JSON (mungkin ada field html)
+                        var htmlContent = text
+                        try {
+                            if (text.trim().startsWith("{")) {
+                                val json = JSONObject(text)
+                                val htmlField = json.optString("html", null) ?: json.optString("data", null)
+                                if (!htmlField.isNullOrBlank()) {
+                                    htmlContent = htmlField
+                                }
                             }
-                            val fragment = org.jsoup.Jsoup.parse(text)
-                            val links = extractEpisodeLinks(fragment)
-                            if (links.isNotEmpty()) {
-                                allLinks.addAll(links)
-                            } else {
-                                hasMore = false
-                                break
-                            }
+                        } catch (e: Exception) { /* bukan JSON */ }
+
+                        val fragment = org.jsoup.Jsoup.parse(htmlContent)
+                        val links = extractEpisodeLinks(fragment)
+                        if (links.isNotEmpty()) {
+                            allLinks.addAll(links)
                         } else {
                             hasMore = false
                             break
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
+                    } else {
                         hasMore = false
                         break
                     }
-                    kotlinx.coroutines.delay(150)
+                } catch (e: Exception) {
+                    hasMore = false
+                    break
                 }
+                kotlinx.coroutines.delay(150)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -315,31 +319,42 @@ class NineTsuFixProvider : MainAPI() {
 
         // 2. Jika URL adalah episode (/douga/)
         if (url.contains("/douga/")) {
-            // Cari series dari breadcrumb
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
-
-            if (seriesUrl != null && seriesUrl != url) {
+            if (seriesUrl != null) {
                 try {
-                    val allEpisodeLinks = loadAllEpisodes(seriesUrl)
-                    if (allEpisodeLinks.isNotEmpty()) {
+                    val allEpisodes = loadAllEpisodes(seriesUrl)
+                    if (allEpisodes.isNotEmpty()) {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodeLinks)
+                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
+                    } else {
+                        // fallback: ambil episode dari halaman series pertama
+                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                        val fallbackLinks = extractEpisodeLinks(seriesDoc)
+                        if (fallbackLinks.isNotEmpty()) {
+                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackLinks)
+                        }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
             }
 
-            // Jika breadcrumb gagal, coba cari link series dari rel='category'
+            // Alternatif: cari dari rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
                 if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
                     try {
-                        val allEpisodeLinks = loadAllEpisodes(href)
-                        if (allEpisodeLinks.isNotEmpty()) {
+                        val allEpisodes = loadAllEpisodes(href)
+                        if (allEpisodes.isNotEmpty()) {
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            return buildSeriesResponse(seriesDoc, href, allEpisodeLinks)
+                            return buildSeriesResponse(seriesDoc, href, allEpisodes)
+                        } else {
+                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                            val fallbackLinks = extractEpisodeLinks(seriesDoc)
+                            if (fallbackLinks.isNotEmpty()) {
+                                return buildSeriesResponse(seriesDoc, href, fallbackLinks)
+                            }
                         }
                     } catch (e: Exception) { e.printStackTrace() }
                 }
@@ -352,18 +367,16 @@ class NineTsuFixProvider : MainAPI() {
         // 3. URL bukan kategori dan bukan episode -> cek apakah ini halaman series
         val episodeLinks = extractEpisodeLinks(doc)
 
-        // Jika ada episode links, anggap sebagai series (tidak perlu breadcrumb)
         if (episodeLinks.isNotEmpty()) {
             // Load semua episode dengan AJAX
-            val allEpisodeLinks = loadAllEpisodes(url)
-            if (allEpisodeLinks.isNotEmpty()) {
-                return buildSeriesResponse(doc, url, allEpisodeLinks)
+            val allEpisodes = loadAllEpisodes(url)
+            if (allEpisodes.isNotEmpty()) {
+                return buildSeriesResponse(doc, url, allEpisodes)
             }
-            // Jika gagal load all, gunakan yang sudah ada
+            // fallback ke episode yang ada di halaman pertama
             return buildSeriesResponse(doc, url, episodeLinks)
         }
 
-        // Tidak ada episode -> single page
         return loadSinglePage(doc, url)
     }
 
