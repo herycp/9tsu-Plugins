@@ -24,7 +24,8 @@ class NineTsuFixProvider : MainAPI() {
     // Daftar kategori yang HARUS dianggap single page (bukan series)
     private val categoryPages = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
-        "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies"
+        "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
+        "/premium"
     )
 
     private fun getAttrOrNull(element: Element?, attr: String): String? {
@@ -142,9 +143,8 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    // ==================== EKSTRAK EPISODE LINKS (GENERAL) ====================
+    // ==================== EKSTRAK EPISODE LINKS ====================
     private fun extractEpisodeLinks(doc: Document): List<String> {
-        // Selektor lebih general, cocok untuk halaman utama dan response AJAX
         return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
             .mapNotNull { element ->
                 val href = element.attr("href")
@@ -172,15 +172,13 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES DENGAN AJAX (PERBAIKAN) ====================
+    // ==================== LOAD ALL EPISODES DENGAN AJAX (DENGAN DETEKSI AKHIR) ====================
     private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
         val allLinks = mutableListOf<String>()
 
-        // Ambil slug (path setelah domain)
         val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
 
         try {
-            // Halaman pertama
             val firstDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
             val initialLinks = extractEpisodeLinks(firstDoc)
             allLinks.addAll(initialLinks)
@@ -210,19 +208,33 @@ class NineTsuFixProvider : MainAPI() {
 
                     if (response.code == 200) {
                         val text = response.text
-                        if (text.isBlank() || text.length < 50) {
+                        if (text.isBlank() || text.length < 20) {
                             hasMore = false
                             break
                         }
-                        // Langsung parse sebagai HTML (response dari web berupa HTML, bukan JSON)
+
+                        // Deteksi akhir: cari div dengan class "invi no-posts" atau teks "no-posts"
+                        if (text.contains("invi no-posts") || text.contains("no-posts") || text.contains("no more posts", ignoreCase = true)) {
+                            hasMore = false
+                            break
+                        }
+
                         val fragment = org.jsoup.Jsoup.parse(text)
                         val links = extractEpisodeLinks(fragment)
                         if (links.isNotEmpty()) {
                             allLinks.addAll(links)
                         } else {
-                            // Tidak ada link baru, hentikan
-                            hasMore = false
-                            break
+                            // Coba cari link di article lain
+                            val altLinks = fragment.select("article a").map { it.attr("href") }
+                                .filter { it.contains("/douga/") }
+                                .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
+                                .distinct()
+                            if (altLinks.isNotEmpty()) {
+                                allLinks.addAll(altLinks)
+                            } else {
+                                hasMore = false
+                                break
+                            }
                         }
                     } else {
                         hasMore = false
@@ -258,7 +270,6 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // Balik urutan episode karena halaman menampilkan episode terbaru di atas
         val reversedEpisodes = episodeLinks.reversed()
 
         val episodes = reversedEpisodes.map { link ->
@@ -304,12 +315,10 @@ class NineTsuFixProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        // 1. Jika URL adalah kategori hari -> single page
         if (isCategoryPage(url)) {
             return loadSinglePage(doc, url)
         }
 
-        // 2. Jika URL adalah episode (/douga/)
         if (url.contains("/douga/")) {
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
             if (seriesUrl != null) {
@@ -319,7 +328,6 @@ class NineTsuFixProvider : MainAPI() {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
                         return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
                     } else {
-                        // fallback: ambil episode dari halaman series pertama
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
                         val fallbackLinks = extractEpisodeLinks(seriesDoc)
                         if (fallbackLinks.isNotEmpty()) {
@@ -331,7 +339,6 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Alternatif: cari dari rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -352,20 +359,16 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Gagal menemukan series -> single page
             return loadSinglePage(doc, url)
         }
 
-        // 3. URL bukan kategori dan bukan episode -> cek apakah ini halaman series
         val episodeLinks = extractEpisodeLinks(doc)
 
         if (episodeLinks.isNotEmpty()) {
-            // Load semua episode dengan AJAX
             val allEpisodes = loadAllEpisodes(url)
             if (allEpisodes.isNotEmpty()) {
                 return buildSeriesResponse(doc, url, allEpisodes)
             }
-            // fallback ke episode yang ada di halaman pertama
             return buildSeriesResponse(doc, url, episodeLinks)
         }
 
