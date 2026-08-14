@@ -78,8 +78,20 @@ class NineTsuFixProvider : MainAPI() {
             val match = pattern.find(title)
             if (match != null) {
                 val numStr = match.groupValues[1]
-                val normalized = numStr.map { 
-                    if (it in '０'..'９') (it - '０' + '0').toChar() else it 
+                val normalized = numStr.map { char ->
+                    when (char) {
+                        '０' -> '0'
+                        '１' -> '1'
+                        '２' -> '2'
+                        '３' -> '3'
+                        '４' -> '4'
+                        '５' -> '5'
+                        '６' -> '6'
+                        '７' -> '7'
+                        '８' -> '8'
+                        '９' -> '9'
+                        else -> char
+                    }
                 }.joinToString("")
                 return normalized.toIntOrNull()
             }
@@ -287,10 +299,8 @@ class NineTsuFixProvider : MainAPI() {
         val reversedEpisodes = episodeList.reversed()
 
         val episodes = reversedEpisodes.map { episode ->
-            // [PERBAIKAN] 1. Ekstrak nomor aslinya agar player tidak asal menebak
             val epNum = extractEpisodeNumber(episode.title)
             
-            // [PERBAIKAN] 2. Hapus teks nama series yang menyangkut di judul episode
             var cleanTitle = episode.title
             if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
                 cleanTitle = cleanTitle.replace(seriesTitle, "", ignoreCase = true).trim()
@@ -301,7 +311,7 @@ class NineTsuFixProvider : MainAPI() {
             newEpisode(cleanTitle) {
                 this.name = cleanTitle
                 this.data = episode.link
-                this.episode = epNum // Mengembalikan kesinkronan nomor depan dan belakang
+                this.episode = epNum 
             }
         }
 
@@ -327,7 +337,6 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // [PERBAIKAN] 3. Ubah tipe menjadi TvType.Movie untuk membasmi "Episode 0"
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
             this.plot = description
