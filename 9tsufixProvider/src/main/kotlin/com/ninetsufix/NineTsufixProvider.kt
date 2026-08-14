@@ -140,16 +140,33 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    private fun extractEpisodeLinks(doc: Document): List<String> {
-        return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
-            .mapNotNull { element ->
-                val href = element.attr("href")
-                when {
-                    href.startsWith("http") -> href
-                    href.startsWith("/") -> "https://9tsu.in$href"
-                    else -> null
-                }
-            }.distinct()
+    // ==================== FILTER EPISODE SILUMAN (DIPERBAIKI) ====================
+    private fun extractEpisodeLinks(doc: Element): List<String> {
+        // 1. Fokuskan pencarian HANYA pada area konten utama (mengabaikan seluruh halaman)
+        val mainContainer = doc.selectFirst("main, #main, .site-main, .content, #content, .cactus-listing-wrap, .posts-wrapper") ?: doc
+        
+        // 2. Buat tiruan (clone) agar tidak merusak struktur asli saat menghapus elemen
+        val cleanContainer = mainContainer.clone()
+        
+        // 3. HAPUS area sidebar, widget, dan rekomendasi yang menyumbang video acak
+        cleanContainer.select("aside, .sidebar, #sidebar, .widget, .related, .recommendation, footer, header").remove()
+
+        // 4. Cari link video yang murni berada di dalam kotak artikel
+        var links = cleanContainer.select("article a[href*='/douga/'], .post a[href*='/douga/'], .item a[href*='/douga/'], .video-item a[href*='/douga/']")
+            .mapNotNull { it.attr("href") }
+
+        // 5. Fallback jika tag article tidak ditemukan
+        if (links.isEmpty()) {
+            links = cleanContainer.select("a[href*='/douga/']").mapNotNull { it.attr("href") }
+        }
+
+        return links.mapNotNull { href ->
+            when {
+                href.startsWith("http") -> href
+                href.startsWith("/") -> "https://9tsu.in$href"
+                else -> null
+            }
+        }.distinct()
     }
 
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
@@ -167,7 +184,7 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES (Diperkuat dengan Anti-Block & Retry) ====================
+    // ==================== LOAD ALL EPISODES ====================
     private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
         val allLinks = mutableListOf<String>()
         val slug = seriesUrl.removePrefix(mainUrl).split("/").lastOrNull { it.isNotBlank() } ?: return emptyList()
@@ -179,7 +196,7 @@ class NineTsuFixProvider : MainAPI() {
 
             var page = 1
             var hasMore = true
-            var retryCount = 0 // Tambahan sistem retry
+            var retryCount = 0 
 
             while (hasMore) {
                 page++
@@ -214,26 +231,16 @@ class NineTsuFixProvider : MainAPI() {
                         
                         if (links.isNotEmpty()) {
                             allLinks.addAll(links)
-                            retryCount = 0 // Reset hitungan retry jika sukses
+                            retryCount = 0 
                         } else {
-                            val altLinks = fragment.select("article a").map { it.attr("href") }
-                                .filter { it.contains("/douga/") }
-                                .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
-                                .distinct()
-                            if (altLinks.isNotEmpty()) {
-                                allLinks.addAll(altLinks)
-                                retryCount = 0 // Reset hitungan retry jika sukses
-                            } else {
-                                hasMore = false
-                                break
-                            }
+                            hasMore = false
+                            break
                         }
                     } else {
-                        // Jika server mengembalikan error (misal 503, 429), lakukan RETRY
                         if (retryCount < 3) {
                             retryCount++
-                            page-- // Kurangi page agar dilooping ulang
-                            kotlinx.coroutines.delay(2000) // Tunggu 2 detik sebelum coba lagi
+                            page-- 
+                            kotlinx.coroutines.delay(2000) 
                             continue
                         } else {
                             hasMore = false
@@ -241,7 +248,6 @@ class NineTsuFixProvider : MainAPI() {
                         }
                     }
                 } catch (e: Exception) {
-                    // Jika terputus karena timeout, lakukan RETRY
                     if (retryCount < 3) {
                         retryCount++
                         page-- 
@@ -252,7 +258,6 @@ class NineTsuFixProvider : MainAPI() {
                         break
                     }
                 }
-                // Jeda utama dinaikkan dari 200ms jadi 600ms agar aman dari anti-spam server
                 kotlinx.coroutines.delay(600) 
             }
         } catch (e: Exception) {
@@ -280,10 +285,10 @@ class NineTsuFixProvider : MainAPI() {
 
         val reversedEpisodes = episodeLinks.reversed()
 
-        val episodes = reversedEpisodes.map { link ->
+        val episodes = reversedEpisodes.mapIndexed { index, link ->
             val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
-            // Mengembalikan penamaan episode simpel sesuai keinginan Anda
-            newEpisode("Episode") {
+            // Penamaan rapi "Episode 1", "Episode 2", dll
+            newEpisode("Episode ${index + 1}") {
                 this.data = absoluteLink
             }
         }
