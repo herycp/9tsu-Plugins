@@ -21,7 +21,6 @@ class NineTsuFixProvider : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Daftar kategori yang HARUS dianggap single page (bukan series)
     private val categoryPages = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
@@ -105,7 +104,6 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -137,13 +135,11 @@ class NineTsuFixProvider : MainAPI() {
         return results.distinctBy { it.url }
     }
 
-    // ==================== CEK APAKAH URL ADALAH KATEGORI ====================
     private fun isCategoryPage(url: String): Boolean {
         val path = url.replace(mainUrl, "").split("?")[0]
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    // ==================== EKSTRAK EPISODE LINKS ====================
     private fun extractEpisodeLinks(doc: Document): List<String> {
         return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
             .mapNotNull { element ->
@@ -156,7 +152,6 @@ class NineTsuFixProvider : MainAPI() {
             }.distinct()
     }
 
-    // ==================== DAPATKAN SERIES URL DARI BREADCRUMB ====================
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
@@ -172,10 +167,8 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES DENGAN AJAX (PERBAIKAN SLUG) ====================
     private suspend fun loadAllEpisodes(seriesUrl: String, debugInfo: StringBuilder): List<String> {
         val allLinks = mutableListOf<String>()
-        // Perbaikan: ambil slug dengan benar
         val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
         if (slug == null) {
             debugInfo.append("❌ Slug not found from URL: $seriesUrl\n")
@@ -216,18 +209,16 @@ class NineTsuFixProvider : MainAPI() {
                         val text = response.text
                         debugInfo.append("  ✅ Response code: ${response.code}, length: ${text.length}\n")
 
-                        // Deteksi akhir halaman
-                        if (text.contains("""<div class="invi no-posts">""")) {
-                            debugInfo.append("  🛑 Found end marker: <div class=\"invi no-posts\">\n")
-                            hasMore = false
-                            break
-                        }
+                        // Cek end marker
+                        val isEnd = text.contains("""<div class="invi no-posts">""")
+
                         if (text.isBlank() || text.length < 20) {
                             debugInfo.append("  ⚠️ Empty or too short response, stopping.\n")
                             hasMore = false
                             break
                         }
 
+                        // Parse dan ekstrak link (selalu, meskipun ada end marker)
                         val fragment = org.jsoup.Jsoup.parse(text)
                         val links = extractEpisodeLinks(fragment)
                         debugInfo.append("  📄 Found ${links.size} links in this page\n")
@@ -236,7 +227,6 @@ class NineTsuFixProvider : MainAPI() {
                             allLinks.addAll(links)
                             debugInfo.append("  📊 Total links so far: ${allLinks.size}\n")
                         } else {
-                            // Coba cari link di article
                             val altLinks = fragment.select("article a").map { it.attr("href") }
                                 .filter { it.contains("/douga/") }
                                 .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
@@ -250,6 +240,14 @@ class NineTsuFixProvider : MainAPI() {
                                 break
                             }
                         }
+
+                        // Jika end marker ditemukan, proses selesai (setelah ekstrak link)
+                        if (isEnd) {
+                            debugInfo.append("  🛑 Found end marker, processed last page\n")
+                            hasMore = false
+                            break
+                        }
+
                         totalPages++
                     } else {
                         debugInfo.append("  ❌ Response code: ${response.code} - not 200, stopping.\n")
@@ -274,7 +272,6 @@ class NineTsuFixProvider : MainAPI() {
         return allLinks.distinct()
     }
 
-    // ==================== BUILD SERIES RESPONSE ====================
     private suspend fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>, debugInfo: StringBuilder): TvSeriesLoadResponse {
         val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
 
@@ -291,10 +288,8 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // Tambahkan debug ke deskripsi dengan label jelas
         description += "\n\n========== DEBUG INFO ==========\n${debugInfo.toString()}\n================================="
 
-        // Balik urutan episode karena halaman menampilkan episode terbaru di atas
         val reversedEpisodes = episodeLinks.reversed()
 
         val episodes = reversedEpisodes.map { link ->
@@ -312,7 +307,6 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // ==================== LOAD SINGLE PAGE ====================
     private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
         val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
 
@@ -335,7 +329,6 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // ==================== LOAD ====================
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
@@ -372,7 +365,6 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Alternatif: cari dari rel='category'
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -400,7 +392,6 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url)
         }
 
-        // URL bukan episode dan bukan kategori -> cek apakah ini halaman series
         val episodeLinks = extractEpisodeLinks(doc)
         debugInfo.append("📄 Found ${episodeLinks.size} episode links on page\n")
 
@@ -419,7 +410,6 @@ class NineTsuFixProvider : MainAPI() {
         return loadSinglePage(doc, url)
     }
 
-    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
