@@ -176,7 +176,8 @@ class NineTsuFixProvider : MainAPI() {
     private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
         val allLinks = mutableListOf<String>()
 
-        val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
+        // Perbaikan ekstrak slug agar tidak menghasilkan string kosong
+        val slug = seriesUrl.removePrefix(mainUrl).split("/").lastOrNull { it.isNotBlank() } ?: return emptyList()
 
         try {
             val firstDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
