@@ -159,13 +159,21 @@ class NineTsuFixProvider : MainAPI() {
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
-            val links = breadcrumbNav.select("a")
-            // Breadcrumb: Home > Kategori > Series > Episode (teks)
-            // Link terakhir yang memiliki href dan bukan kategori adalah series
-            for (i in links.indices.reversed()) {
-                val link = links[i]
-                val href = link.attr("href")
-                if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
+            // Ambil semua elemen a dan span (item terakhir biasanya span)
+            val items = breadcrumbNav.children()
+            // Cari link terakhir yang bukan span dan bukan home, dan bukan kategori
+            var lastLink: Element? = null
+            for (item in items) {
+                if (item.tagName() == "a") {
+                    val href = item.attr("href")
+                    if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
+                        lastLink = item
+                    }
+                }
+            }
+            if (lastLink != null) {
+                val href = lastLink.attr("href")
+                if (href.isNotBlank()) {
                     return href
                 }
             }
@@ -190,11 +198,16 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        val episodes = episodeLinks.map { link ->
+        // Balik urutan episode karena halaman menampilkan terbaru di atas (descending)
+        val reversedLinks = episodeLinks.reversed()
+
+        val episodes = reversedLinks.map { link ->
             val episodeElement = doc.select("a[href='$link']").firstOrNull()
             val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
+            // Pastikan link absolut
+            val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
             newEpisode(episodeTitle) {
-                this.data = link // URL episode yang akan diproses oleh loadLinks
+                this.data = absoluteLink
             }
         }
 
@@ -240,7 +253,7 @@ class NineTsuFixProvider : MainAPI() {
         // Jika URL adalah episode (/douga/)
         if (url.contains("/douga/")) {
             // Coba dapatkan series URL dari breadcrumb
-            val seriesUrl = getSeriesUrlFromBreadcrumb(doc)
+            var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
 
             if (seriesUrl != null && seriesUrl != url) {
                 try {
@@ -258,7 +271,22 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Jika gagal, tampilkan single page
+            // Jika breadcrumb gagal, coba cari link series dari rel='category'
+            val seriesLink = doc.select("a[rel='category']").firstOrNull()
+            if (seriesLink != null) {
+                val href = seriesLink.attr("href")
+                if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
+                    try {
+                        val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                        val episodeLinks = extractEpisodeLinks(seriesDoc)
+                        if (episodeLinks.isNotEmpty()) {
+                            return buildSeriesResponse(seriesDoc, href, episodeLinks)
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
+            }
+
+            // Jika semua gagal, tampilkan single page
             return loadSinglePage(doc, url)
         }
 
