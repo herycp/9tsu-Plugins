@@ -65,6 +65,28 @@ class NineTsuFixProvider : MainAPI() {
         return urls.distinct()
     }
 
+    // Fungsi pintar untuk mengekstrak angka dari judul Jepang, mendukung angka half-width dan full-width
+    private fun extractEpisodeNumber(title: String): Int? {
+        val patterns = listOf(
+            Regex("""第\s*([0-9０-９]+)\s*話"""),
+            Regex("""Episode\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
+            Regex("""Ep\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
+            Regex("""Eps\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
+            Regex("""#([0-9０-９]+)""")
+        )
+        for (pattern in patterns) {
+            val match = pattern.find(title)
+            if (match != null) {
+                val numStr = match.groupValues[1]
+                val normalized = numStr.map { 
+                    if (it in '０'..'９') (it - '０' + '0').toChar() else it 
+                }.joinToString("")
+                return normalized.toIntOrNull()
+            }
+        }
+        return null
+    }
+
     override val mainPage = mainPageOf(
         "$mainUrl/drama" to "Drama",
         "$mainUrl/monday" to "Monday",
@@ -265,10 +287,21 @@ class NineTsuFixProvider : MainAPI() {
         val reversedEpisodes = episodeList.reversed()
 
         val episodes = reversedEpisodes.map { episode ->
-            newEpisode(episode.title) {
-                this.name = episode.title
+            // [PERBAIKAN] 1. Ekstrak nomor aslinya agar player tidak asal menebak
+            val epNum = extractEpisodeNumber(episode.title)
+            
+            // [PERBAIKAN] 2. Hapus teks nama series yang menyangkut di judul episode
+            var cleanTitle = episode.title
+            if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
+                cleanTitle = cleanTitle.replace(seriesTitle, "", ignoreCase = true).trim()
+                cleanTitle = cleanTitle.removePrefix("-").removePrefix("–").removePrefix(":").trim()
+            }
+            if (cleanTitle.isBlank()) cleanTitle = episode.title
+
+            newEpisode(cleanTitle) {
+                this.name = cleanTitle
                 this.data = episode.link
-                // Tidak mengisi episode agar tidak menimpa tampilan
+                this.episode = epNum // Mengembalikan kesinkronan nomor depan dan belakang
             }
         }
 
@@ -294,7 +327,8 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
+        // [PERBAIKAN] 3. Ubah tipe menjadi TvType.Movie untuk membasmi "Episode 0"
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
             this.plot = description
         }
