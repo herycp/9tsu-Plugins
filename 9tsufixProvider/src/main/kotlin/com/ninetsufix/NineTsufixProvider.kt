@@ -172,10 +172,12 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES DENGAN AJAX + DEBUG ====================
+    // ==================== LOAD ALL EPISODES DENGAN AJAX (PERBAIKAN SLUG) ====================
     private suspend fun loadAllEpisodes(seriesUrl: String, debugInfo: StringBuilder): List<String> {
         val allLinks = mutableListOf<String>()
-        val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: run {
+        // Perbaikan: ambil slug dengan benar
+        val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
+        if (slug == null) {
             debugInfo.append("❌ Slug not found from URL: $seriesUrl\n")
             return emptyList()
         }
