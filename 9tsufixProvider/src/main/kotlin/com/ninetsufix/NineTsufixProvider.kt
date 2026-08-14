@@ -15,7 +15,7 @@ import java.util.Base64
 
 class NineTsuFixProvider : MainAPI() {
     override var mainUrl = "https://9tsu.in"
-    override var name = "9tsu.in"
+    override var name = "9tsu (Fix)"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
 
@@ -98,7 +98,7 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN (langsung di 9tsu.in) ====================
+    // ==================== PENCARIAN ====================
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
@@ -129,67 +129,14 @@ class NineTsuFixProvider : MainAPI() {
 
         return results.distinctBy { it.url }
     }
-    // ====================================================================
 
-    // ==================== FUNGSI PEMBANTU UNTUK LOAD ====================
-
-    private fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
-        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        val episodes = episodeLinks.map { link ->
-            val episodeElement = doc.select("a[href='$link']").firstOrNull()
-            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
-            Episode(episodeTitle, link)
-        }
-
-        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
-    private fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
-        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
-    // ================================================================
-
+    // ==================== LOAD ====================
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
         if (url.contains("/douga/")) {
+            // Episode page - try to find series from breadcrumb
             val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
             var seriesUrl: String? = null
 
@@ -237,6 +184,7 @@ class NineTsuFixProvider : MainAPI() {
 
             return loadSinglePage(doc, url)
         } else {
+            // Non-episode: check if it's a series page
             val episodeLinks = doc.select("div.cactus-sub-wrap article.cactus-post-item a[href*='/douga/']")
                 .mapNotNull { element ->
                     val href = element.attr("href")
@@ -258,7 +206,60 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // ==================== loadLinks ====================
+    // ==================== BUILD SERIES RESPONSE ====================
+    private fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>): TvSeriesLoadResponse {
+        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        // Build episodes using newEpisode method
+        val episodes = episodeLinks.map { link ->
+            val episodeElement = doc.select("a[href='$link']").firstOrNull()
+            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
+            newEpisode(episodeTitle, link)
+        }
+
+        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    // ==================== LOAD SINGLE PAGE ====================
+    private fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
+        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -273,12 +274,10 @@ class NineTsuFixProvider : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // 1. Proses semua iframe
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // quverinto.guru (sebelumnya norqeli.space) - langsung API
                     src.contains("quverinto.guru") -> {
                         val idMatch = Regex("""quverinto\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
@@ -299,7 +298,6 @@ class NineTsuFixProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru
                     src.contains("ok.ru") -> {
                         allUrls.add(src)
                         try {
@@ -311,7 +309,6 @@ class NineTsuFixProvider : MainAPI() {
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
-                    // Iframe lainnya
                     else -> {
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
@@ -326,13 +323,11 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
 
-        // 2. video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -365,16 +360,13 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
 
-        // 4. data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses semua URL
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
@@ -390,7 +382,7 @@ class NineTsuFixProvider : MainAPI() {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
                     newExtractorLink(
-                        name = if (isM3) "9tsu.in - HLS" else "9tsu.in - MP4",
+                        name = if (isM3) "9tsu - HLS" else "9tsu - MP4",
                         source = this.name,
                         url = cleanUrl,
                         type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
