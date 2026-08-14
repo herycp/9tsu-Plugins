@@ -159,21 +159,13 @@ class NineTsuFixProvider : MainAPI() {
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
-            // Ambil semua elemen a dan span (item terakhir biasanya span)
-            val items = breadcrumbNav.children()
-            // Cari link terakhir yang bukan span dan bukan home, dan bukan kategori
-            var lastLink: Element? = null
-            for (item in items) {
-                if (item.tagName() == "a") {
-                    val href = item.attr("href")
-                    if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
-                        lastLink = item
-                    }
-                }
-            }
-            if (lastLink != null) {
-                val href = lastLink.attr("href")
-                if (href.isNotBlank()) {
+            // Ambil semua elemen a
+            val links = breadcrumbNav.select("a")
+            // Cari link terakhir yang bukan home, bukan douga, dan bukan kategori
+            for (i in links.size - 1 downTo 0) {
+                val link = links[i]
+                val href = link.attr("href")
+                if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
                     return href
                 }
             }
@@ -198,13 +190,12 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // Balik urutan episode karena halaman menampilkan terbaru di atas (descending)
-        val reversedLinks = episodeLinks.reversed()
+        // Balik urutan episode (karena halaman menampilkan episode terbaru di atas)
+        val reversedEpisodes = episodeLinks.reversed()
 
-        val episodes = reversedLinks.map { link ->
+        val episodes = reversedEpisodes.map { link ->
             val episodeElement = doc.select("a[href='$link']").firstOrNull()
             val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
-            // Pastikan link absolut
             val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
             newEpisode(episodeTitle) {
                 this.data = absoluteLink
@@ -261,7 +252,6 @@ class NineTsuFixProvider : MainAPI() {
                     val episodeLinks = extractEpisodeLinks(seriesDoc)
 
                     if (episodeLinks.isNotEmpty()) {
-                        // Pastikan ini bukan kategori
                         if (!isCategoryPage(seriesUrl)) {
                             return buildSeriesResponse(seriesDoc, seriesUrl, episodeLinks)
                         }
