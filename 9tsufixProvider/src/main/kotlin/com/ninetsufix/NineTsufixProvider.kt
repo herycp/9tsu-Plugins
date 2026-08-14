@@ -142,9 +142,10 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    // ==================== EKSTRAK EPISODE LINKS DARI HALAMAN ====================
+    // ==================== EKSTRAK EPISODE LINKS (GENERAL) ====================
     private fun extractEpisodeLinks(doc: Document): List<String> {
-        return doc.select("div.cactus-sub-wrap article.cactus-post-item a[href*='/douga/']")
+        // Selektor lebih general, cocok untuk halaman utama dan response AJAX
+        return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
             .mapNotNull { element ->
                 val href = element.attr("href")
                 when {
@@ -171,10 +172,11 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // ==================== LOAD ALL EPISODES DENGAN AJAX ====================
+    // ==================== LOAD ALL EPISODES DENGAN AJAX (PERBAIKAN) ====================
     private suspend fun loadAllEpisodes(seriesUrl: String): List<String> {
         val allLinks = mutableListOf<String>()
 
+        // Ambil slug (path setelah domain)
         val slug = seriesUrl.replace(mainUrl, "").split("/")[0].takeIf { it.isNotBlank() } ?: return emptyList()
 
         try {
@@ -212,23 +214,13 @@ class NineTsuFixProvider : MainAPI() {
                             hasMore = false
                             break
                         }
-                        // Coba parse sebagai JSON (mungkin ada field html)
-                        var htmlContent = text
-                        try {
-                            if (text.trim().startsWith("{")) {
-                                val json = JSONObject(text)
-                                val htmlField = json.optString("html", null) ?: json.optString("data", null)
-                                if (!htmlField.isNullOrBlank()) {
-                                    htmlContent = htmlField
-                                }
-                            }
-                        } catch (e: Exception) { /* bukan JSON */ }
-
-                        val fragment = org.jsoup.Jsoup.parse(htmlContent)
+                        // Langsung parse sebagai HTML (response dari web berupa HTML, bukan JSON)
+                        val fragment = org.jsoup.Jsoup.parse(text)
                         val links = extractEpisodeLinks(fragment)
                         if (links.isNotEmpty()) {
                             allLinks.addAll(links)
                         } else {
+                            // Tidak ada link baru, hentikan
                             hasMore = false
                             break
                         }
@@ -240,7 +232,7 @@ class NineTsuFixProvider : MainAPI() {
                     hasMore = false
                     break
                 }
-                kotlinx.coroutines.delay(150)
+                kotlinx.coroutines.delay(200)
             }
         } catch (e: Exception) {
             e.printStackTrace()
