@@ -27,6 +27,8 @@ class NineTsuFixProvider : MainAPI() {
         "/premium"
     )
 
+    private data class EpisodeInfo(val link: String, val title: String)
+
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -140,16 +142,18 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    private fun extractEpisodeLinks(doc: Document): List<String> {
-        return doc.select("article.cactus-post-item a[href*='/douga/'], a[href*='/douga/']")
+    private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
+        return doc.select("article.cactus-post-item a[href*='/douga/']")
             .mapNotNull { element ->
                 val href = element.attr("href")
-                when {
+                val link = when {
                     href.startsWith("http") -> href
                     href.startsWith("/") -> "https://9tsu.in$href"
                     else -> null
-                }
-            }.distinct()
+                } ?: return@mapNotNull null
+                val title = element.attr("title").takeIf { it.isNotBlank() } ?: element.text().trim()
+                EpisodeInfo(link, title)
+            }.distinctBy { it.link }
     }
 
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
@@ -167,8 +171,8 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    private suspend fun loadAllEpisodes(seriesUrl: String, debugInfo: StringBuilder): List<String> {
-        val allLinks = mutableListOf<String>()
+    private suspend fun loadAllEpisodes(seriesUrl: String, debugInfo: StringBuilder): List<EpisodeInfo> {
+        val allEpisodes = mutableListOf<EpisodeInfo>()
         val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
         if (slug == null) {
             debugInfo.append("❌ Slug not found from URL: $seriesUrl\n")
@@ -209,7 +213,6 @@ class NineTsuFixProvider : MainAPI() {
                         val text = response.text
                         debugInfo.append("  ✅ Response code: ${response.code}, length: ${text.length}\n")
 
-                        // Cek end marker
                         val isEnd = text.contains("""<div class="invi no-posts">""")
 
                         if (text.isBlank() || text.length < 20) {
@@ -218,30 +221,34 @@ class NineTsuFixProvider : MainAPI() {
                             break
                         }
 
-                        // Parse dan ekstrak link (selalu, meskipun ada end marker)
                         val fragment = org.jsoup.Jsoup.parse(text)
-                        val links = extractEpisodeLinks(fragment)
-                        debugInfo.append("  📄 Found ${links.size} links in this page\n")
+                        val episodes = extractEpisodeInfo(fragment)
+                        debugInfo.append("  📄 Found ${episodes.size} episodes in this page\n")
 
-                        if (links.isNotEmpty()) {
-                            allLinks.addAll(links)
-                            debugInfo.append("  📊 Total links so far: ${allLinks.size}\n")
+                        if (episodes.isNotEmpty()) {
+                            allEpisodes.addAll(episodes)
+                            debugInfo.append("  📊 Total episodes so far: ${allEpisodes.size}\n")
+                            // Tampilkan judul pertama sebagai contoh
+                            if (episodes.isNotEmpty()) {
+                                debugInfo.append("  📝 Example title: ${episodes.first().title}\n")
+                            }
                         } else {
+                            // Fallback: cari link saja tanpa judul
                             val altLinks = fragment.select("article a").map { it.attr("href") }
                                 .filter { it.contains("/douga/") }
                                 .map { if (it.startsWith("http")) it else "https://9tsu.in$it" }
                                 .distinct()
                             if (altLinks.isNotEmpty()) {
-                                allLinks.addAll(altLinks)
-                                debugInfo.append("  🔄 Found ${altLinks.size} alt links, total: ${allLinks.size}\n")
+                                val altEpisodes = altLinks.map { EpisodeInfo(it, "Episode") }
+                                allEpisodes.addAll(altEpisodes)
+                                debugInfo.append("  🔄 Found ${altEpisodes.size} alt episodes, total: ${allEpisodes.size}\n")
                             } else {
-                                debugInfo.append("  ❌ No links found, stopping.\n")
+                                debugInfo.append("  ❌ No episodes found, stopping.\n")
                                 hasMore = false
                                 break
                             }
                         }
 
-                        // Jika end marker ditemukan, proses selesai (setelah ekstrak link)
                         if (isEnd) {
                             debugInfo.append("  🛑 Found end marker, processed last page\n")
                             hasMore = false
@@ -268,11 +275,16 @@ class NineTsuFixProvider : MainAPI() {
             e.printStackTrace()
         }
 
-        debugInfo.append("📊 Final total episodes: ${allLinks.size}\n")
-        return allLinks.distinct()
+        debugInfo.append("📊 Final total episodes: ${allEpisodes.size}\n")
+        return allEpisodes.distinctBy { it.link }
     }
 
-    private suspend fun buildSeriesResponse(doc: Document, url: String, episodeLinks: List<String>, debugInfo: StringBuilder): TvSeriesLoadResponse {
+    private suspend fun buildSeriesResponse(
+        doc: Document,
+        url: String,
+        episodeList: List<EpisodeInfo>,
+        debugInfo: StringBuilder
+    ): TvSeriesLoadResponse {
         val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
@@ -290,14 +302,12 @@ class NineTsuFixProvider : MainAPI() {
 
         description += "\n\n========== DEBUG INFO ==========\n${debugInfo.toString()}\n================================="
 
-        val reversedEpisodes = episodeLinks.reversed()
+        // Balik urutan karena halaman menampilkan episode terbaru di atas
+        val reversedEpisodes = episodeList.reversed()
 
-        val episodes = reversedEpisodes.map { link ->
-            val episodeElement = doc.select("a[href='$link']").firstOrNull()
-            val episodeTitle = episodeElement?.text()?.trim() ?: "Episode"
-            val absoluteLink = if (link.startsWith("http")) link else "https://9tsu.in$link"
-            newEpisode(episodeTitle) {
-                this.data = absoluteLink
+        val episodes = reversedEpisodes.map { episode ->
+            newEpisode(episode.title) {
+                this.data = episode.link
             }
         }
 
@@ -353,10 +363,10 @@ class NineTsuFixProvider : MainAPI() {
                     } else {
                         debugInfo.append("⚠️ loadAllEpisodes returned empty, using fallback\n")
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        val fallbackLinks = extractEpisodeLinks(seriesDoc)
-                        if (fallbackLinks.isNotEmpty()) {
-                            debugInfo.append("✅ Found ${fallbackLinks.size} episodes from fallback\n")
-                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackLinks, debugInfo)
+                        val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
+                        if (fallbackEpisodes.isNotEmpty()) {
+                            debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback\n")
+                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes, debugInfo)
                         }
                     }
                 } catch (e: Exception) {
@@ -378,10 +388,10 @@ class NineTsuFixProvider : MainAPI() {
                         } else {
                             debugInfo.append("⚠️ loadAllEpisodes returned empty, using fallback\n")
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            val fallbackLinks = extractEpisodeLinks(seriesDoc)
-                            if (fallbackLinks.isNotEmpty()) {
-                                debugInfo.append("✅ Found ${fallbackLinks.size} episodes from fallback\n")
-                                return buildSeriesResponse(seriesDoc, href, fallbackLinks, debugInfo)
+                            val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
+                            if (fallbackEpisodes.isNotEmpty()) {
+                                debugInfo.append("✅ Found ${fallbackEpisodes.size} episodes from fallback\n")
+                                return buildSeriesResponse(seriesDoc, href, fallbackEpisodes, debugInfo)
                             }
                         }
                     } catch (e: Exception) { debugInfo.append("💥 Exception: ${e.message}\n") }
@@ -392,10 +402,10 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url)
         }
 
-        val episodeLinks = extractEpisodeLinks(doc)
-        debugInfo.append("📄 Found ${episodeLinks.size} episode links on page\n")
+        val episodeList = extractEpisodeInfo(doc)
+        debugInfo.append("📄 Found ${episodeList.size} episodes on page\n")
 
-        if (episodeLinks.isNotEmpty()) {
+        if (episodeList.isNotEmpty()) {
             debugInfo.append("🔄 Loading all episodes via AJAX...\n")
             val allEpisodes = loadAllEpisodes(url, debugInfo)
             if (allEpisodes.isNotEmpty()) {
@@ -403,7 +413,7 @@ class NineTsuFixProvider : MainAPI() {
                 return buildSeriesResponse(doc, url, allEpisodes, debugInfo)
             }
             debugInfo.append("⚠️ AJAX load returned empty, using fallback\n")
-            return buildSeriesResponse(doc, url, episodeLinks, debugInfo)
+            return buildSeriesResponse(doc, url, episodeList, debugInfo)
         }
 
         debugInfo.append("❌ No episodes found, showing single page\n")
