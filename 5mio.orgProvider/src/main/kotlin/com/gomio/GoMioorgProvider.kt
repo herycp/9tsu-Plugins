@@ -15,7 +15,6 @@ class FiveMioProvider : MainAPI() {
     override var lang = "ja"
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-    private var debugLog = ""
 
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
@@ -101,21 +100,12 @@ class FiveMioProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
-        val log = StringBuilder()
-        log.appendLine("=== SEARCH DEBUG ===")
-        log.appendLine("Query: '$cleanQuery'")
-
-        if (cleanQuery.isBlank()) {
-            log.appendLine("Query kosong, return empty.")
-            debugLog = log.toString()
-            return emptyList()
-        }
+        if (cleanQuery.isBlank()) return emptyList()
 
         var page = 0
         var hasMore = true
-        val maxPages = 5
 
-        while (hasMore && page < maxPages) {
+        while (hasMore) {
             val params = mapOf(
                 "action" to "load_more",
                 "page" to page.toString(),
@@ -123,8 +113,6 @@ class FiveMioProvider : MainAPI() {
                 "template" to "html/loop/content",
                 "vars[s]" to cleanQuery
             )
-            log.appendLine("\n--- Page $page ---")
-            log.appendLine("Params: $params")
 
             try {
                 val response = app.post(
@@ -137,20 +125,14 @@ class FiveMioProvider : MainAPI() {
                         "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                     )
                 )
+
                 val html = response.text
-                log.appendLine("Response length: ${html.length}")
-                if (html.length < 20) {
-                    log.appendLine("Response terlalu pendek: '$html'")
-                    break
-                }
+                if (html.length < 20) break
 
                 val doc = Jsoup.parse(html)
                 val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
-                log.appendLine("Ditemukan ${items.size} item via selector.")
 
                 if (items.isEmpty()) {
-                    val altItems = doc.select("a[href]")
-                    log.appendLine("Fallback: ditemukan ${altItems.size} link.")
                     hasMore = false
                     break
                 }
@@ -159,10 +141,11 @@ class FiveMioProvider : MainAPI() {
                     val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
                         ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                         ?: return@forEach
+
                     val title = titleElement.text().trim()
                     var link = titleElement.attr("href")
-                    if (link.isBlank()) return@forEach
 
+                    if (link.isBlank()) return@forEach
                     if (!link.startsWith("http")) {
                         link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                     }
@@ -179,48 +162,17 @@ class FiveMioProvider : MainAPI() {
                     }
                 }
 
-                if (items.isEmpty()) {
-                    hasMore = false
-                }
                 page++
             } catch (e: Exception) {
-                log.appendLine("Exception: ${e.message}")
                 e.printStackTrace()
                 break
             }
         }
 
-        log.appendLine("\nTotal hasil: ${results.size}")
-        debugLog = log.toString()
-
-        // Item debug (tanpa plot di sini)
-        val debugItem = newTvSeriesSearchResponse(
-            "🔍 Debug Log (5mio)",
-            "https://5mio.org/debug",
-            TvType.TvSeries
-        )
-
-        val finalList = mutableListOf<SearchResponse>()
-        finalList.add(debugItem)
-        finalList.addAll(results)
-        return finalList
+        return results.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse {
-        // Jika URL debug, tampilkan log
-        if (url == "https://5mio.org/debug") {
-            return newMovieLoadResponse(
-                "Debug Log 5mio",
-                url,
-                TvType.TvSeries,
-                url
-            ) {
-                this.plot = debugLog.ifBlank { "Belum ada log. Coba lakukan pencarian dulu." }
-                this.posterUrl = ""
-            }
-        }
-
-        // Load normal
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
