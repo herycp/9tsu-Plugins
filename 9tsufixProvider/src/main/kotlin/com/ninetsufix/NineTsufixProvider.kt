@@ -426,15 +426,15 @@ class NineTsuFixProvider : MainAPI() {
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    src.contains("qevrinto.guru") -> {
-                        val idMatch = Regex("""qevrinto\.guru/embed/([^?]+)""").find(src)
+                    src.contains("muxalor.guru") -> {
+                        val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "qevrinto",
+                                        name = "muxalor",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
