@@ -121,19 +121,35 @@ class FiveMioProvider : MainAPI() {
                     headers = mapOf(
                         "User-Agent" to userAgent,
                         "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}"
+                        "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                     )
                 )
                 val html = response.text
-                if (html.isBlank()) break
-                val doc = Jsoup.parse(html)
-                val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item")
-                if (items.isEmpty()) {
-                    hasMore = false
+                // Debug: print panjang response dan cuplikan
+                println("Search page $page response length: ${html.length}")
+                if (html.length < 20) {
+                    println("Response too short, probably empty: $html")
                     break
                 }
+
+                val doc = Jsoup.parse(html)
+                // Coba berbagai selector
+                val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item")
+                println("Found ${items.size} items on page $page")
+
+                if (items.isEmpty()) {
+                    // Mungkin struktur berbeda, cari semua link dengan judul
+                    val links = doc.select("a[href]")
+                    if (links.isEmpty()) {
+                        hasMore = false
+                        break
+                    }
+                }
+
                 items.forEach { element ->
                     val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
+                        ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                         ?: return@forEach
                     val title = titleElement.text().trim()
                     var link = titleElement.attr("href")
@@ -153,6 +169,11 @@ class FiveMioProvider : MainAPI() {
                             this.posterUrl = posterUrl
                         })
                     }
+                }
+
+                // Jika items kosong, hentikan
+                if (items.isEmpty()) {
+                    hasMore = false
                 }
                 page++
             } catch (e: Exception) {
