@@ -1,4 +1,4 @@
-package com.gomio
+package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -15,6 +15,7 @@ class FiveMioProvider : MainAPI() {
     override var lang = "ja"
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+    private var debugLog = ""
 
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
@@ -100,11 +101,19 @@ class FiveMioProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
-        if (cleanQuery.isBlank()) return emptyList()
+        val log = StringBuilder()
+        log.appendLine("=== SEARCH DEBUG ===")
+        log.appendLine("Query: '$cleanQuery'")
+
+        if (cleanQuery.isBlank()) {
+            log.appendLine("Query kosong, return empty.")
+            debugLog = log.toString()
+            return emptyList()
+        }
 
         var page = 0
         var hasMore = true
-        val maxPages = 10
+        val maxPages = 5  // batasi untuk debugging
 
         while (hasMore && page < maxPages) {
             val params = mapOf(
@@ -114,6 +123,9 @@ class FiveMioProvider : MainAPI() {
                 "template" to "html/loop/content",
                 "vars[s]" to cleanQuery
             )
+            log.appendLine("\n--- Page $page ---")
+            log.appendLine("Params: $params")
+
             try {
                 val response = app.post(
                     ajaxUrl,
@@ -126,25 +138,21 @@ class FiveMioProvider : MainAPI() {
                     )
                 )
                 val html = response.text
-                // Debug: print panjang response dan cuplikan
-                println("Search page $page response length: ${html.length}")
+                log.appendLine("Response length: ${html.length}")
                 if (html.length < 20) {
-                    println("Response too short, probably empty: $html")
+                    log.appendLine("Response terlalu pendek: '$html'")
                     break
                 }
 
                 val doc = Jsoup.parse(html)
-                // Coba berbagai selector
-                val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item")
-                println("Found ${items.size} items on page $page")
+                val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
+                log.appendLine("Ditemukan ${items.size} item via selector.")
 
                 if (items.isEmpty()) {
-                    // Mungkin struktur berbeda, cari semua link dengan judul
-                    val links = doc.select("a[href]")
-                    if (links.isEmpty()) {
-                        hasMore = false
-                        break
-                    }
+                    val altItems = doc.select("a[href]")
+                    log.appendLine("Fallback: ditemukan ${altItems.size} link.")
+                    hasMore = false
+                    break
                 }
 
                 items.forEach { element ->
@@ -171,21 +179,50 @@ class FiveMioProvider : MainAPI() {
                     }
                 }
 
-                // Jika items kosong, hentikan
                 if (items.isEmpty()) {
                     hasMore = false
                 }
                 page++
             } catch (e: Exception) {
+                log.appendLine("Exception: ${e.message}")
                 e.printStackTrace()
                 break
             }
         }
 
-        return results.distinctBy { it.url }
+        log.appendLine("\nTotal hasil: ${results.size}")
+        debugLog = log.toString()
+
+        // Item debug pertama
+        val debugItem = newTvSeriesSearchResponse(
+            "🔍 Debug Log (5mio)",
+            "https://5mio.org/debug",
+            TvType.TvSeries
+        ) {
+            this.plot = debugLog
+        }
+
+        val finalList = mutableListOf<SearchResponse>()
+        finalList.add(debugItem)
+        finalList.addAll(results)
+        return finalList
     }
 
     override suspend fun load(url: String): LoadResponse {
+        // Jika URL debug, tampilkan log
+        if (url == "https://5mio.org/debug") {
+            return newMovieLoadResponse(
+                "Debug Log 5mio",
+                url,
+                TvType.TvSeries,
+                url
+            ) {
+                this.plot = debugLog.ifBlank { "Belum ada log. Coba lakukan pencarian dulu." }
+                this.posterUrl = ""
+            }
+        }
+
+        // Load normal
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
