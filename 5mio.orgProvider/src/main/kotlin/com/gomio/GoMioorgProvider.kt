@@ -113,7 +113,7 @@ class FiveMioProvider : MainAPI() {
 
         var page = 0
         var hasMore = true
-        val maxPages = 5  // batasi untuk debugging
+        val maxPages = 5
 
         while (hasMore && page < maxPages) {
             val params = mapOf(
@@ -193,14 +193,12 @@ class FiveMioProvider : MainAPI() {
         log.appendLine("\nTotal hasil: ${results.size}")
         debugLog = log.toString()
 
-        // Item debug pertama
+        // Item debug (tanpa plot di sini)
         val debugItem = newTvSeriesSearchResponse(
             "🔍 Debug Log (5mio)",
             "https://5mio.org/debug",
             TvType.TvSeries
-        ) {
-            this.plot = debugLog
-        }
+        )
 
         val finalList = mutableListOf<SearchResponse>()
         finalList.add(debugItem)
