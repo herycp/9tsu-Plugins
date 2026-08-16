@@ -65,38 +65,53 @@ class NineTsuFixProvider : MainAPI() {
         return urls.distinct()
     }
 
-    // Fungsi pintar untuk mengekstrak angka dari judul Jepang, mendukung angka half-width dan full-width
-    private fun extractEpisodeNumber(title: String): Int? {
-        val patterns = listOf(
-            Regex("""第\s*([0-9０-９]+)\s*話"""),
-            Regex("""Episode\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
-            Regex("""Ep\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
-            Regex("""Eps\s*([0-9０-９]+)""", RegexOption.IGNORE_CASE),
-            Regex("""#([0-9０-９]+)""")
-        )
-        for (pattern in patterns) {
-            val match = pattern.find(title)
-            if (match != null) {
-                val numStr = match.groupValues[1]
-                val normalized = numStr.map { char ->
-                    when (char) {
-                        '０' -> '0'
-                        '１' -> '1'
-                        '２' -> '2'
-                        '３' -> '3'
-                        '４' -> '4'
-                        '５' -> '5'
-                        '６' -> '6'
-                        '７' -> '7'
-                        '８' -> '8'
-                        '９' -> '9'
-                        else -> char
-                    }
-                }.joinToString("")
-                return normalized.toIntOrNull()
+    private fun normalizeJapaneseNumbers(text: String): String {
+        return text.map { char ->
+            when (char) {
+                '０' -> '0'
+                '１' -> '1'
+                '２' -> '2'
+                '３' -> '3'
+                '４' -> '4'
+                '５' -> '5'
+                '６' -> '6'
+                '７' -> '7'
+                '８' -> '8'
+                '９' -> '9'
+                else -> char
             }
+        }.joinToString("")
+    }
+
+    private fun extractEpisodeNumber(title: String): String? {
+        val normalizedTitle = normalizeJapaneseNumbers(title)
+        val regex = Regex("""(?i)第?\s*([\d.,-]+)\s*(?:話|夜|貫|話・夜)|(?:#|EP)\s*([\d.,-]+)|(前編|後編|中編|前篇|後篇)""")
+        val match = regex.find(normalizedTitle)
+        
+        if (match != null) {
+            val group1 = match.groups[1]?.value
+            val group2 = match.groups[2]?.value
+            val group3 = match.groups[3]?.value
+            
+            return group1 ?: group2 ?: group3
         }
         return null
+    }
+
+    // Mengubah string penanda episode menjadi Integer aman untuk CloudStream
+    private fun parseEpisodeStringToInt(epStr: String?): Int? {
+        if (epStr == null) return null
+
+        // 1. Cek terjemahan format teks (part)
+        when (epStr) {
+            "前編", "前篇" -> return 1
+            "中編" -> return 2
+            "後編", "後篇" -> return 3 
+        }
+
+        // 2. Jika berupa angka tunggal, ganda ("1,2"), atau pecahan ("5.5"), ambil angka pertama saja
+        val match = Regex("""\d+""").find(epStr)
+        return match?.value?.toIntOrNull()
     }
 
     override val mainPage = mainPageOf(
@@ -280,7 +295,7 @@ class NineTsuFixProvider : MainAPI() {
         doc: Document,
         url: String,
         episodeList: List<EpisodeInfo>
-    ): TvSeriesLoadResponse {
+    ): LoadResponse {
         val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
@@ -296,10 +311,18 @@ class NineTsuFixProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
+        if (episodeList.size == 1 && extractEpisodeNumber(episodeList.first().title) == null) {
+            return newMovieLoadResponse(seriesTitle, url, TvType.Movie, episodeList.first().link) {
+                this.posterUrl = posterUrl
+                this.plot = description
+            }
+        }
+
         val reversedEpisodes = episodeList.reversed()
 
         val episodes = reversedEpisodes.map { episode ->
-            val epNum = extractEpisodeNumber(episode.title)
+            val epNumStr = extractEpisodeNumber(episode.title)
+            val parsedEpNum = parseEpisodeStringToInt(epNumStr)
             
             var cleanTitle = episode.title
             if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
@@ -311,7 +334,7 @@ class NineTsuFixProvider : MainAPI() {
             newEpisode(cleanTitle) {
                 this.name = cleanTitle
                 this.data = episode.link
-                this.episode = epNum 
+                this.episode = parsedEpNum 
             }
         }
 
