@@ -18,7 +18,7 @@ class NineTsuInProvider : MainAPI() {
     override var name = "9tsu.in"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
-
+    override var lang = "ja" 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 
     private fun getAttrOrNull(element: Element?, attr: String): String? {
