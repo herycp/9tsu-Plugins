@@ -1,4 +1,4 @@
-package com.example
+package com.gomio
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
