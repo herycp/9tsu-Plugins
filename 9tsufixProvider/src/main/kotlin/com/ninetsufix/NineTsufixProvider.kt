@@ -18,7 +18,7 @@ class NineTsuFixProvider : MainAPI() {
     override var name = "9tsu (Fix)"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
-
+    override var lang = "ja" 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
     private val categoryPages = setOf(
