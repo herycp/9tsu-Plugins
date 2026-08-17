@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
@@ -98,18 +99,15 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // Mengubah string penanda episode menjadi Integer aman untuk CloudStream
     private fun parseEpisodeStringToInt(epStr: String?): Int? {
         if (epStr == null) return null
 
-        // 1. Cek terjemahan format teks (part)
         when (epStr) {
             "前編", "前篇" -> return 1
             "中編" -> return 2
             "後編", "後篇" -> return 3 
         }
 
-        // 2. Jika berupa angka tunggal, ganda ("1,2"), atau pecahan ("5.5"), ambil angka pertama saja
         val match = Regex("""\d+""").find(epStr)
         return match?.value?.toIntOrNull()
     }
@@ -155,35 +153,64 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val results = mutableListOf<SearchResponse>()
+    override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
-        if (cleanQuery.isBlank()) return emptyList()
+        if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
-        val searchUrl = "$mainUrl/?s=${cleanQuery.replace(" ", "+")}"
-        try {
-            val doc = app.get(searchUrl, headers = mapOf("User-Agent" to userAgent)).document
-            doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item").forEach { element ->
+        val ajaxPage = (page - 1).coerceAtLeast(0)
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val params = mapOf(
+            "action" to "load_more",
+            "page" to ajaxPage.toString(),
+            "searchPage" to "true",
+            "template" to "html/loop/content",
+            "vars[s]" to cleanQuery
+        )
+
+        return try {
+            val response = app.post(
+                ajaxUrl,
+                data = params,
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                )
+            )
+
+            val html = response.text
+            if (html.length < 20 || html.contains("invi no-posts")) {
+                return newSearchResponseList(emptyList(), false)
+            }
+
+            val doc = Jsoup.parse(html)
+            val items = doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item, article.cactus-post-item, .cactus-post-item")
+
+            val results = items.mapNotNull { element ->
                 val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
-                    ?: return@forEach
+                    ?: return@mapNotNull null
+
                 val title = titleElement.text().trim()
                 val link = titleElement.attr("href")
-                if (title.isBlank() || link.isBlank() || !link.startsWith("http")) return@forEach
+
+                if (title.isBlank() || link.isBlank() || !link.startsWith("http")) return@mapNotNull null
 
                 val imgElement = element.selectFirst("img")
                 var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                 if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                     this.posterUrl = posterUrl
-                })
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+                }
+            }.distinctBy { it.url }
 
-        return results.distinctBy { it.url }
+            val hasNext = results.isNotEmpty()
+            newSearchResponseList(results, hasNext)
+        } catch (e: Exception) {
+            newSearchResponseList(emptyList(), false)
+        }
     }
 
     private fun isCategoryPage(url: String): Boolean {
@@ -259,7 +286,7 @@ class NineTsuFixProvider : MainAPI() {
                             break
                         }
 
-                        val fragment = org.jsoup.Jsoup.parse(text)
+                        val fragment = Jsoup.parse(text)
                         val episodes = extractEpisodeInfo(fragment)
 
                         if (episodes.isNotEmpty()) {
