@@ -98,14 +98,13 @@ class FiveMioProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val results = mutableListOf<SearchResponse>()
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return emptyList()
 
-        var page = 0
-        var hasMore = true
+        // Mengambil 5 halaman pertama secara paralel menggunakan apmap
+        val pagesToFetch = (0..4).toList()
 
-        while (hasMore) {
+        val results = pagesToFetch.apmap { page ->
             val params = mapOf(
                 "action" to "load_more",
                 "page" to page.toString(),
@@ -127,25 +126,20 @@ class FiveMioProvider : MainAPI() {
                 )
 
                 val html = response.text
-                if (html.length < 20) break
+                if (html.length < 20) return@apmap emptyList<SearchResponse>()
 
                 val doc = Jsoup.parse(html)
                 val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
 
-                if (items.isEmpty()) {
-                    hasMore = false
-                    break
-                }
-
-                items.forEach { element ->
+                items.mapNotNull { element ->
                     val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
                         ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
-                        ?: return@forEach
+                        ?: return@mapNotNull null
 
                     val title = titleElement.text().trim()
                     var link = titleElement.attr("href")
 
-                    if (link.isBlank()) return@forEach
+                    if (link.isBlank()) return@mapNotNull null
                     if (!link.startsWith("http")) {
                         link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                     }
@@ -156,18 +150,15 @@ class FiveMioProvider : MainAPI() {
                             ?: getAttrOrNull(imgElement, "data-lazy-src") ?: getAttrOrNull(imgElement, "data-original")
                         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                        results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                        newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                             this.posterUrl = posterUrl
-                        })
-                    }
+                        }
+                    } else null
                 }
-
-                page++
             } catch (e: Exception) {
-                e.printStackTrace()
-                break
+                emptyList()
             }
-        }
+        }.flatten()
 
         return results.distinctBy { it.url }
     }
