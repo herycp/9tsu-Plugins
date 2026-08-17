@@ -87,6 +87,18 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
+    private fun getBaseTitle(title: String): String {
+        val normalized = normalizeJapaneseNumbers(title)
+        val regex = Regex("""(?i)\s*(?:第?\s*[\d.,-]+\s*(?:話|夜|貫|話・夜)|(?:#|EP)\s*[\d.,-]+|(?:前編|後編|中編|前篇|後篇)).*$""")
+        val match = regex.find(normalized)
+        return if (match != null) {
+            title.substring(0, match.range.first).trim()
+                .removeSuffix("-").removeSuffix("–").removeSuffix("~").removeSuffix("～").removeSuffix(":").trim()
+        } else {
+            title.trim()
+        }
+    }
+
     private fun parseEpisodeStringToInt(epStr: String?): Int? {
         if (epStr == null) return null
         when (epStr) {
@@ -122,19 +134,22 @@ class NineTsuFixProvider : MainAPI() {
         val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         val homeItems = doc.select("article, .post, .entry, .type-post, .item, .video-item, .blog-item").mapNotNull { element ->
             val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']") ?: return@mapNotNull null
-            val title = titleElement.text().trim()
+            val rawTitle = titleElement.text().trim()
             val href = titleElement.attr("href")
 
-            if (title.isBlank() || href.isBlank() || !href.startsWith("http")) return@mapNotNull null
+            if (rawTitle.isBlank() || href.isBlank() || !href.startsWith("http")) return@mapNotNull null
+
+            val baseTitle = getBaseTitle(rawTitle)
 
             val imgElement = element.selectFirst("img")
             var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
             if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-            newTvSeriesSearchResponse(title, href, TvType.TvSeries) {
+            newTvSeriesSearchResponse(baseTitle, href, TvType.TvSeries) {
                 this.posterUrl = posterUrl
             }
-        }
+        }.distinctBy { it.name }
+
         return newHomePageResponse(request.name, homeItems)
     }
 
@@ -179,7 +194,7 @@ class NineTsuFixProvider : MainAPI() {
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                     ?: return@mapNotNull null
 
-                val title = titleElement.text().trim()
+                val rawTitle = titleElement.text().trim()
                 var link = titleElement.attr("href")
 
                 if (link.isBlank()) return@mapNotNull null
@@ -187,16 +202,17 @@ class NineTsuFixProvider : MainAPI() {
                     link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                 }
 
-                if (title.isNotBlank() && link.startsWith(mainUrl)) {
+                if (rawTitle.isNotBlank() && link.startsWith(mainUrl)) {
+                    val baseTitle = getBaseTitle(rawTitle)
                     val imgElement = element.selectFirst("img")
                     var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                     if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                    newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                    newTvSeriesSearchResponse(baseTitle, link, TvType.TvSeries) {
                         this.posterUrl = posterUrl
                     }
                 } else null
-            }.distinctBy { it.url }
+            }.distinctBy { it.name }
 
             val hasNext = results.isNotEmpty() && !html.contains("invi no-posts")
             newSearchResponseList(results, hasNext)
@@ -238,6 +254,51 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
         return null
+    }
+
+    // Fungsi mengambil URL kategori terbawah (sesudah series jika ada)
+    private fun getCategoryUrlFromBreadcrumb(doc: Document): String? {
+        val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+        if (breadcrumbNav != null) {
+            val links = breadcrumbNav.select("a")
+            for (i in links.size - 1 downTo 0) {
+                val link = links[i]
+                val href = link.attr("href")
+                if (href.isNotBlank() && isCategoryPage(href)) {
+                    return href
+                }
+            }
+        }
+        return null
+    }
+
+    // Fungsi Fetch Halaman Category dan ubah menjadi daftar rekomendasi yang difilter
+    private suspend fun fetchRelatedItems(doc: Document, currentUrl: String): List<SearchResponse> {
+        val categoryUrl = getCategoryUrlFromBreadcrumb(doc) ?: return emptyList()
+        if (categoryUrl == currentUrl) return emptyList() // Jangan muat ulang jika sudah di halaman kategori
+
+        return try {
+            val catDoc = app.get(categoryUrl, headers = mapOf("User-Agent" to userAgent)).document
+            catDoc.select("article, .post, .entry, .type-post, .item, .video-item, .blog-item").mapNotNull { element ->
+                val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']") ?: return@mapNotNull null
+                val rawTitle = titleElement.text().trim()
+                val href = titleElement.attr("href")
+
+                if (rawTitle.isBlank() || href.isBlank() || !href.startsWith("http") || href == currentUrl) return@mapNotNull null
+
+                val baseTitle = getBaseTitle(rawTitle)
+
+                val imgElement = element.selectFirst("img")
+                var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
+                if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+                newTvSeriesSearchResponse(baseTitle, href, TvType.TvSeries) {
+                    this.posterUrl = posterUrl
+                }
+            }.distinctBy { it.name }
+        } catch (e: Exception) {
+            emptyList()
+        }
     }
 
     private suspend fun loadAllEpisodes(seriesUrl: String): List<EpisodeInfo> {
@@ -312,7 +373,8 @@ class NineTsuFixProvider : MainAPI() {
     private suspend fun buildSeriesResponse(
         doc: Document,
         url: String,
-        episodeList: List<EpisodeInfo>
+        episodeList: List<EpisodeInfo>,
+        relatedItems: List<SearchResponse>
     ): LoadResponse {
         val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
 
@@ -333,6 +395,7 @@ class NineTsuFixProvider : MainAPI() {
             return newMovieLoadResponse(seriesTitle, url, TvType.Movie, episodeList.first().link) {
                 this.posterUrl = posterUrl
                 this.plot = description
+                this.recommendations = relatedItems
             }
         }
 
@@ -359,10 +422,11 @@ class NineTsuFixProvider : MainAPI() {
         return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
             this.plot = description
+            this.recommendations = relatedItems
         }
     }
 
-    private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
+    private suspend fun loadSinglePage(doc: Document, url: String, relatedItems: List<SearchResponse>): MovieLoadResponse {
         val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
 
         val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
@@ -381,6 +445,7 @@ class NineTsuFixProvider : MainAPI() {
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
             this.plot = description
+            this.recommendations = relatedItems
         }
     }
 
@@ -388,8 +453,11 @@ class NineTsuFixProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
+        // Mengambil daftar related item terlebih dahulu berdasarkan breadcrumb
+        val relatedItems = fetchRelatedItems(doc, url)
+
         if (isCategoryPage(url)) {
-            return loadSinglePage(doc, url)
+            return loadSinglePage(doc, url, relatedItems)
         }
 
         if (url.contains("/douga/")) {
@@ -399,12 +467,12 @@ class NineTsuFixProvider : MainAPI() {
                     val allEpisodes = loadAllEpisodes(seriesUrl)
                     if (allEpisodes.isNotEmpty()) {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
+                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes, relatedItems)
                     } else {
                         val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
                         val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
                         if (fallbackEpisodes.isNotEmpty()) {
-                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes)
+                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes, relatedItems)
                         }
                     }
                 } catch (e: Exception) {
@@ -420,19 +488,19 @@ class NineTsuFixProvider : MainAPI() {
                         val allEpisodes = loadAllEpisodes(href)
                         if (allEpisodes.isNotEmpty()) {
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            return buildSeriesResponse(seriesDoc, href, allEpisodes)
+                            return buildSeriesResponse(seriesDoc, href, allEpisodes, relatedItems)
                         } else {
                             val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
                             val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
                             if (fallbackEpisodes.isNotEmpty()) {
-                                return buildSeriesResponse(seriesDoc, href, fallbackEpisodes)
+                                return buildSeriesResponse(seriesDoc, href, fallbackEpisodes, relatedItems)
                             }
                         }
                     } catch (e: Exception) { e.printStackTrace() }
                 }
             }
 
-            return loadSinglePage(doc, url)
+            return loadSinglePage(doc, url, relatedItems)
         }
 
         val episodeList = extractEpisodeInfo(doc)
@@ -440,13 +508,13 @@ class NineTsuFixProvider : MainAPI() {
         if (episodeList.isNotEmpty()) {
             val allEpisodes = loadAllEpisodes(url)
             if (allEpisodes.isNotEmpty()) {
-                return buildSeriesResponse(doc, url, allEpisodes)
+                return buildSeriesResponse(doc, url, allEpisodes, relatedItems)
             } else {
-                return buildSeriesResponse(doc, url, episodeList)
+                return buildSeriesResponse(doc, url, episodeList, relatedItems)
             }
         }
 
-        return loadSinglePage(doc, url)
+        return loadSinglePage(doc, url, relatedItems)
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
