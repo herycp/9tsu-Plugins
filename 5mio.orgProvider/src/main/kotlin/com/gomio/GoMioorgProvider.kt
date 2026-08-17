@@ -6,6 +6,7 @@ import org.json.JSONObject
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import java.util.Base64
+import java.net.URLEncoder
 
 class FiveMioProvider : MainAPI() {
     override var mainUrl = "https://5mio.org"
@@ -101,7 +102,6 @@ class FiveMioProvider : MainAPI() {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
-        // CloudStream mengirim page mulai dari 1, sedangkan AJAX 5mio dimulai dari 0
         val ajaxPage = (page - 1).coerceAtLeast(0)
 
         val params = mapOf(
@@ -119,8 +119,9 @@ class FiveMioProvider : MainAPI() {
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
-                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                    "Referer" to "$mainUrl/?s=${URLEncoder.encode(cleanQuery, "UTF-8")}",
+                    "Origin" to mainUrl,
+                    "Accept" to "*/*"
                 )
             )
 
@@ -157,8 +158,7 @@ class FiveMioProvider : MainAPI() {
                 } else null
             }.distinctBy { it.url }
 
-            // Jika hasil tidak kosong, CloudStream akan memicu pencarian page selanjutnya saat di-scroll
-            val hasNext = results.isNotEmpty()
+            val hasNext = results.isNotEmpty() && !html.contains("invi no-posts")
             newSearchResponseList(results, hasNext)
         } catch (e: Exception) {
             newSearchResponseList(emptyList(), false)
@@ -232,7 +232,6 @@ class FiveMioProvider : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // iframes
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
@@ -272,13 +271,11 @@ class FiveMioProvider : MainAPI() {
             }
         }
 
-        // video elements
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // scripts
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -313,14 +310,12 @@ class FiveMioProvider : MainAPI() {
             }
         }
 
-        // data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }
                 .ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
         var linkFound = false
