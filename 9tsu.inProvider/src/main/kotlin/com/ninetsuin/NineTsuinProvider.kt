@@ -186,9 +186,31 @@ class NineTsuInProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
+        // Ekstraksi Related Items
+        val relatedItems = mutableListOf<SearchResponse>()
+        val relatedContainer = doc.selectFirst(".post-list-in-single, .related-posts, .post-related, .related-content")
+        if (relatedContainer != null) {
+            relatedContainer.select("article.cactus-post-item, .cactus-post-item, .post-item").forEach { item ->
+                val linkElement = item.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a")
+                if (linkElement != null) {
+                    val relTitle = linkElement.text().trim()
+                    val relUrl = linkElement.attr("href")
+                    if (relTitle.isNotBlank() && relUrl.isNotBlank() && relUrl.startsWith(mainUrl) && !relUrl.equals(url)) {
+                        val img = item.selectFirst("img")
+                        val poster = getAttrOrNull(img, "data-src") ?: getAttrOrNull(img, "src")
+                            ?: getAttrOrNull(img, "data-lazy-src") ?: getAttrOrNull(img, "data-original")
+                        relatedItems.add(newTvSeriesSearchResponse(relTitle, relUrl, TvType.TvSeries) {
+                            this.posterUrl = poster
+                        })
+                    }
+                }
+            }
+        }
+
         return newMovieLoadResponse(title, url, TvType.TvSeries, url) {
             this.posterUrl = posterUrl
             this.plot = description
+            this.recommendations = relatedItems
         }
     }
 
