@@ -153,6 +153,7 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
+    // Fungsi pencarian menggunakan AJAX bertahap
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -160,9 +161,11 @@ class NineTsuFixProvider : MainAPI() {
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
+        // Parameter lengkap
         val params = mapOf(
             "action" to "load_more",
             "page" to ajaxPage.toString(),
+            "searchPage" to "true",
             "template" to "html/loop/content",
             "vars[s]" to cleanQuery
         )
@@ -175,17 +178,22 @@ class NineTsuFixProvider : MainAPI() {
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
                     "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Origin" to mainUrl,
+                    "Accept" to "*/*",
                     "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                 )
             )
 
             val html = response.text
+            
+            // JANGAN dibuang sebelum di-parse
             if (html.length < 20) {
                 return newSearchResponseList(emptyList(), false)
             }
 
             val doc = Jsoup.parse(html)
-            val items = doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item, article.cactus-post-item, .cactus-post-item")
+            
+            val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
 
             val results = items.mapNotNull { element ->
                 val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
@@ -200,7 +208,7 @@ class NineTsuFixProvider : MainAPI() {
                     link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                 }
 
-                if (title.isNotBlank()) {
+                if (title.isNotBlank() && link.startsWith(mainUrl)) {
                     val imgElement = element.selectFirst("img")
                     var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                     if (posterUrl?.startsWith("data:image") == true) posterUrl = null
