@@ -101,10 +101,10 @@ class FiveMioProvider : MainAPI() {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return emptyList()
 
-        // Mengambil 5 halaman pertama secara paralel menggunakan apmap
+        // Mengambil 5 halaman pertama secara paralel menggunakan amap (non-blocking)
         val pagesToFetch = (0..4).toList()
 
-        val results = pagesToFetch.apmap { page ->
+        val results = pagesToFetch.amap { page ->
             val params = mapOf(
                 "action" to "load_more",
                 "page" to page.toString(),
@@ -126,7 +126,7 @@ class FiveMioProvider : MainAPI() {
                 )
 
                 val html = response.text
-                if (html.length < 20) return@apmap emptyList<SearchResponse>()
+                if (html.length < 20) return@amap emptyList<SearchResponse>()
 
                 val doc = Jsoup.parse(html)
                 val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
