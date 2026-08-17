@@ -97,70 +97,72 @@ class FiveMioProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
+    override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
-        if (cleanQuery.isBlank()) return emptyList()
+        if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
-        // Mengambil 5 halaman pertama secara paralel menggunakan amap (non-blocking)
-        val pagesToFetch = (0..4).toList()
+        // CloudStream mengirim page mulai dari 1, sedangkan AJAX 5mio dimulai dari 0
+        val ajaxPage = (page - 1).coerceAtLeast(0)
 
-        val results = pagesToFetch.amap { page ->
-            val params = mapOf(
-                "action" to "load_more",
-                "page" to page.toString(),
-                "searchPage" to "true",
-                "template" to "html/loop/content",
-                "vars[s]" to cleanQuery
+        val params = mapOf(
+            "action" to "load_more",
+            "page" to ajaxPage.toString(),
+            "searchPage" to "true",
+            "template" to "html/loop/content",
+            "vars[s]" to cleanQuery
+        )
+
+        return try {
+            val response = app.post(
+                ajaxUrl,
+                data = params,
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                )
             )
 
-            try {
-                val response = app.post(
-                    ajaxUrl,
-                    data = params,
-                    headers = mapOf(
-                        "User-Agent" to userAgent,
-                        "X-Requested-With" to "XMLHttpRequest",
-                        "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
-                        "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
-                    )
-                )
-
-                val html = response.text
-                if (html.length < 20) return@amap emptyList<SearchResponse>()
-
-                val doc = Jsoup.parse(html)
-                val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
-
-                items.mapNotNull { element ->
-                    val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
-                        ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
-                        ?: return@mapNotNull null
-
-                    val title = titleElement.text().trim()
-                    var link = titleElement.attr("href")
-
-                    if (link.isBlank()) return@mapNotNull null
-                    if (!link.startsWith("http")) {
-                        link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
-                    }
-
-                    if (title.isNotBlank() && link.startsWith(mainUrl)) {
-                        val imgElement = element.selectFirst("img")
-                        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-                            ?: getAttrOrNull(imgElement, "data-lazy-src") ?: getAttrOrNull(imgElement, "data-original")
-                        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-                        newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
-                            this.posterUrl = posterUrl
-                        }
-                    } else null
-                }
-            } catch (e: Exception) {
-                emptyList()
+            val html = response.text
+            if (html.length < 20) {
+                return newSearchResponseList(emptyList(), false)
             }
-        }.flatten()
 
-        return results.distinctBy { it.url }
+            val doc = Jsoup.parse(html)
+            val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
+
+            val results = items.mapNotNull { element ->
+                val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
+                    ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
+                    ?: return@mapNotNull null
+
+                val title = titleElement.text().trim()
+                var link = titleElement.attr("href")
+
+                if (link.isBlank()) return@mapNotNull null
+                if (!link.startsWith("http")) {
+                    link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
+                }
+
+                if (title.isNotBlank() && link.startsWith(mainUrl)) {
+                    val imgElement = element.selectFirst("img")
+                    var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+                        ?: getAttrOrNull(imgElement, "data-lazy-src") ?: getAttrOrNull(imgElement, "data-original")
+                    if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+                    newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                        this.posterUrl = posterUrl
+                    }
+                } else null
+            }.distinctBy { it.url }
+
+            // Jika hasil tidak kosong, CloudStream akan memicu pencarian page selanjutnya saat di-scroll
+            val hasNext = results.isNotEmpty()
+            newSearchResponseList(results, hasNext)
+        } catch (e: Exception) {
+            newSearchResponseList(emptyList(), false)
+        }
     }
 
     override suspend fun load(url: String): LoadResponse {
