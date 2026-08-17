@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.json.JSONArray
 import org.json.JSONObject
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
@@ -98,38 +99,65 @@ class NineTsuInProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // ==================== PENCARIAN (langsung di 9tsu.in) ====================
-    override suspend fun search(query: String): List<SearchResponse> {
-        val results = mutableListOf<SearchResponse>()
+    override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
-        if (cleanQuery.isBlank()) return emptyList()
+        if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
-        val searchUrl = "$mainUrl/?s=${cleanQuery.replace(" ", "+")}"
-        try {
-            val doc = app.get(searchUrl, headers = mapOf("User-Agent" to userAgent)).document
-            doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item").forEach { element ->
+        val ajaxPage = (page - 1).coerceAtLeast(0)
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        val params = mapOf(
+            "action" to "load_more",
+            "page" to ajaxPage.toString(),
+            "searchPage" to "true",
+            "template" to "html/loop/content",
+            "vars[s]" to cleanQuery
+        )
+
+        return try {
+            val response = app.post(
+                ajaxUrl,
+                data = params,
+                headers = mapOf(
+                    "User-Agent" to userAgent,
+                    "X-Requested-With" to "XMLHttpRequest",
+                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                )
+            )
+
+            val html = response.text
+            if (html.length < 20 || html.contains("invi no-posts")) {
+                return newSearchResponseList(emptyList(), false)
+            }
+
+            val doc = Jsoup.parse(html)
+            val items = doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item, article.cactus-post-item, .cactus-post-item")
+
+            val results = items.mapNotNull { element ->
                 val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
-                    ?: return@forEach
+                    ?: return@mapNotNull null
+
                 val title = titleElement.text().trim()
                 val link = titleElement.attr("href")
-                if (title.isBlank() || link.isBlank() || !link.startsWith("http")) return@forEach
+
+                if (title.isBlank() || link.isBlank() || !link.startsWith("http")) return@mapNotNull null
 
                 val imgElement = element.selectFirst("img")
                 var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                 if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                results.add(newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
+                newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                     this.posterUrl = posterUrl
-                })
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+                }
+            }.distinctBy { it.url }
 
-        return results.distinctBy { it.url }
+            val hasNext = results.isNotEmpty()
+            newSearchResponseList(results, hasNext)
+        } catch (e: Exception) {
+            newSearchResponseList(emptyList(), false)
+        }
     }
-    // ====================================================================
 
     override suspend fun load(url: String): LoadResponse {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
@@ -141,7 +169,6 @@ class NineTsuInProvider : MainAPI() {
         var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
         if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-        // Ambil deskripsi dari .body-content
         val descriptionElement = doc.selectFirst(".body-content")
         val description = if (descriptionElement != null) {
             val cloned = descriptionElement.clone()
@@ -157,7 +184,6 @@ class NineTsuInProvider : MainAPI() {
         }
     }
 
-    // ==================== loadLinks ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -172,12 +198,10 @@ class NineTsuInProvider : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // 1. Proses semua iframe
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 when {
-                    // muxalor.guru - langsung API
                     src.contains("muxalor.guru") -> {
                         val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
@@ -198,7 +222,6 @@ class NineTsuInProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru
                     src.contains("ok.ru") -> {
                         allUrls.add(src)
                         try {
@@ -210,7 +233,6 @@ class NineTsuInProvider : MainAPI() {
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
-                    // Iframe lainnya
                     else -> {
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
@@ -225,13 +247,11 @@ class NineTsuInProvider : MainAPI() {
             }
         }
 
-        // 2. video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -264,16 +284,13 @@ class NineTsuInProvider : MainAPI() {
             }
         }
 
-        // 4. data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses semua URL
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
