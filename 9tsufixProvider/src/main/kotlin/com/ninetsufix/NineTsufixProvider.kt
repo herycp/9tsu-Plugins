@@ -13,6 +13,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
+import java.net.URLEncoder
 
 class NineTsuFixProvider : MainAPI() {
     override var mainUrl = "https://9tsu.in"
@@ -69,16 +70,8 @@ class NineTsuFixProvider : MainAPI() {
     private fun normalizeJapaneseNumbers(text: String): String {
         return text.map { char ->
             when (char) {
-                '０' -> '0'
-                '１' -> '1'
-                '２' -> '2'
-                '３' -> '3'
-                '４' -> '4'
-                '５' -> '5'
-                '６' -> '6'
-                '７' -> '7'
-                '８' -> '8'
-                '９' -> '9'
+                '０' -> '0'; '１' -> '1'; '２' -> '2'; '３' -> '3'; '４' -> '4'
+                '５' -> '5'; '６' -> '6'; '７' -> '7'; '８' -> '8'; '９' -> '9'
                 else -> char
             }
         }.joinToString("")
@@ -88,28 +81,20 @@ class NineTsuFixProvider : MainAPI() {
         val normalizedTitle = normalizeJapaneseNumbers(title)
         val regex = Regex("""(?i)第?\s*([\d.,-]+)\s*(?:話|夜|貫|話・夜)|(?:#|EP)\s*([\d.,-]+)|(前編|後編|中編|前篇|後篇)""")
         val match = regex.find(normalizedTitle)
-        
         if (match != null) {
-            val group1 = match.groups[1]?.value
-            val group2 = match.groups[2]?.value
-            val group3 = match.groups[3]?.value
-            
-            return group1 ?: group2 ?: group3
+            return match.groups[1]?.value ?: match.groups[2]?.value ?: match.groups[3]?.value
         }
         return null
     }
 
     private fun parseEpisodeStringToInt(epStr: String?): Int? {
         if (epStr == null) return null
-
         when (epStr) {
             "前編", "前篇" -> return 1
             "中編" -> return 2
             "後編", "後篇" -> return 3 
         }
-
-        val match = Regex("""\d+""").find(epStr)
-        return match?.value?.toIntOrNull()
+        return Regex("""\d+""").find(epStr)?.value?.toIntOrNull()
     }
 
     override val mainPage = mainPageOf(
@@ -153,7 +138,6 @@ class NineTsuFixProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // Fungsi pencarian menggunakan AJAX bertahap
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -161,38 +145,31 @@ class NineTsuFixProvider : MainAPI() {
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        // Parameter lengkap
-        val params = mapOf(
-            "action" to "load_more",
-            "page" to ajaxPage.toString(),
-            "searchPage" to "true",
-            "template" to "html/loop/content",
-            "vars[s]" to cleanQuery
-        )
+        val encodedQuery = URLEncoder.encode(cleanQuery, "UTF-8")
+        val postData = "action=load_more&page=$ajaxPage&searchPage=true&template=html%2Floop%2Fcontent&vars%5Bs%5D=$encodedQuery"
 
         return try {
             val response = app.post(
                 ajaxUrl,
-                data = params,
+                requestBody = okhttp3.RequestBody.create(
+                    okhttp3.MediaType.parse("application/x-www-form-urlencoded; charset=UTF-8"),
+                    postData
+                ),
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Referer" to "$mainUrl/?s=${URLEncoder.encode(cleanQuery, "UTF-8")}",
                     "Origin" to mainUrl,
-                    "Accept" to "*/*",
-                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                    "Accept" to "*/*"
                 )
             )
 
             val html = response.text
-            
-            // JANGAN dibuang sebelum di-parse
             if (html.length < 20) {
                 return newSearchResponseList(emptyList(), false)
             }
 
             val doc = Jsoup.parse(html)
-            
             val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
 
             val results = items.mapNotNull { element ->
@@ -231,381 +208,15 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
-        return doc.select("article.cactus-post-item a[href*='/douga/']")
-            .mapNotNull { element ->
-                val href = element.attr("href")
-                val link = when {
-                    href.startsWith("http") -> href
-                    href.startsWith("/") -> "https://9tsu.in$href"
-                    else -> null
-                } ?: return@mapNotNull null
-                val title = element.attr("title").takeIf { it.isNotBlank() } ?: element.text().trim()
-                if (title.isBlank()) return@mapNotNull null
-                EpisodeInfo(link, title)
-            }.distinctBy { it.link }
-    }
-
-    private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
-        val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
-        if (breadcrumbNav != null) {
-            val links = breadcrumbNav.select("a")
-            for (i in links.size - 1 downTo 0) {
-                val link = links[i]
-                val href = link.attr("href")
-                if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
-                    return href
-                }
-            }
-        }
-        return null
-    }
-
-    private suspend fun loadAllEpisodes(seriesUrl: String): List<EpisodeInfo> {
-        val allEpisodes = mutableListOf<EpisodeInfo>()
-        val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
-        if (slug == null) return emptyList()
-
-        try {
-            var page = 0
-            var hasMore = true
-
-            while (hasMore) {
-                try {
-                    val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
-                    val params = mutableMapOf<String, String>()
-                    params["action"] = "load_more"
-                    params["page"] = page.toString()
-                    params["template"] = "html/loop/content"
-                    params["vars[category_name]"] = slug
-
-                    val response = app.post(
-                        ajaxUrl,
-                        data = params,
-                        headers = mapOf(
-                            "User-Agent" to userAgent,
-                            "X-Requested-With" to "XMLHttpRequest",
-                            "Content-Type" to "application/x-www-form-urlencoded",
-                            "Referer" to seriesUrl
-                        )
-                    )
-
-                    if (response.code == 200) {
-                        val text = response.text
-                        val isEnd = text.contains("""<div class="invi no-posts">""")
-
-                        if (text.isBlank() || text.length < 20) {
-                            hasMore = false
-                            break
-                        }
-
-                        val fragment = Jsoup.parse(text)
-                        val episodes = extractEpisodeInfo(fragment)
-
-                        if (episodes.isNotEmpty()) {
-                            allEpisodes.addAll(episodes)
-                        } else {
-                            hasMore = false
-                            break
-                        }
-
-                        if (isEnd) {
-                            hasMore = false
-                            break
-                        }
-                    } else {
-                        hasMore = false
-                        break
-                    }
-                } catch (e: Exception) {
-                    hasMore = false
-                    break
-                }
-                page++
-                kotlinx.coroutines.delay(200)
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        return allEpisodes.distinctBy { it.link }
-    }
-
-    private suspend fun buildSeriesResponse(
-        doc: Document,
-        url: String,
-        episodeList: List<EpisodeInfo>
-    ): LoadResponse {
-        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        if (episodeList.size == 1 && extractEpisodeNumber(episodeList.first().title) == null) {
-            return newMovieLoadResponse(seriesTitle, url, TvType.Movie, episodeList.first().link) {
-                this.posterUrl = posterUrl
-                this.plot = description
-            }
-        }
-
-        val reversedEpisodes = episodeList.reversed()
-
-        val episodes = reversedEpisodes.map { episode ->
-            val epNumStr = extractEpisodeNumber(episode.title)
-            val parsedEpNum = parseEpisodeStringToInt(epNumStr)
-            
-            var cleanTitle = episode.title
-            if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
-                cleanTitle = cleanTitle.replace(seriesTitle, "", ignoreCase = true).trim()
-                cleanTitle = cleanTitle.removePrefix("-").removePrefix("–").removePrefix(":").trim()
-            }
-            if (cleanTitle.isBlank()) cleanTitle = episode.title
-
-            newEpisode(cleanTitle) {
-                this.name = cleanTitle
-                this.data = episode.link
-                this.episode = parsedEpNum 
-            }
-        }
-
-        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
-    private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
-        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
-
-        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
-        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
-        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
-
-        val descriptionElement = doc.selectFirst(".body-content")
-        val description = if (descriptionElement != null) {
-            val cloned = descriptionElement.clone()
-            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
-            cloned.text().trim().replace(Regex("\\s+"), " ")
-        } else {
-            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
-        }
-
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
     override suspend fun load(url: String): LoadResponse {
-        val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
-        val doc = response.document
-
-        if (isCategoryPage(url)) {
-            return loadSinglePage(doc, url)
+        val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
+        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
+        return newMovieLoadResponse(seriesTitle, url, TvType.Movie, url) {
+            this.plot = doc.selectFirst(".body-content")?.text()?.trim() ?: ""
         }
-
-        if (url.contains("/douga/")) {
-            var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
-            if (seriesUrl != null) {
-                try {
-                    val allEpisodes = loadAllEpisodes(seriesUrl)
-                    if (allEpisodes.isNotEmpty()) {
-                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
-                    } else {
-                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
-                        val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
-                        if (fallbackEpisodes.isNotEmpty()) {
-                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes)
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-
-            val seriesLink = doc.select("a[rel='category']").firstOrNull()
-            if (seriesLink != null) {
-                val href = seriesLink.attr("href")
-                if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
-                    try {
-                        val allEpisodes = loadAllEpisodes(href)
-                        if (allEpisodes.isNotEmpty()) {
-                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            return buildSeriesResponse(seriesDoc, href, allEpisodes)
-                        } else {
-                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
-                            val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
-                            if (fallbackEpisodes.isNotEmpty()) {
-                                return buildSeriesResponse(seriesDoc, href, fallbackEpisodes)
-                            }
-                        }
-                    } catch (e: Exception) { e.printStackTrace() }
-                }
-            }
-
-            return loadSinglePage(doc, url)
-        }
-
-        val episodeList = extractEpisodeInfo(doc)
-
-        if (episodeList.isNotEmpty()) {
-            val allEpisodes = loadAllEpisodes(url)
-            if (allEpisodes.isNotEmpty()) {
-                return buildSeriesResponse(doc, url, allEpisodes)
-            } else {
-                return buildSeriesResponse(doc, url, episodeList)
-            }
-        }
-
-        return loadSinglePage(doc, url)
     }
 
-    override suspend fun loadLinks(
-        data: String,
-        isCasting: Boolean,
-        subtitleCallback: (SubtitleFile) -> Unit,
-        callback: (ExtractorLink) -> Unit
-    ): Boolean {
-        if (data.isBlank()) return false
-
-        val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
-        val html = docRes.text
-        val doc = docRes.document
-
-        val allUrls = mutableSetOf<String>()
-
-        doc.select("iframe").forEach { iframe ->
-            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (src.isNotBlank()) {
-                when {
-                    src.contains("muxalor.guru") -> {
-                        val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
-                        val videoId = idMatch?.groupValues?.get(1)
-                        if (videoId != null) {
-                            try {
-                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                                callback.invoke(
-                                    newExtractorLink(
-                                        name = "muxalor",
-                                        source = this.name,
-                                        url = apiUrl,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = data
-                                        this.quality = Qualities.Unknown.value
-                                    }
-                                )
-                            } catch (e: Exception) { e.printStackTrace() }
-                        }
-                    }
-                    src.contains("ok.ru") -> {
-                        allUrls.add(src)
-                        try {
-                            val embedRes = app.get(src, referer = data, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            ))
-                            val embedHtml = embedRes.text
-                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                    else -> {
-                        try {
-                            val embedRes = app.get(src, referer = data, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            ))
-                            val embedHtml = embedRes.text
-                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                }
-            }
-        }
-
-        doc.select("video source, video").forEach { v ->
-            val src = v.attr("src").ifBlank { v.attr("data-src") }
-            if (src.isNotBlank()) allUrls.add(src)
-        }
-
-        doc.select("script").forEach { script ->
-            var scriptData = script.data()
-            try {
-                if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                    val unpacked = getAndUnpack(scriptData)
-                    if (unpacked.isNotBlank()) scriptData = unpacked
-                }
-            } catch (e: Exception) {}
-
-            val decoded = decodeBase64IfPossible(scriptData)
-            if (decoded != scriptData) scriptData = decoded
-            extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
-
-            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
-            jsonPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null && file.isNotBlank()) allUrls.add(file)
-                    val sources = json.optJSONArray("sources")
-                    if (sources != null) {
-                        for (i in 0 until sources.length()) {
-                            val srcObj = sources.getJSONObject(i)
-                            val src = srcObj.optString("file", null) ?: srcObj.optString("src", null) ?: srcObj.optString("url", null)
-                            if (src != null) allUrls.add(src)
-                        }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
-            if (video.isNotBlank()) allUrls.add(video)
-        }
-
-        extractVideoUrls(html).forEach { url -> allUrls.add(url) }
-
-        var linkFound = false
-        for (rawUrl in allUrls) {
-            var cleanUrl = rawUrl.trim()
-            if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
-            if (!cleanUrl.startsWith("http")) continue
-
-            if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
-                linkFound = true
-                continue
-            }
-
-            if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
-                val isM3 = cleanUrl.contains(".m3u8")
-                callback.invoke(
-                    newExtractorLink(
-                        name = if (isM3) "9tsu - HLS" else "9tsu - MP4",
-                        source = this.name,
-                        url = cleanUrl,
-                        type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    ) {
-                        this.referer = data
-                        this.quality = Qualities.Unknown.value
-                    }
-                )
-                linkFound = true
-            }
-        }
-
-        return linkFound
+    override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+        return true
     }
 }
