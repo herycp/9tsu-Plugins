@@ -194,7 +194,7 @@ class NineTsuFixProvider : MainAPI() {
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                     ?: return@mapNotNull null
 
-                val rawTitle = titleElement.text().trim()
+                val title = titleElement.text().trim() // Gunakan judul utuh untuk pencarian
                 var link = titleElement.attr("href")
 
                 if (link.isBlank()) return@mapNotNull null
@@ -202,17 +202,16 @@ class NineTsuFixProvider : MainAPI() {
                     link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                 }
 
-                if (rawTitle.isNotBlank() && link.startsWith(mainUrl)) {
-                    val baseTitle = getBaseTitle(rawTitle)
+                if (title.isNotBlank() && link.startsWith(mainUrl)) {
                     val imgElement = element.selectFirst("img")
                     var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                     if (posterUrl?.startsWith("data:image") == true) posterUrl = null
 
-                    newTvSeriesSearchResponse(baseTitle, link, TvType.TvSeries) {
+                    newTvSeriesSearchResponse(title, link, TvType.TvSeries) {
                         this.posterUrl = posterUrl
                     }
                 } else null
-            }.distinctBy { it.name }
+            }.distinctBy { it.url } // Hanya saring link yang duplikat persis, bukan nama judul
 
             val hasNext = results.isNotEmpty() && !html.contains("invi no-posts")
             newSearchResponseList(results, hasNext)
@@ -256,7 +255,6 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // Fungsi mengambil URL kategori terbawah (sesudah series jika ada)
     private fun getCategoryUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
         if (breadcrumbNav != null) {
@@ -272,10 +270,9 @@ class NineTsuFixProvider : MainAPI() {
         return null
     }
 
-    // Fungsi Fetch Halaman Category dan ubah menjadi daftar rekomendasi yang difilter
     private suspend fun fetchRelatedItems(doc: Document, currentUrl: String): List<SearchResponse> {
         val categoryUrl = getCategoryUrlFromBreadcrumb(doc) ?: return emptyList()
-        if (categoryUrl == currentUrl) return emptyList() // Jangan muat ulang jika sudah di halaman kategori
+        if (categoryUrl == currentUrl) return emptyList()
 
         return try {
             val catDoc = app.get(categoryUrl, headers = mapOf("User-Agent" to userAgent)).document
@@ -453,7 +450,6 @@ class NineTsuFixProvider : MainAPI() {
         val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
         val doc = response.document
 
-        // Mengambil daftar related item terlebih dahulu berdasarkan breadcrumb
         val relatedItems = fetchRelatedItems(doc, url)
 
         if (isCategoryPage(url)) {
