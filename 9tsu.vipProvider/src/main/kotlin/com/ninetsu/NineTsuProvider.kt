@@ -109,6 +109,7 @@ class NineTsuProvider : MainAPI() {
 
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
+        
         val params = mapOf(
             "action" to "load_more",
             "page" to ajaxPage.toString(),
@@ -138,7 +139,7 @@ class NineTsuProvider : MainAPI() {
             val items = doc.select("article, .post, .entry, .type-post, .item, .result-item, .blog-item, article.cactus-post-item, .cactus-post-item")
 
             val results = items.mapNotNull { element ->
-                val titleElement = element.selectFirst("h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
+                val titleElement = element.selectFirst("h3.cactus-post-title a, h2 a, h3 a, h4 a, .entry-title a, a[rel='bookmark']")
                     ?: element.select("a").firstOrNull { it.text().trim().isNotBlank() }
                     ?: return@mapNotNull null
 
@@ -146,6 +147,7 @@ class NineTsuProvider : MainAPI() {
                 var link = titleElement.attr("href")
 
                 if (link.isBlank()) return@mapNotNull null
+
                 if (!link.startsWith("http")) {
                     link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                 }
