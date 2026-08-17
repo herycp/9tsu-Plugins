@@ -163,7 +163,6 @@ class NineTsuFixProvider : MainAPI() {
         val params = mapOf(
             "action" to "load_more",
             "page" to ajaxPage.toString(),
-            "searchPage" to "true",
             "template" to "html/loop/content",
             "vars[s]" to cleanQuery
         )
@@ -181,7 +180,7 @@ class NineTsuFixProvider : MainAPI() {
             )
 
             val html = response.text
-            if (html.length < 20 || html.contains("invi no-posts")) {
+            if (html.length < 20) {
                 return newSearchResponseList(emptyList(), false)
             }
 
@@ -212,7 +211,7 @@ class NineTsuFixProvider : MainAPI() {
                 } else null
             }.distinctBy { it.url }
 
-            val hasNext = results.isNotEmpty()
+            val hasNext = results.isNotEmpty() && !html.contains("invi no-posts")
             newSearchResponseList(results, hasNext)
         } catch (e: Exception) {
             newSearchResponseList(emptyList(), false)
