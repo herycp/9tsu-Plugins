@@ -1,4 +1,4 @@
-package com.ninetsu
+package com.example
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
