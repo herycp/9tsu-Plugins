@@ -13,6 +13,7 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
 import org.jsoup.nodes.Element
 import java.util.Base64
+import java.net.URLEncoder
 
 class NineTsuProvider : MainAPI() {
     override var mainUrl = "https://9tsu.vip"
@@ -103,7 +104,6 @@ class NineTsuProvider : MainAPI() {
         return newHomePageResponse(request.name, homeItems)
     }
 
-    // Fungsi pencarian menggunakan AJAX bertahap
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim()
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -111,37 +111,31 @@ class NineTsuProvider : MainAPI() {
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        val params = mapOf(
-            "action" to "load_more",
-            "page" to ajaxPage.toString(),
-            "searchPage" to "true",
-            "template" to "html/loop/content",
-            "vars[s]" to cleanQuery
-        )
+        val encodedQuery = URLEncoder.encode(cleanQuery, "UTF-8")
+        val postData = "action=load_more&page=$ajaxPage&searchPage=true&template=html%2Floop%2Fcontent&vars%5Bs%5D=$encodedQuery"
 
         return try {
             val response = app.post(
                 ajaxUrl,
-                data = params,
+                requestBody = okhttp3.RequestBody.create(
+                    okhttp3.MediaType.parse("application/x-www-form-urlencoded; charset=UTF-8"),
+                    postData
+                ),
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
+                    "Referer" to "$mainUrl/?s=${URLEncoder.encode(cleanQuery, "UTF-8")}",
                     "Origin" to mainUrl,
-                    "Accept" to "*/*",
-                    "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                    "Accept" to "*/*"
                 )
             )
 
             val html = response.text
-            
-            // Jangan buang dahulu, biarkan Jsoup mengekstrak apa yang ada
             if (html.length < 20) {
                 return newSearchResponseList(emptyList(), false)
             }
 
             val doc = Jsoup.parse(html)
-            
             val items = doc.select("article.cactus-post-item, .cactus-post-item, article.post, .post, .entry, .type-post, .item, .cactus-listing-wrap .cactus-post-item, .cactus-sub-wrap .cactus-post-item")
 
             val results = items.mapNotNull { element ->
@@ -169,7 +163,6 @@ class NineTsuProvider : MainAPI() {
                 } else null
             }.distinctBy { it.url }
 
-            // Penentuan apakah halaman habis menggunakan invi no-posts
             val hasNext = results.isNotEmpty() && !html.contains("invi no-posts")
             newSearchResponseList(results, hasNext)
         } catch (e: Exception) {
@@ -210,104 +203,9 @@ class NineTsuProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
-        val doc = docRes.document
-
         val allUrls = mutableSetOf<String>()
-
-        doc.select("iframe").forEach { iframe ->
-            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
-            if (src.isNotBlank()) {
-                when {
-                    src.contains("muxalor.guru") -> {
-                        val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
-                        val videoId = idMatch?.groupValues?.get(1)
-                        if (videoId != null) {
-                            try {
-                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                                callback.invoke(
-                                    newExtractorLink(
-                                        name = "muxalor",
-                                        source = this.name,
-                                        url = apiUrl,
-                                        type = ExtractorLinkType.M3U8
-                                    ) {
-                                        this.referer = data
-                                        this.quality = Qualities.Unknown.value
-                                    }
-                                )
-                            } catch (e: Exception) { e.printStackTrace() }
-                        }
-                    }
-                    src.contains("ok.ru") -> {
-                        allUrls.add(src)
-                        try {
-                            val embedRes = app.get(src, referer = data, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            ))
-                            val embedHtml = embedRes.text
-                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                    else -> {
-                        try {
-                            val embedRes = app.get(src, referer = data, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            ))
-                            val embedHtml = embedRes.text
-                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                }
-            }
-        }
-
-        doc.select("video source, video").forEach { v ->
-            val src = v.attr("src").ifBlank { v.attr("data-src") }
-            if (src.isNotBlank()) allUrls.add(src)
-        }
-
-        doc.select("script").forEach { script ->
-            var scriptData = script.data()
-            try {
-                if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
-                    val unpacked = getAndUnpack(scriptData)
-                    if (unpacked.isNotBlank()) scriptData = unpacked
-                }
-            } catch (e: Exception) {}
-
-            val decoded = decodeBase64IfPossible(scriptData)
-            if (decoded != scriptData) scriptData = decoded
-            extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
-
-            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
-            jsonPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null && file.isNotBlank()) allUrls.add(file)
-                    val sources = json.optJSONArray("sources")
-                    if (sources != null) {
-                        for (i in 0 until sources.length()) {
-                            val srcObj = sources.getJSONObject(i)
-                            val src = srcObj.optString("file", null) ?: srcObj.optString("src", null) ?: srcObj.optString("url", null)
-                            if (src != null) allUrls.add(src)
-                        }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
-            if (video.isNotBlank()) allUrls.add(video)
-        }
-
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
         var linkFound = false
@@ -337,7 +235,6 @@ class NineTsuProvider : MainAPI() {
                 linkFound = true
             }
         }
-
         return linkFound
     }
 }
