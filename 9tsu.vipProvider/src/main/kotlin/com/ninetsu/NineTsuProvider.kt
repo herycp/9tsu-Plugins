@@ -111,16 +111,18 @@ class NineTsuProvider : MainAPI() {
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        val encodedQuery = URLEncoder.encode(cleanQuery, "UTF-8")
-        val postData = "action=load_more&page=$ajaxPage&searchPage=true&template=html%2Floop%2Fcontent&vars%5Bs%5D=$encodedQuery"
+        val params = mapOf(
+            "action" to "load_more",
+            "page" to ajaxPage.toString(),
+            "searchPage" to "true",
+            "template" to "html/loop/content",
+            "vars[s]" to cleanQuery
+        )
 
         return try {
             val response = app.post(
                 ajaxUrl,
-                requestBody = okhttp3.RequestBody.create(
-                    okhttp3.MediaType.parse("application/x-www-form-urlencoded; charset=UTF-8"),
-                    postData
-                ),
+                data = params,
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
@@ -206,6 +208,32 @@ class NineTsuProvider : MainAPI() {
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
         val allUrls = mutableSetOf<String>()
+        
+        docRes.document.select("iframe").forEach { iframe ->
+            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+            if (src.isNotBlank()) {
+                if (src.contains("muxalor.guru")) {
+                    val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
+                    val videoId = idMatch?.groupValues?.get(1)
+                    if (videoId != null) {
+                        try {
+                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                            callback.invoke(newExtractorLink("muxalor", this.name, apiUrl, ExtractorLinkType.M3U8) {
+                                this.referer = data
+                                this.quality = Qualities.Unknown.value
+                            })
+                        } catch (e: Exception) {}
+                    }
+                } else {
+                    allUrls.add(src)
+                    try {
+                        val embedHtml = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).text
+                        extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+                    } catch (e: Exception) {}
+                }
+            }
+        }
+        
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
         var linkFound = false
