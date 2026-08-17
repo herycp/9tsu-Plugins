@@ -145,16 +145,18 @@ class NineTsuFixProvider : MainAPI() {
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         
-        val encodedQuery = URLEncoder.encode(cleanQuery, "UTF-8")
-        val postData = "action=load_more&page=$ajaxPage&searchPage=true&template=html%2Floop%2Fcontent&vars%5Bs%5D=$encodedQuery"
+        val params = mapOf(
+            "action" to "load_more",
+            "page" to ajaxPage.toString(),
+            "searchPage" to "true",
+            "template" to "html/loop/content",
+            "vars[s]" to cleanQuery
+        )
 
         return try {
             val response = app.post(
                 ajaxUrl,
-                requestBody = okhttp3.RequestBody.create(
-                    okhttp3.MediaType.parse("application/x-www-form-urlencoded; charset=UTF-8"),
-                    postData
-                ),
+                data = params,
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
@@ -208,12 +210,243 @@ class NineTsuFixProvider : MainAPI() {
         return categoryPages.any { path == it || path.startsWith("$it/") }
     }
 
-    override suspend fun load(url: String): LoadResponse {
-        val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
-        return newMovieLoadResponse(seriesTitle, url, TvType.Movie, url) {
-            this.plot = doc.selectFirst(".body-content")?.text()?.trim() ?: ""
+    private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
+        return doc.select("article.cactus-post-item a[href*='/douga/']")
+            .mapNotNull { element ->
+                val href = element.attr("href")
+                val link = when {
+                    href.startsWith("http") -> href
+                    href.startsWith("/") -> "https://9tsu.in$href"
+                    else -> null
+                } ?: return@mapNotNull null
+                val title = element.attr("title").takeIf { it.isNotBlank() } ?: element.text().trim()
+                if (title.isBlank()) return@mapNotNull null
+                EpisodeInfo(link, title)
+            }.distinctBy { it.link }
+    }
+
+    private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
+        val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
+        if (breadcrumbNav != null) {
+            val links = breadcrumbNav.select("a")
+            for (i in links.size - 1 downTo 0) {
+                val link = links[i]
+                val href = link.attr("href")
+                if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
+                    return href
+                }
+            }
         }
+        return null
+    }
+
+    private suspend fun loadAllEpisodes(seriesUrl: String): List<EpisodeInfo> {
+        val allEpisodes = mutableListOf<EpisodeInfo>()
+        val slug = seriesUrl.removePrefix(mainUrl).trimStart('/').split("/")[0].takeIf { it.isNotBlank() }
+        if (slug == null) return emptyList()
+
+        try {
+            var page = 0
+            var hasMore = true
+
+            while (hasMore) {
+                try {
+                    val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+                    val params = mutableMapOf<String, String>()
+                    params["action"] = "load_more"
+                    params["page"] = page.toString()
+                    params["template"] = "html/loop/content"
+                    params["vars[category_name]"] = slug
+
+                    val response = app.post(
+                        ajaxUrl,
+                        data = params,
+                        headers = mapOf(
+                            "User-Agent" to userAgent,
+                            "X-Requested-With" to "XMLHttpRequest",
+                            "Referer" to seriesUrl
+                        )
+                    )
+
+                    if (response.code == 200) {
+                        val text = response.text
+                        val isEnd = text.contains("""<div class="invi no-posts">""")
+
+                        if (text.isBlank() || text.length < 20) {
+                            hasMore = false
+                            break
+                        }
+
+                        val fragment = Jsoup.parse(text)
+                        val episodes = extractEpisodeInfo(fragment)
+
+                        if (episodes.isNotEmpty()) {
+                            allEpisodes.addAll(episodes)
+                        } else {
+                            hasMore = false
+                            break
+                        }
+
+                        if (isEnd) {
+                            hasMore = false
+                            break
+                        }
+                    } else {
+                        hasMore = false
+                        break
+                    }
+                } catch (e: Exception) {
+                    hasMore = false
+                    break
+                }
+                page++
+                kotlinx.coroutines.delay(200)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return allEpisodes.distinctBy { it.link }
+    }
+
+    private suspend fun buildSeriesResponse(
+        doc: Document,
+        url: String,
+        episodeList: List<EpisodeInfo>
+    ): LoadResponse {
+        val seriesTitle = doc.selectFirst("h1.entry-title, h1.post-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        if (episodeList.size == 1 && extractEpisodeNumber(episodeList.first().title) == null) {
+            return newMovieLoadResponse(seriesTitle, url, TvType.Movie, episodeList.first().link) {
+                this.posterUrl = posterUrl
+                this.plot = description
+            }
+        }
+
+        val reversedEpisodes = episodeList.reversed()
+
+        val episodes = reversedEpisodes.map { episode ->
+            val epNumStr = extractEpisodeNumber(episode.title)
+            val parsedEpNum = parseEpisodeStringToInt(epNumStr)
+            
+            var cleanTitle = episode.title
+            if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
+                cleanTitle = cleanTitle.replace(seriesTitle, "", ignoreCase = true).trim()
+                cleanTitle = cleanTitle.removePrefix("-").removePrefix("–").removePrefix(":").trim()
+            }
+            if (cleanTitle.isBlank()) cleanTitle = episode.title
+
+            newEpisode(cleanTitle) {
+                this.name = cleanTitle
+                this.data = episode.link
+                this.episode = parsedEpNum 
+            }
+        }
+
+        return newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    private suspend fun loadSinglePage(doc: Document, url: String): MovieLoadResponse {
+        val title = doc.selectFirst("h1.entry-title, h1.post-title, h1, .video-title")?.text()?.trim() ?: doc.title()
+
+        val imgElement = doc.selectFirst(".entry-content img, .post-thumbnail img, article img")
+        var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src")
+        if (posterUrl?.startsWith("data:image") == true) posterUrl = null
+
+        val descriptionElement = doc.selectFirst(".body-content")
+        val description = if (descriptionElement != null) {
+            val cloned = descriptionElement.clone()
+            cloned.select(".overlay-hidden-content, .hidden-content, .post-metadata").remove()
+            cloned.text().trim().replace(Regex("\\s+"), " ")
+        } else {
+            doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
+        }
+
+        return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    override suspend fun load(url: String): LoadResponse {
+        val response = app.get(url, headers = mapOf("User-Agent" to userAgent))
+        val doc = response.document
+
+        if (isCategoryPage(url)) {
+            return loadSinglePage(doc, url)
+        }
+
+        if (url.contains("/douga/")) {
+            var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
+            if (seriesUrl != null) {
+                try {
+                    val allEpisodes = loadAllEpisodes(seriesUrl)
+                    if (allEpisodes.isNotEmpty()) {
+                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                        return buildSeriesResponse(seriesDoc, seriesUrl, allEpisodes)
+                    } else {
+                        val seriesDoc = app.get(seriesUrl, headers = mapOf("User-Agent" to userAgent)).document
+                        val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
+                        if (fallbackEpisodes.isNotEmpty()) {
+                            return buildSeriesResponse(seriesDoc, seriesUrl, fallbackEpisodes)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+
+            val seriesLink = doc.select("a[rel='category']").firstOrNull()
+            if (seriesLink != null) {
+                val href = seriesLink.attr("href")
+                if (href.isNotBlank() && !href.contains("/douga/") && !isCategoryPage(href)) {
+                    try {
+                        val allEpisodes = loadAllEpisodes(href)
+                        if (allEpisodes.isNotEmpty()) {
+                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                            return buildSeriesResponse(seriesDoc, href, allEpisodes)
+                        } else {
+                            val seriesDoc = app.get(href, headers = mapOf("User-Agent" to userAgent)).document
+                            val fallbackEpisodes = extractEpisodeInfo(seriesDoc)
+                            if (fallbackEpisodes.isNotEmpty()) {
+                                return buildSeriesResponse(seriesDoc, href, fallbackEpisodes)
+                            }
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
+            }
+
+            return loadSinglePage(doc, url)
+        }
+
+        val episodeList = extractEpisodeInfo(doc)
+
+        if (episodeList.isNotEmpty()) {
+            val allEpisodes = loadAllEpisodes(url)
+            if (allEpisodes.isNotEmpty()) {
+                return buildSeriesResponse(doc, url, allEpisodes)
+            } else {
+                return buildSeriesResponse(doc, url, episodeList)
+            }
+        }
+
+        return loadSinglePage(doc, url)
     }
 
     override suspend fun loadLinks(data: String, isCasting: Boolean, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
