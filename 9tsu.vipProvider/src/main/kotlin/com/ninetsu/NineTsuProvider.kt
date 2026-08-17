@@ -1,4 +1,4 @@
-package com.example
+package com.ninetsu
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -108,7 +108,7 @@ class NineTsuProvider : MainAPI() {
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
         val ajaxPage = (page - 1).coerceAtLeast(0)
-        val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+        val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
         val params = mapOf(
             "action" to "load_more",
             "page" to ajaxPage.toString(),
@@ -124,7 +124,7 @@ class NineTsuProvider : MainAPI() {
                 headers = mapOf(
                     "User-Agent" to userAgent,
                     "X-Requested-With" to "XMLHttpRequest",
-                    "Referer" to "https://9tsu.in/?s=${cleanQuery.replace(" ", "+")}",
+                    "Referer" to "$mainUrl/?s=${cleanQuery.replace(" ", "+")}",
                     "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
                 )
             )
@@ -146,16 +146,11 @@ class NineTsuProvider : MainAPI() {
                 var link = titleElement.attr("href")
 
                 if (link.isBlank()) return@mapNotNull null
-
-                if (link.startsWith("https://9tsu.in/douga/")) {
-                    link = link.replace("https://9tsu.in/douga/", "https://9tsu.vip/")
-                } else if (link.startsWith("https://9tsu.in/")) {
-                    link = link.replace("https://9tsu.in/", "https://9tsu.vip/")
-                } else if (link.startsWith("http://9tsu.in/")) {
-                    link = link.replace("http://9tsu.in/", "https://9tsu.vip/")
+                if (!link.startsWith("http")) {
+                    link = mainUrl + (if (link.startsWith("/")) "" else "/") + link
                 }
 
-                if (title.isNotBlank() && link.startsWith("https://9tsu.vip/")) {
+                if (title.isNotBlank() && link.startsWith(mainUrl)) {
                     val imgElement = element.selectFirst("img")
                     var posterUrl = getAttrOrNull(imgElement, "data-src") ?: getAttrOrNull(imgElement, "src") ?: getAttrOrNull(imgElement, "data-lazy-src")
                     if (posterUrl?.startsWith("data:image") == true) posterUrl = null
