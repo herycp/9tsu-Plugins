@@ -12,7 +12,7 @@ on:
       # choose your default branch
       - master
       - main
-    paths-ignore:
+   paths-ignore:
       - '*.md'
 
 jobs:
