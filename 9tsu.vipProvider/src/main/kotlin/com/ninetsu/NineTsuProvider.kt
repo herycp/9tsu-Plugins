@@ -229,33 +229,105 @@ class NineTsuProvider : MainAPI() {
         if (data.isBlank()) return false
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
-        val allUrls = mutableSetOf<String>()
+        val doc = docRes.document
         
-        docRes.document.select("iframe").forEach { iframe ->
-            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+        val allUrls = mutableSetOf<String>()
+        val nestedIframes = mutableSetOf<String>()
+        
+        doc.select("iframe").forEach { iframe ->
+            var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("brinqeo.guru")) {
-                    val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
-                    val videoId = idMatch?.groupValues?.get(1)
-                    if (videoId != null) {
+                if (src.startsWith("//")) src = "https:$src"
+                if (!src.startsWith("http")) return@forEach
+
+                // Penanganan Nested Iframe Khusus
+                if (src.contains("blogspherenews.xyz/embed/")) {
+                    try {
+                        val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
+                        val innerIframe = innerDoc.selectFirst("iframe")
+                        var innerSrc = innerIframe?.attr("src")?.ifBlank { innerIframe.attr("data-src") }
+                        if (!innerSrc.isNullOrBlank()) {
+                            if (innerSrc.startsWith("//")) innerSrc = "https:$innerSrc"
+                            src = innerSrc // Timpa src untuk diekstrak oleh blok 'when'
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
+                
+                when {
+                    src.contains("brinqeo.guru") -> {
+                        val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
+                        val videoId = idMatch?.groupValues?.get(1)
+                        if (videoId != null) {
+                            try {
+                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                                callback.invoke(newExtractorLink("brinqeo", this.name, apiUrl, ExtractorLinkType.M3U8) {
+                                    this.referer = data
+                                    this.quality = Qualities.Unknown.value
+                                })
+                            } catch (e: Exception) {}
+                        }
+                    }
+                    src.contains("ok.ru") -> {
+                        allUrls.add(src)
+                    }
+                    else -> {
+                        allUrls.add(src)
                         try {
-                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            callback.invoke(newExtractorLink("brinqeo", this.name, apiUrl, ExtractorLinkType.M3U8) {
-                                this.referer = data
-                                this.quality = Qualities.Unknown.value
-                            })
+                            val embedRes = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent, "Referer" to data))
+                            val embedHtml = embedRes.text
+                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) {}
                     }
-                } else {
-                    allUrls.add(src)
-                    try {
-                        val embedHtml = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).text
-                        extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                    } catch (e: Exception) {}
                 }
             }
         }
         
+        // video/source
+        doc.select("video source, video").forEach { v ->
+            val src = v.attr("src").ifBlank { v.attr("data-src") }
+            if (src.isNotBlank()) allUrls.add(src)
+        }
+
+        // script
+        doc.select("script").forEach { script ->
+            var scriptData = script.data()
+            try {
+                if (scriptData.contains("eval(") || scriptData.contains("pako") || scriptData.contains("atob")) {
+                    val unpacked = getAndUnpack(scriptData)
+                    if (unpacked.isNotBlank()) scriptData = unpacked
+                }
+            } catch (e: Exception) {}
+
+            val decoded = decodeBase64IfPossible(scriptData)
+            if (decoded != scriptData) scriptData = decoded
+            extractVideoUrls(scriptData).forEach { url -> allUrls.add(url) }
+
+            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
+            jsonPattern.findAll(scriptData).forEach { match ->
+                try {
+                    val jsonStr = match.groupValues[1]
+                    val json = JSONObject(jsonStr)
+                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
+                    if (file != null && file.isNotBlank()) allUrls.add(file)
+                    val sources = json.optJSONArray("sources")
+                    if (sources != null) {
+                        for (i in 0 until sources.length()) {
+                            val srcObj = sources.getJSONObject(i)
+                            val src = srcObj.optString("file", null) ?: srcObj.optString("src", null) ?: srcObj.optString("url", null)
+                            if (src != null) allUrls.add(src)
+                        }
+                    }
+                } catch (e: Exception) {}
+            }
+        }
+
+        // data-* attributes
+        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
+            val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
+            if (video.isNotBlank()) allUrls.add(video)
+        }
+
+        // general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
         var linkFound = false
@@ -285,6 +357,17 @@ class NineTsuProvider : MainAPI() {
                 linkFound = true
             }
         }
+        
+        // Eksekusi fallback untuk nested iframe jika tidak ada link yang ditemukan
+        if (!linkFound && nestedIframes.isNotEmpty()) {
+            for (nestedUrl in nestedIframes) {
+                val nestedFound = loadLinks(nestedUrl, isCasting, subtitleCallback, callback)
+                if (nestedFound) {
+                    linkFound = true
+                }
+            }
+        }
+
         return linkFound
     }
 }
