@@ -235,15 +235,15 @@ class FiveMioProvider : MainAPI() {
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("muxalor.guru")) {
-                    val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
+                if (src.contains("brinqeo.guru")) {
+                    val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
                     val videoId = idMatch?.groupValues?.get(1)
                     if (videoId != null) {
                         try {
                             val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                             callback.invoke(
                                 newExtractorLink(
-                                    name = "muxalor",
+                                    name = "brinqeo",
                                     source = this.name,
                                     url = apiUrl,
                                     type = ExtractorLinkType.M3U8

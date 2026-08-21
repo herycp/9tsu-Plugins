@@ -234,13 +234,13 @@ class NineTsuProvider : MainAPI() {
         docRes.document.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("muxalor.guru")) {
-                    val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
+                if (src.contains("brinqeo.guru")) {
+                    val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
                     val videoId = idMatch?.groupValues?.get(1)
                     if (videoId != null) {
                         try {
                             val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            callback.invoke(newExtractorLink("muxalor", this.name, apiUrl, ExtractorLinkType.M3U8) {
+                            callback.invoke(newExtractorLink("brinqeo", this.name, apiUrl, ExtractorLinkType.M3U8) {
                                 this.referer = data
                                 this.quality = Qualities.Unknown.value
                             })
