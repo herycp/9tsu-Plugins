@@ -231,42 +231,62 @@ class FiveMioProvider : MainAPI() {
         val doc = docRes.document
 
         val allUrls = mutableSetOf<String>()
+        val nestedIframes = mutableSetOf<String>()
 
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
-                if (src.contains("brinqeo.guru")) {
-                    val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
-                    val videoId = idMatch?.groupValues?.get(1)
-                    if (videoId != null) {
-                        try {
-                            val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                            callback.invoke(
-                                newExtractorLink(
-                                    name = "brinqeo",
-                                    source = this.name,
-                                    url = apiUrl,
-                                    type = ExtractorLinkType.M3U8
-                                ) {
-                                    this.referer = data
-                                    this.quality = Qualities.Unknown.value
-                                }
-                            )
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                    return@forEach
+                if (src.startsWith("//")) src = "https:$src"
+                if (!src.startsWith("http")) return@forEach
+
+                // Penanganan khusus blogspherenews
+                if (src.contains("blogspherenews.xyz/embed/")) {
+                    try {
+                        val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
+                        val innerIframe = innerDoc.selectFirst("iframe")
+                        var innerSrc = innerIframe?.attr("src")?.ifBlank { innerIframe.attr("data-src") }
+                        if (!innerSrc.isNullOrBlank()) {
+                            if (innerSrc.startsWith("//")) innerSrc = "https:$innerSrc"
+                            src = innerSrc 
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
                 }
 
-                if (src.startsWith("//")) src = "https:$src"
-                if (src.startsWith("http")) {
-                    allUrls.add(src)
-                    try {
-                        val embedRes = app.get(src, referer = data, headers = mapOf(
-                            "User-Agent" to userAgent,
-                            "Referer" to data
-                        ))
-                        extractVideoUrls(embedRes.text).forEach { url -> allUrls.add(url) }
-                    } catch (_: Exception) {}
+                when {
+                    src.contains("brinqeo.guru") -> {
+                        val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
+                        val videoId = idMatch?.groupValues?.get(1)
+                        if (videoId != null) {
+                            try {
+                                val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
+                                callback.invoke(
+                                    newExtractorLink(
+                                        name = "brinqeo",
+                                        source = this.name,
+                                        url = apiUrl,
+                                        type = ExtractorLinkType.M3U8
+                                    ) {
+                                        this.referer = data
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
+                            } catch (e: Exception) { e.printStackTrace() }
+                        }
+                    }
+                    src.contains("ok.ru") -> {
+                        allUrls.add(src)
+                    }
+                    else -> {
+                        allUrls.add(src)
+                        try {
+                            val embedRes = app.get(src, referer = data, headers = mapOf(
+                                "User-Agent" to userAgent,
+                                "Referer" to data
+                            ))
+                            val embedHtml = embedRes.text
+                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+                        } catch (e: Exception) { e.printStackTrace() }
+                    }
                 }
             }
         }
@@ -283,7 +303,7 @@ class FiveMioProvider : MainAPI() {
                     val unpacked = getAndUnpack(scriptData)
                     if (unpacked.isNotBlank()) scriptData = unpacked
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
 
             val decoded = decodeBase64IfPossible(scriptData)
             if (decoded != scriptData) scriptData = decoded
@@ -306,7 +326,7 @@ class FiveMioProvider : MainAPI() {
                             if (src != null) allUrls.add(src)
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {}
             }
         }
 
@@ -343,6 +363,16 @@ class FiveMioProvider : MainAPI() {
                     }
                 )
                 linkFound = true
+            }
+        }
+
+        // Fallback Recursive untuk Nested Iframe
+        if (!linkFound && nestedIframes.isNotEmpty()) {
+            for (nestedUrl in nestedIframes) {
+                val nestedFound = loadLinks(nestedUrl, isCasting, subtitleCallback, callback)
+                if (nestedFound) {
+                    linkFound = true
+                }
             }
         }
 
