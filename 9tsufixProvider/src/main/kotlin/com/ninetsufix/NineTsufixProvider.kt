@@ -26,7 +26,7 @@ class NineTsuFixProvider : MainAPI() {
     private val categoryPages = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
-        "/premium", "/housou-shuuryou", "/dramaend"
+        "/premium", "/housou-shuuryou", "/dramaend", "/youtube-baraeti"
     )
 
     private data class EpisodeInfo(val link: String, val title: String)
