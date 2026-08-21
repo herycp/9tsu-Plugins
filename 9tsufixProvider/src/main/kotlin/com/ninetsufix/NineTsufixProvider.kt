@@ -513,6 +513,7 @@ class NineTsuFixProvider : MainAPI() {
         return loadSinglePage(doc, url, relatedItems)
     }
 
+    // ==================== EKSTRAKSI VIDEO LENGKAP ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -526,25 +527,38 @@ class NineTsuFixProvider : MainAPI() {
         val doc = docRes.document
 
         val allUrls = mutableSetOf<String>()
-        val nestedIframes = mutableSetOf<String>() // Set untuk menyimpan URL nested iframe
 
-        // 1. Ekstraksi Iframe Utama
+        // 1. Proses semua iframe
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 if (src.startsWith("//")) src = "https:$src"
                 if (!src.startsWith("http")) return@forEach
+                
+                // [BARU] Pengecekan spesifik untuk nested embed blogspherenews.xyz
+                if (src.contains("blogspherenews.xyz/embed/")) {
+                    try {
+                        val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
+                        val innerIframe = innerDoc.selectFirst("iframe")
+                        var innerSrc = innerIframe?.attr("src")?.ifBlank { innerIframe.attr("data-src") }
+                        if (!innerSrc.isNullOrBlank()) {
+                            if (innerSrc.startsWith("//")) innerSrc = "https:$innerSrc"
+                            src = innerSrc // Ganti src dengan link aslinya agar diolah oleh tahapan 'when' di bawah
+                        }
+                    } catch (e: Exception) { e.printStackTrace() }
+                }
 
                 when {
-                    src.contains("muxalor.guru") -> {
-                        val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
+                    // [UPDATE] muxalor.guru berubah menjadi brinqeo.guru
+                    src.contains("brinqeo.guru") -> {
+                        val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "muxalor",
+                                        name = "brinqeo",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
@@ -556,7 +570,12 @@ class NineTsuFixProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
+                    // Ok.ru ditambahkan langsung ke allUrls karena CloudStream punya okru extractor bawaan
                     src.contains("ok.ru") -> {
+                        allUrls.add(src) 
+                    }
+                    // Iframe biasa lainnya diekstrak manual menggunakan Regex
+                    else -> {
                         allUrls.add(src)
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
@@ -565,29 +584,6 @@ class NineTsuFixProvider : MainAPI() {
                             ))
                             val embedHtml = embedRes.text
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-                        } catch (e: Exception) { e.printStackTrace() }
-                    }
-                    else -> {
-                        try {
-                            val embedRes = app.get(src, referer = data, headers = mapOf(
-                                "User-Agent" to userAgent,
-                                "Referer" to data
-                            ))
-                            val embedHtml = embedRes.text
-                            extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
-
-                            // [BARU] Pengecekan Nested Iframe
-                            val embedDoc = Jsoup.parse(embedHtml)
-                            embedDoc.select("iframe").forEach { nestedIframe ->
-                                var nestedSrc = nestedIframe.attr("src").ifBlank { nestedIframe.attr("data-src") }
-                                if (nestedSrc.isNotBlank()) {
-                                    if (nestedSrc.startsWith("//")) nestedSrc = "https:$nestedSrc"
-                                    // Mencegah infinite loop dengan membandingkan URL
-                                    if (nestedSrc.startsWith("http") && nestedSrc != src && nestedSrc != data) {
-                                        nestedIframes.add(nestedSrc)
-                                    }
-                                }
-                            }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
                 }
@@ -668,17 +664,6 @@ class NineTsuFixProvider : MainAPI() {
                     }
                 )
                 linkFound = true
-            }
-        }
-
-        // 7. [BARU] Fallback Recursive untuk Nested Iframe
-        if (!linkFound && nestedIframes.isNotEmpty()) {
-            for (nestedUrl in nestedIframes) {
-                // Melakukan pemanggilan rekursif ke loadLinks menggunakan URL iframe terdalam
-                val nestedFound = loadLinks(nestedUrl, isCasting, subtitleCallback, callback)
-                if (nestedFound) {
-                    linkFound = true
-                }
             }
         }
 
