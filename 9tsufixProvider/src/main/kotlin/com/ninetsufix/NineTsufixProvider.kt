@@ -513,7 +513,6 @@ class NineTsuFixProvider : MainAPI() {
         return loadSinglePage(doc, url, relatedItems)
     }
 
-    // ==================== EKSTRAKSI VIDEO LENGKAP ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -527,22 +526,25 @@ class NineTsuFixProvider : MainAPI() {
         val doc = docRes.document
 
         val allUrls = mutableSetOf<String>()
+        val nestedIframes = mutableSetOf<String>() // Set untuk menyimpan URL nested iframe
 
-        // 1. Proses semua iframe
+        // 1. Ekstraksi Iframe Utama
         doc.select("iframe").forEach { iframe ->
-            val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
+            var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
+                if (src.startsWith("//")) src = "https:$src"
+                if (!src.startsWith("http")) return@forEach
+
                 when {
-                    // brinqeo.guru - langsung API
-                    src.contains("brinqeo.guru") -> {
-                        val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
+                    src.contains("muxalor.guru") -> {
+                        val idMatch = Regex("""muxalor\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "brinqeo",
+                                        name = "muxalor",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
@@ -554,7 +556,6 @@ class NineTsuFixProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru
                     src.contains("ok.ru") -> {
                         allUrls.add(src)
                         try {
@@ -566,7 +567,6 @@ class NineTsuFixProvider : MainAPI() {
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
-                    // Iframe lainnya
                     else -> {
                         try {
                             val embedRes = app.get(src, referer = data, headers = mapOf(
@@ -575,6 +575,19 @@ class NineTsuFixProvider : MainAPI() {
                             ))
                             val embedHtml = embedRes.text
                             extractVideoUrls(embedHtml).forEach { url -> allUrls.add(url) }
+
+                            // [BARU] Pengecekan Nested Iframe
+                            val embedDoc = Jsoup.parse(embedHtml)
+                            embedDoc.select("iframe").forEach { nestedIframe ->
+                                var nestedSrc = nestedIframe.attr("src").ifBlank { nestedIframe.attr("data-src") }
+                                if (nestedSrc.isNotBlank()) {
+                                    if (nestedSrc.startsWith("//")) nestedSrc = "https:$nestedSrc"
+                                    // Mencegah infinite loop dengan membandingkan URL
+                                    if (nestedSrc.startsWith("http") && nestedSrc != src && nestedSrc != data) {
+                                        nestedIframes.add(nestedSrc)
+                                    }
+                                }
+                            }
                         } catch (e: Exception) { e.printStackTrace() }
                     }
                 }
@@ -629,7 +642,7 @@ class NineTsuFixProvider : MainAPI() {
         // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Proses semua URL
+        // 6. Validasi URL Ekstraktor
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
@@ -655,6 +668,17 @@ class NineTsuFixProvider : MainAPI() {
                     }
                 )
                 linkFound = true
+            }
+        }
+
+        // 7. [BARU] Fallback Recursive untuk Nested Iframe
+        if (!linkFound && nestedIframes.isNotEmpty()) {
+            for (nestedUrl in nestedIframes) {
+                // Melakukan pemanggilan rekursif ke loadLinks menggunakan URL iframe terdalam
+                val nestedFound = loadLinks(nestedUrl, isCasting, subtitleCallback, callback)
+                if (nestedFound) {
+                    linkFound = true
+                }
             }
         }
 
