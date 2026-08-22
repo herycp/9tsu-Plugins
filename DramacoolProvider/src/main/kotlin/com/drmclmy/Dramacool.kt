@@ -103,10 +103,7 @@ class Dramacool : MainAPI() {
                     newExtractorLink(
                         source = name,
                         name = name,
-                        url = fixUrl(videoSrc),
-                        referer = mainUrl,
-                        quality = QUALITY_UNKNOWN,
-                        isM3u8 = videoSrc.endsWith(".m3u8")
+                        url = fixUrl(videoSrc)
                     )
                 )
                 return true
