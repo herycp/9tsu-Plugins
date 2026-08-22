@@ -3,6 +3,7 @@ package com.drmclmy
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 
 class Dramacool : MainAPI() {
@@ -38,7 +39,6 @@ class Dramacool : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // URL sesuai contoh: /search?type=movies&keyword=Yaku
         val url = "$mainUrl/search?type=movies&keyword=${query.replace(" ", "+")}"
         val document = app.get(url).document
         return document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
@@ -47,17 +47,14 @@ class Dramacool : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Ambil judul dari h1 atau .movie-title
         val title = document.selectFirst("h1")?.text()?.trim()
             ?: document.selectFirst(".movie-title")?.text()?.trim()
             ?: return null
 
-        // Ambil poster
         val posterUrl = document.selectFirst("img.poster")?.attr("src")
             ?: document.selectFirst(".film-poster img")?.attr("src")
             ?.let { fixUrl(it) }
 
-        // Kumpulkan episode dari berbagai selector yang umum
         val episodeElements = document.select(
             "div.epdiv a, " +
             "ul.episode-list li a, " +
@@ -71,10 +68,9 @@ class Dramacool : MainAPI() {
             newEpisode(epName) {
                 this.data = epLink
             }
-        }.reversed() // Episode terbaru di atas
+        }.reversed()
 
         if (episodes.isEmpty()) {
-            // Jika tidak ada episode, anggap sebagai movie (atau one-shot)
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
             }
@@ -93,25 +89,26 @@ class Dramacool : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // Cari iframe dari tombol play (onclick)
+        // Cari iframe dari tombol play
         var iframeUrl = document.selectFirst("#load-iframe")?.attr("onclick")
             ?.substringAfter("playThis(\"")?.substringBefore("\")")
         if (iframeUrl == null) {
-            // Cari iframe langsung
             iframeUrl = document.selectFirst("iframe")?.attr("src")
         }
         if (iframeUrl == null) {
-            // Cari video source (jika ada)
+            // Cari video source langsung
             val videoSrc = document.selectFirst("video source")?.attr("src")
             if (videoSrc != null) {
-                callback(ExtractorLink(
-                    source = name,
-                    name = name,
-                    url = fixUrl(videoSrc),
-                    referer = mainUrl,
-                    quality = QUALITY_UNKNOWN,
-                    isM3u8 = videoSrc.endsWith(".m3u8")
-                ))
+                callback(
+                    newExtractorLink(
+                        source = name,
+                        name = name,
+                        url = fixUrl(videoSrc),
+                        referer = mainUrl,
+                        quality = QUALITY_UNKNOWN,
+                        isM3u8 = videoSrc.endsWith(".m3u8")
+                    )
+                )
                 return true
             }
             return false
@@ -121,7 +118,6 @@ class Dramacool : MainAPI() {
         val iframe = app.get(iframeFullUrl)
         val iframeDoc = iframe.document
 
-        // Gunakan extractor yang terdaftar (Doodstream, Mixdrop, dll)
         return loadExtractor(iframeDoc.html(), mainUrl, subtitleCallback, callback)
     }
 }
