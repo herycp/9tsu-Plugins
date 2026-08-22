@@ -66,6 +66,7 @@ class Dramacool : MainAPI() {
 
     // ==================== EKSTRAKSI EPISODE ====================
     private fun extractEpisodeNumber(title: String): Int? {
+        // Cari pola "Episode 10", "EP 10", "E10", "#10" - pastikan angkanya valid
         val patterns = listOf(
             Regex("""(?i)Episode\s*(\d+)"""),
             Regex("""(?i)EP\s*(\d+)"""),
@@ -75,13 +76,14 @@ class Dramacool : MainAPI() {
         for (pattern in patterns) {
             val match = pattern.find(title)
             if (match != null) {
-                return match.groupValues[1].toIntOrNull()
+                val num = match.groupValues[1].toIntOrNull()
+                if (num != null && num > 0) return num
             }
         }
         return null
     }
 
-    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG DI DESKRIPSI EPISODE ====================
+    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -113,10 +115,6 @@ class Dramacool : MainAPI() {
         return urls.distinct()
     }
 
-    /**
-     * Scrape halaman episode untuk mendapatkan semua URL video.
-     * Hasilnya akan ditampilkan di deskripsi episode untuk debugging.
-     */
     private suspend fun getVideoLogs(episodeUrl: String): String {
         val docRes = app.get(episodeUrl, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -194,7 +192,6 @@ class Dramacool : MainAPI() {
                 allUrls.add(url)
                 logs.add("📜 Script extracted: $url")
             }
-            // JSON dalam script
             val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
             jsonPattern.findAll(scriptData).forEach { match ->
                 try {
@@ -250,23 +247,26 @@ class Dramacool : MainAPI() {
         }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
-        val episodesWithNumbers = episodeItems.mapNotNull { el ->
+        // FILTER: hanya episode yang memiliki nomor valid (>0)
+        val validEpisodes = episodeItems.mapNotNull { el ->
             val titleText = el.selectFirst("h3.title")?.text()?.trim() ?: return@mapNotNull null
             val link = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-            val epNum = extractEpisodeNumber(titleText) ?: 0
-            Triple(titleText, link, epNum)
+            val epNum = extractEpisodeNumber(titleText)
+            if (epNum != null && epNum > 0) {
+                Triple(titleText, link, epNum)
+            } else null
         }.sortedByDescending { it.third }
 
-        if (episodesWithNumbers.isEmpty()) {
+        if (validEpisodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
             }
         }
 
-        // Ambil log video untuk setiap episode (maksimal 10 agar cepat)
+        // Ambil log video untuk setiap episode (maksimal 10 pertama)
         val episodesWithLogs = coroutineScope {
-            val limitedEpisodes = episodesWithNumbers.take(10)
+            val limitedEpisodes = validEpisodes.take(10)
             val deferredLogs = limitedEpisodes.map { (_, link, _) ->
                 async { getVideoLogs(link) }
             }
@@ -279,8 +279,8 @@ class Dramacool : MainAPI() {
         }
 
         // Gabungkan dengan episode sisanya (tanpa log)
-        val fullEpisodes = if (episodesWithNumbers.size > 10) {
-            episodesWithNumbers.drop(10).map { (titleText, link, epNum) ->
+        val fullEpisodes = if (validEpisodes.size > 10) {
+            validEpisodes.drop(10).map { (titleText, link, epNum) ->
                 Quad(titleText, link, epNum, null)
             } + episodesWithLogs
         } else {
@@ -290,8 +290,8 @@ class Dramacool : MainAPI() {
         val episodes = fullEpisodes.sortedByDescending { it.third }.map { quad ->
             newEpisode(quad.first) {
                 this.data = quad.second
-                // Tampilkan log di deskripsi episode jika ada
-                this.description = quad.fourth ?: "Tidak ada log video (mungkin episode > 10)."
+                // Tampilkan log di deskripsi episode
+                this.description = quad.fourth ?: "Tidak ada log video (mungkin episode > 10 atau tidak ada link)."
             }
         }
 
