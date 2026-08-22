@@ -24,7 +24,7 @@ cloudstream {
     tvTypes = listOf("Movie")
 
     requiresResources = true
-    language = "jp"
+    language = "ja"
 
     // Random CC logo I found
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
