@@ -42,7 +42,6 @@ class Dramacool : MainAPI() {
         return document.select("#drama div.card").mapNotNull { it.toSearchResult() }
     }
 
-    @Suppress("DEPRECATION")
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, referer = "$mainUrl/").document
 
@@ -50,18 +49,20 @@ class Dramacool : MainAPI() {
 
         val posterUrl = document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
+        // Perbaikan: ActorData menggunakan parameter 'actor' dan 'image'
         val actors = document.select("div.slider div.img-container").map {
             ActorData(
-                name = it.select("div.bottom-right").text(),
+                actor = it.select("div.bottom-right").text(),
                 image = it.select("img").attr("src")
             )
         }
 
+        // Perbaikan: gunakan newEpisode
         val episodes = document.select("div.epdiv").mapNotNull { el ->
             val name = el.selectFirst("a")?.text()?.substringAfter("Episode")?.trim() ?: return@mapNotNull null
             val rawHref = el.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             val href = fixUrl(rawHref)
-            Episode(href, "Episode $name")
+            newEpisode(href, "Episode $name")
         }.reversed()
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
