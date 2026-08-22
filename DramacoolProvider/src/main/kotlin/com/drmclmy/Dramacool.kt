@@ -88,7 +88,7 @@ class Dramacool : MainAPI() {
         return null
     }
 
-    // ==================== EKSTRAKSI VIDEO DENGAN API JSON ====================
+    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -120,26 +120,6 @@ class Dramacool : MainAPI() {
         return urls.distinct()
     }
 
-    /**
-     * Mencoba memanggil API JSON dari URL iframe.
-     * URL iframe biasanya: https://vidbasic.top/embed/kev99can2gk
-     * API URL: tambahkan ?json= atau &json=
-     */
-    private suspend fun fetchApiJson(iframeUrl: String): String? {
-        return try {
-            val baseUrl = iframeUrl.split("?").first()
-            val apiUrl = if (baseUrl.contains("?")) "$baseUrl&json=" else "$baseUrl?json="
-            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
-            if (response.code == 200) {
-                response.text
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
     private suspend fun getVideoLogs(episodeUrl: String): String {
         val docRes = app.get(episodeUrl, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -147,110 +127,31 @@ class Dramacool : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
         val logs = mutableListOf<String>()
-        val apiResults = mutableListOf<String>()
 
-        // ===== 1. Cari iframe utama =====
-        var mainIframeUrl: String? = null
+        // Cari iframe vidbasic
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
             if (src.isNotBlank()) {
                 src = fixUrlScheme(src)
-                if (src.contains("vidbasic.top") || src.contains("embed")) {
-                    mainIframeUrl = src
-                }
                 allUrls.add(src)
                 logs.add("🔗 Iframe: $src")
-            }
-        }
-
-        // ===== 2. Coba API JSON dari iframe utama =====
-        if (mainIframeUrl != null) {
-            logs.add("📡 Mencoba API JSON dari iframe: $mainIframeUrl")
-            val apiResponse = fetchApiJson(mainIframeUrl)
-            if (apiResponse != null) {
-                logs.add("📄 API Response: $apiResponse")
-                try {
-                    val jsonObject = JSONObject(apiResponse)
-                    val streamtape = jsonObject.optString("streamtape")
-                    val mixdrop = jsonObject.optString("mixdrop")
-                    val vidhide = jsonObject.optString("vidhide")
-                    val streamwish = jsonObject.optString("streamwish")
-                    val doodstream = jsonObject.optString("doodstream")
-                    val gdrive = jsonObject.optString("gdrive")
-
-                    val allLinks = listOf(
-                        "streamtape" to streamtape,
-                        "mixdrop" to mixdrop,
-                        "vidhide" to vidhide,
-                        "streamwish" to streamwish,
-                        "doodstream" to doodstream,
-                        "gdrive" to gdrive
-                    )
-
-                    var hasValid = false
-                    for ((source, link) in allLinks) {
-                        if (link.isNotEmpty()) {
-                            val fixed = fixUrlScheme(link)
-                            allUrls.add(fixed)
-                            apiResults.add("✅ $source: $fixed")
-                            hasValid = true
-                        }
-                    }
-                    if (!hasValid) {
-                        apiResults.add("⚠️ Tidak ada link valid di API")
-                    }
-                } catch (e: Exception) {
-                    logs.add("❌ Parse JSON gagal: ${e.message}")
-                    apiResults.add("❌ Parse JSON gagal: ${e.message}")
-                }
-            } else {
-                logs.add("❌ API JSON tidak merespon")
-                apiResults.add("❌ API JSON tidak merespon")
-            }
-        } else {
-            logs.add("ℹ️ Tidak ada iframe ditemukan")
-        }
-
-        // ===== 3. Coba juga dari elemen .Standard Server.selected (jika ada) =====
-        val serverElement = doc.selectFirst(".Standard Server.selected")
-        var videoUrl = serverElement?.attr("data-video")
-        if (videoUrl != null) {
-            videoUrl = fixUrlScheme(videoUrl)
-            logs.add("📡 Standard Server.selected: $videoUrl")
-            // Jika berbeda dengan iframe, coba juga
-            if (videoUrl != mainIframeUrl) {
-                val apiResponse2 = fetchApiJson(videoUrl)
-                if (apiResponse2 != null) {
-                    logs.add("📄 API Response (server): $apiResponse2")
-                    try {
-                        val jsonObject = JSONObject(apiResponse2)
-                        val streamtape = jsonObject.optString("streamtape")
-                        val mixdrop = jsonObject.optString("mixdrop")
-                        val vidhide = jsonObject.optString("vidhide")
-                        val streamwish = jsonObject.optString("streamwish")
-                        val doodstream = jsonObject.optString("doodstream")
-                        val gdrive = jsonObject.optString("gdrive")
-
-                        listOf(
-                            "streamtape" to streamtape,
-                            "mixdrop" to mixdrop,
-                            "vidhide" to vidhide,
-                            "streamwish" to streamwish,
-                            "doodstream" to doodstream,
-                            "gdrive" to gdrive
-                        ).forEach { (source, link) ->
-                            if (link.isNotEmpty()) {
-                                val fixed = fixUrlScheme(link)
-                                allUrls.add(fixed)
-                                apiResults.add("✅ $source (server): $fixed")
-                            }
-                        }
-                    } catch (e: Exception) {}
+                if (src.contains("vidbasic.top") || src.contains("vidb.top")) {
+                    logs.add("  ✅ VidBasic detected, akan diproses oleh extractor")
                 }
             }
         }
 
-        // ===== 4. Video source =====
+        // Cari data-video
+        doc.select("[data-video]").forEach { el ->
+            var video = el.attr("data-video")
+            if (video.isNotBlank()) {
+                video = fixUrlScheme(video)
+                allUrls.add(video)
+                logs.add("🏷️ data-video: $video")
+            }
+        }
+
+        // Cari video source
         doc.select("video source, video").forEach { v ->
             var src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) {
@@ -260,7 +161,7 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // ===== 5. Script =====
+        // Script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -272,53 +173,20 @@ class Dramacool : MainAPI() {
             val decoded = decodeBase64IfPossible(scriptData)
             if (decoded != scriptData) scriptData = decoded
             extractVideoUrls(scriptData).forEach { url ->
-                val fixed = fixUrlScheme(url)
-                allUrls.add(fixed)
-                logs.add("📜 Script extracted: $fixed")
-            }
-            val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
-            jsonPattern.findAll(scriptData).forEach { match ->
-                try {
-                    val jsonStr = match.groupValues[1]
-                    val json = JSONObject(jsonStr)
-                    val file = json.optString("file", null) ?: json.optString("src", null) ?: json.optString("video", null) ?: json.optString("url", null)
-                    if (file != null && file.isNotBlank()) {
-                        val fixed = fixUrlScheme(file)
-                        allUrls.add(fixed)
-                        logs.add("📦 JSON script: $fixed")
-                    }
-                } catch (e: Exception) {}
+                allUrls.add(fixUrlScheme(url))
+                logs.add("📜 Script extracted: $url")
             }
         }
 
-        // ===== 6. Data attributes =====
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            var video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
-            if (video.isNotBlank()) {
-                video = fixUrlScheme(video)
-                allUrls.add(video)
-                logs.add("🏷️ Data attr: $video")
-            }
-        }
-
-        // ===== 7. General regex =====
+        // General regex
         extractVideoUrls(html).forEach { url ->
-            val fixed = fixUrlScheme(url)
-            allUrls.add(fixed)
-            logs.add("🔎 General regex: $fixed")
+            allUrls.add(fixUrlScheme(url))
+            logs.add("🔎 General regex: $url")
         }
 
-        // ===== Build hasil =====
         val result = StringBuilder()
         result.appendLine("🔍 LOG VIDEO (${allUrls.size} URL unik):")
         result.appendLine()
-
-        if (apiResults.isNotEmpty()) {
-            result.appendLine("📡 HASIL API PARSING:")
-            apiResults.forEach { result.appendLine("  $it") }
-            result.appendLine()
-        }
-
         result.appendLine("📋 SEMUA URL:")
         if (allUrls.isEmpty()) {
             result.appendLine("  ❌ Tidak ada URL ditemukan")
@@ -326,14 +194,15 @@ class Dramacool : MainAPI() {
             allUrls.forEach { result.appendLine("  • $it") }
         }
         result.appendLine()
-
         if (logs.isNotEmpty()) {
             result.appendLine("📝 LOG DETAIL:")
-            logs.take(20).forEach { result.appendLine("  $it") }
-            if (logs.size > 20) {
-                result.appendLine("  ... dan ${logs.size - 20} log lainnya")
+            logs.take(15).forEach { result.appendLine("  $it") }
+            if (logs.size > 15) {
+                result.appendLine("  ... dan ${logs.size - 15} log lainnya")
             }
         }
+        result.appendLine()
+        result.appendLine("💡 Jika ada URL vidbasic.top, extractor akan memprosesnya otomatis.")
 
         return result.toString()
     }
@@ -422,72 +291,26 @@ class Dramacool : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // ===== 1. Cari iframe utama =====
-        var mainIframeUrl: String? = null
+        // Kumpulkan semua URL dari iframe, video source, script, dll
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
             if (src.isNotBlank()) {
-                src = fixUrlScheme(src)
-                if (src.contains("vidbasic.top") || src.contains("embed")) {
-                    mainIframeUrl = src
-                }
-                allUrls.add(src)
+                allUrls.add(fixUrlScheme(src))
             }
         }
 
-        // ===== 2. Coba API JSON dari iframe =====
-        if (mainIframeUrl != null) {
-            val apiResponse = fetchApiJson(mainIframeUrl)
-            if (apiResponse != null) {
-                try {
-                    val jsonObject = JSONObject(apiResponse)
-                    val streamtape = jsonObject.optString("streamtape")
-                    val mixdrop = jsonObject.optString("mixdrop")
-                    val vidhide = jsonObject.optString("vidhide")
-                    val streamwish = jsonObject.optString("streamwish")
-                    val doodstream = jsonObject.optString("doodstream")
-                    val gdrive = jsonObject.optString("gdrive")
-
-                    listOf(streamtape, mixdrop, vidhide, streamwish, doodstream, gdrive).forEach { link ->
-                        if (link.isNotEmpty()) {
-                            allUrls.add(fixUrlScheme(link))
-                        }
-                    }
-                } catch (e: Exception) {}
-            }
-        }
-
-        // ===== 3. Standard Server.selected =====
-        val serverElement = doc.selectFirst(".Standard Server.selected")
-        var videoUrl = serverElement?.attr("data-video")
-        if (videoUrl != null) {
-            videoUrl = fixUrlScheme(videoUrl)
-            if (videoUrl != mainIframeUrl) {
-                val apiResponse2 = fetchApiJson(videoUrl)
-                if (apiResponse2 != null) {
-                    try {
-                        val jsonObject = JSONObject(apiResponse2)
-                        val streamtape = jsonObject.optString("streamtape")
-                        val mixdrop = jsonObject.optString("mixdrop")
-                        val vidhide = jsonObject.optString("vidhide")
-                        val streamwish = jsonObject.optString("streamwish")
-                        val doodstream = jsonObject.optString("doodstream")
-                        val gdrive = jsonObject.optString("gdrive")
-
-                        listOf(streamtape, mixdrop, vidhide, streamwish, doodstream, gdrive).forEach { link ->
-                            if (link.isNotEmpty()) {
-                                allUrls.add(fixUrlScheme(link))
-                            }
-                        }
-                    } catch (e: Exception) {}
-                }
-            }
-        }
-
-        // ===== 4. Lainnya =====
         doc.select("video source, video").forEach { v ->
             var src = v.attr("src").ifBlank { v.attr("data-src") }
-            if (src.isNotBlank()) allUrls.add(fixUrlScheme(src))
+            if (src.isNotBlank()) {
+                allUrls.add(fixUrlScheme(src))
+            }
+        }
+
+        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
+            var video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
+            if (video.isNotBlank()) {
+                allUrls.add(fixUrlScheme(video))
+            }
         }
 
         doc.select("script").forEach { script ->
@@ -512,24 +335,22 @@ class Dramacool : MainAPI() {
             }
         }
 
-        doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
-            var video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
-            if (video.isNotBlank()) allUrls.add(fixUrlScheme(video))
-        }
-
         extractVideoUrls(html).forEach { url -> allUrls.add(fixUrlScheme(url)) }
 
+        // Proses semua URL: pertama coba dengan loadExtractor (termasuk VidBasicExtractor)
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
+            // Coba extractor yang terdaftar (VidBasicExtractor akan menangani vidbasic.top)
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
+            // Fallback: jika .m3u8 atau .mp4, langsung tambahkan
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
