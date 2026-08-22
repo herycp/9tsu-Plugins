@@ -13,54 +13,75 @@ class Dramacool : MainAPI() {
     override val hasMainPage = true
 
     override val mainPage = mainPageOf(
-        "popular-drama" to "Popular Drama",
+        "recently-added" to "Recently Added",
+        "recently-added-movie" to "Recently Added Movies",
+        "most-popular-drama" to "Most Popular",
         "popular-ongoing-series" to "Ongoing Series",
-        "recently-added-drama" to "Recently Added Drama",
-        "recently-added-movie" to "Recently Added Movie",
-        "popular-completed-series" to "Popular Completed Series",
+        "popular-completed-series" to "Completed Series"
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val document = app.get("$mainUrl/${request.data}/page/$page").document
-        val items = document.select("#drama div.card").mapNotNull { it.toSearchResult() }
+        val url = "$mainUrl/${request.data}?page=$page"
+        val document = app.get(url).document
+        val items = document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(request.name, items)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val title = selectFirst("a")?.attr("title") ?: return null
-        val href = fixUrlNull(selectFirst("a")?.attr("href")) ?: return null
-        val posterUrl = fixUrlNull(selectFirst("img")?.attr("src"))
+        val title = selectFirst("h3.title")?.text()?.trim() ?: return null
+        val href = fixUrlNull(attr("href")) ?: return null
+        val img = selectFirst("img")
+        val posterUrl = fixUrlNull(img?.attr("data-original") ?: img?.attr("src"))
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
         }
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val searchTitle = query.replace(" ", "-")
-        val url = "$mainUrl/search/$searchTitle"
-        val document = app.get(url, referer = "$mainUrl/").document
-        return document.select("#drama div.card").mapNotNull { it.toSearchResult() }
+        // URL sesuai contoh: /search?type=movies&keyword=Yaku
+        val url = "$mainUrl/search?type=movies&keyword=${query.replace(" ", "+")}"
+        val document = app.get(url).document
+        return document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, referer = "$mainUrl/").document
+        val document = app.get(url).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
+        // Ambil judul dari h1 atau .movie-title
+        val title = document.selectFirst("h1")?.text()?.trim()
+            ?: document.selectFirst(".movie-title")?.text()?.trim()
+            ?: return null
 
-        // Ambil daftar episode menggunakan newEpisode dengan lambda
-        val episodes = document.select("div.epdiv").mapNotNull { el ->
-            val name = el.selectFirst("a")?.text()?.substringAfter("Episode")?.trim() ?: return@mapNotNull null
-            val rawHref = el.selectFirst("a")?.attr("href") ?: return@mapNotNull null
-            val href = fixUrl(rawHref)
-            newEpisode("Episode $name") {
-                this.data = href
+        // Ambil poster
+        val posterUrl = document.selectFirst("img.poster")?.attr("src")
+            ?: document.selectFirst(".film-poster img")?.attr("src")
+            ?.let { fixUrl(it) }
+
+        // Kumpulkan episode dari berbagai selector yang umum
+        val episodeElements = document.select(
+            "div.epdiv a, " +
+            "ul.episode-list li a, " +
+            ".episodes-list li a, " +
+            ".server .episode-item a, " +
+            "#episode-list a"
+        )
+        val episodes = episodeElements.mapNotNull { el ->
+            val epName = el.text().trim().ifEmpty { "Episode" }
+            val epLink = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
+            newEpisode(epName) {
+                this.data = epLink
             }
-        }.reversed()
+        }.reversed() // Episode terbaru di atas
+
+        if (episodes.isEmpty()) {
+            // Jika tidak ada episode, anggap sebagai movie (atau one-shot)
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+            }
+        }
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
-            // Tidak menyertakan actors untuk menghindari masalah tipe
         }
     }
 
@@ -72,12 +93,35 @@ class Dramacool : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        val server = document.selectFirst("#load-iframe")?.attr("onclick")
+        // Cari iframe dari tombol play (onclick)
+        var iframeUrl = document.selectFirst("#load-iframe")?.attr("onclick")
             ?.substringAfter("playThis(\"")?.substringBefore("\")")
+        if (iframeUrl == null) {
+            // Cari iframe langsung
+            iframeUrl = document.selectFirst("iframe")?.attr("src")
+        }
+        if (iframeUrl == null) {
+            // Cari video source (jika ada)
+            val videoSrc = document.selectFirst("video source")?.attr("src")
+            if (videoSrc != null) {
+                callback(ExtractorLink(
+                    source = name,
+                    name = name,
+                    url = fixUrl(videoSrc),
+                    referer = mainUrl,
+                    quality = QUALITY_UNKNOWN,
+                    isM3u8 = videoSrc.endsWith(".m3u8")
+                ))
+                return true
+            }
+            return false
+        }
 
-        val iframe = app.get(fixUrl(server ?: return false))
+        val iframeFullUrl = fixUrl(iframeUrl)
+        val iframe = app.get(iframeFullUrl)
         val iframeDoc = iframe.document
 
+        // Gunakan extractor yang terdaftar (Doodstream, Mixdrop, dll)
         return loadExtractor(iframeDoc.html(), mainUrl, subtitleCallback, callback)
     }
 }
