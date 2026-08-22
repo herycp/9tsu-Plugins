@@ -2,6 +2,7 @@ package com.drmclmy
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
@@ -11,6 +12,9 @@ import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.util.Base64
+
+// Data class untuk menyimpan 4 nilai
+private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -77,7 +81,7 @@ class Dramacool : MainAPI() {
         return null
     }
 
-    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG DI PLOT ====================
+    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG DI DESKRIPSI EPISODE ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -111,7 +115,7 @@ class Dramacool : MainAPI() {
 
     /**
      * Scrape halaman episode untuk mendapatkan semua URL video.
-     * Hasilnya akan ditampilkan di deskripsi episode (plot) untuk debugging.
+     * Hasilnya akan ditampilkan di deskripsi episode untuk debugging.
      */
     private suspend fun getVideoLogs(episodeUrl: String): String {
         val docRes = app.get(episodeUrl, headers = mapOf("User-Agent" to userAgent))
@@ -270,24 +274,24 @@ class Dramacool : MainAPI() {
 
             limitedEpisodes.mapIndexed { index, (titleText, link, epNum) ->
                 val log = logs.getOrNull(index)?.takeIf { it.isNotBlank() }
-                Triple(titleText, link, epNum, log)
+                Quad(titleText, link, epNum, log)
             }
         }
 
         // Gabungkan dengan episode sisanya (tanpa log)
         val fullEpisodes = if (episodesWithNumbers.size > 10) {
             episodesWithNumbers.drop(10).map { (titleText, link, epNum) ->
-                Triple(titleText, link, epNum, null)
+                Quad(titleText, link, epNum, null)
             } + episodesWithLogs
         } else {
             episodesWithLogs
         }
 
-        val episodes = fullEpisodes.sortedByDescending { it.third }.map { (titleText, link, _, log) ->
-            newEpisode(titleText) {
-                this.data = link
+        val episodes = fullEpisodes.sortedByDescending { it.third }.map { quad ->
+            newEpisode(quad.first) {
+                this.data = quad.second
                 // Tampilkan log di deskripsi episode jika ada
-                this.plot = log ?: "Tidak ada log video (mungkin episode > 10)."
+                this.description = quad.fourth ?: "Tidak ada log video (mungkin episode > 10)."
             }
         }
 
@@ -297,14 +301,13 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // ==================== loadLinks (tetap ada untuk pemutaran) ====================
+    // ==================== loadLinks (pemutaran video) ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Sama seperti sebelumnya, tapi tanpa subtitle debug karena sudah ada di plot
         if (data.isBlank()) return false
 
         val docRes = app.get(data, headers = mapOf("User-Agent" to userAgent))
