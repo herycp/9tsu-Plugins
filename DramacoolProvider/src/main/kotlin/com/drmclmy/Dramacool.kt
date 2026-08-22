@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
+import org.json.JSONObject
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -117,14 +118,18 @@ class Dramacool : MainAPI() {
             val jsonUrl = if (videoUrl.contains("?")) "$videoUrl&json=" else "$videoUrl?json="
             try {
                 val jsonResponse = app.get(jsonUrl).text
-                val json = com.lagradost.cloudstream3.utils.AppUtils.parseJson(jsonResponse)
-                // Ambil salah satu link server
-                val streamtape = json["streamtape"]?.asString
-                val mixdrop = json["mixdrop"]?.asString
-                val vidhide = json["vidhide"]?.asString
-                val streamwish = json["streamwish"]?.asString
+                // Parse JSON menggunakan JSONObject dari org.json
+                val jsonObject = JSONObject(jsonResponse)
+                val streamtape = jsonObject.optString("streamtape")
+                val mixdrop = jsonObject.optString("mixdrop")
+                val vidhide = jsonObject.optString("vidhide")
+                val streamwish = jsonObject.optString("streamwish")
 
-                val linkToTry = streamtape ?: mixdrop ?: vidhide ?: streamwish
+                val linkToTry = streamtape.takeIf { it.isNotEmpty() }
+                    ?: mixdrop.takeIf { it.isNotEmpty() }
+                    ?: vidhide.takeIf { it.isNotEmpty() }
+                    ?: streamwish.takeIf { it.isNotEmpty() }
+
                 if (linkToTry != null) {
                     // Fetch HTML dari link tersebut dan ekstrak menggunakan extractor
                     val doc = app.get(linkToTry).document
