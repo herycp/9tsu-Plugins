@@ -48,15 +48,7 @@ class Dramacool : MainAPI() {
         val title = document.selectFirst("h1")?.text()?.trim() ?: return null
         val posterUrl = document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        // Gunakan ActorData (bukan Actor)
-        val actors = document.select("div.slider div.img-container").map {
-            ActorData(
-                actor = it.select("div.bottom-right").text(),
-                image = it.select("img").attr("src")
-            )
-        }
-
-        // Gunakan newEpisode dengan lambda
+        // Ambil daftar episode menggunakan newEpisode dengan lambda
         val episodes = document.select("div.epdiv").mapNotNull { el ->
             val name = el.selectFirst("a")?.text()?.substringAfter("Episode")?.trim() ?: return@mapNotNull null
             val rawHref = el.selectFirst("a")?.attr("href") ?: return@mapNotNull null
@@ -68,7 +60,7 @@ class Dramacool : MainAPI() {
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
             this.posterUrl = posterUrl
-            this.actors = actors
+            // Tidak menyertakan actors untuk menghindari masalah tipe
         }
     }
 
