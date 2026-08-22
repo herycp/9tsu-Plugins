@@ -9,7 +9,7 @@ version = 1.02
 cloudstream {
     // All of these properties are optional, you can safely remove any of them.
 
-    description = "9tsu.in provider"
+    description = "dramacool.my provider"
     authors = listOf("Herycp")
 
     /**
