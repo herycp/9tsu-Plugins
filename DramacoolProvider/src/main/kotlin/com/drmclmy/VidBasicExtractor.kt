@@ -5,7 +5,8 @@ import com.lagradost.cloudstream3.extractors.Extractor
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.SubtitleFile
-import org.jsoup.Jsoup
+import com.lagradost.cloudstream3.utils.loadExtractor
+import org.json.JSONObject
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -16,7 +17,6 @@ class VidBasicExtractor : Extractor() {
     override val mainUrl = "https://vidbasic.top"
     override val requiresReferer = true
 
-    // Pola URL: https://vidbasic.top/embed/kev99can2gk
     override fun getExtractorUrl(url: String): String? {
         val regex = Regex("""https?://(vidbasic\.top|vidb\.top)/embed/([0-9a-zA-Z]+)""")
         val match = regex.find(url)
@@ -29,95 +29,131 @@ class VidBasicExtractor : Extractor() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        var anySuccess = false
+        val embedUrl = url
+
+        // ============================================================
+        // 1. METODE UTAMA: AES DECRYPT (Link dari server VidBasic sendiri)
+        // ============================================================
         try {
-            // 1. Ambil HTML dari URL embed
-            val response = app.get(url, headers = mapOf("User-Agent" to "Mozilla/5.0"))
+            // 1a. Ambil HTML dari halaman embed
+            val response = app.get(embedUrl, headers = mapOf("User-Agent" to "Mozilla/5.0"))
             val html = response.text
-            val doc = Jsoup.parse(html)
 
-            // 2. Cari data-video dari elemen "Standard Server selected"
-            var dataVideo = doc.selectFirst(".Standard Server.selected")?.attr("data-video")
+            // 1b. Cari data-video dari elemen "Standard Server selected"
+            val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
+            var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
             if (dataVideo.isNullOrEmpty()) {
-                // Coba regex fallback
-                val regex = Regex("""data-video="([^"]+)">Standard""")
-                val match = regex.find(html)
-                dataVideo = match?.groupValues?.get(1)
+                val doc = org.jsoup.Jsoup.parse(html)
+                dataVideo = doc.selectFirst(".Standard Server.selected")?.attr("data-video")
             }
 
-            if (dataVideo.isNullOrEmpty()) {
-                return false
-            }
+            if (!dataVideo.isNullOrEmpty()) {
+                // 1c. Perbaiki skema URL
+                val fullUrl = if (dataVideo.startsWith("//")) "https:$dataVideo" else dataVideo
 
-            // 3. Perbaiki skema URL
-            val fullUrl = if (dataVideo.startsWith("//")) "https:$dataVideo" else dataVideo
-
-            // 4. Ambil parameter sub jika ada
-            val subParam = runCatching {
-                val parsed = java.net.URL(fullUrl)
-                val query = parsed.query ?: ""
-                if (query.contains("sub=")) {
-                    val subValue = query.substringAfter("sub=").substringBefore("&")
-                    "&sub=$subValue"
-                } else ""
-            }.getOrDefault("")
-
-            val url2 = if (subParam.isNotEmpty()) "$fullUrl$subParam" else fullUrl
-
-            // 5. Fetch URL kedua (dengan referer)
-            val response2 = app.get(
-                url2,
-                headers = mapOf(
-                    "User-Agent" to "Mozilla/5.0",
-                    "Referer" to url,
-                    "Origin" to "https://${java.net.URL(url).host}"
-                )
-            )
-            val html2 = response2.text
-
-            // 6. Cari data-value dari crypto (AES encrypted)
-            val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
-            val cryptoMatch = cryptoRegex.find(html2)
-            val encrypted = cryptoMatch?.groupValues?.get(1)
-
-            if (encrypted.isNullOrEmpty()) {
-                return false
-            }
-
-            // 7. Decrypt dengan AES-CBC
-            val decrypted = decryptVidBasic(encrypted)
-
-            if (decrypted.startsWith("http")) {
-                val isM3u8 = decrypted.contains(".m3u8")
-                callback(
-                    ExtractorLink(
-                        source = name,
-                        name = if (isM3u8) "$name - HLS" else name,
-                        url = decrypted,
-                        referer = url2,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = isM3u8,
-                        headers = mapOf(
-                            "User-Agent" to "Mozilla/5.0",
-                            "Referer" to url2
-                        )
+                // 1d. Fetch URL kedua (dengan referer)
+                val response2 = app.get(
+                    fullUrl,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0",
+                        "Referer" to embedUrl,
+                        "Origin" to "https://${java.net.URL(embedUrl).host}"
                     )
                 )
-                return true
+                val html2 = response2.text
+
+                // 1e. Cari data-value dari crypto (AES encrypted)
+                val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
+                val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
+
+                if (!encrypted.isNullOrEmpty()) {
+                    // 1f. Decrypt AES
+                    val decrypted = decryptVidBasic(encrypted)
+
+                    if (decrypted.startsWith("http")) {
+                        val isM3u8 = decrypted.contains(".m3u8")
+                        callback(
+                            ExtractorLink(
+                                source = name,
+                                name = if (isM3u8) "$name - HLS (VidBasic)" else "$name - Direct (VidBasic)",
+                                url = decrypted,
+                                referer = fullUrl,
+                                quality = Qualities.Unknown.value,
+                                isM3u8 = isM3u8,
+                                headers = mapOf(
+                                    "User-Agent" to "Mozilla/5.0",
+                                    "Referer" to fullUrl
+                                )
+                            )
+                        )
+                        anySuccess = true
+                    }
+                }
             }
-
-            return false
-
         } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+            // AES gagal, lanjut ke metode lain
         }
+
+        // ============================================================
+        // 2. METODE TAMBAHAN: API JSON (Link dari provider lain)
+        // ============================================================
+        try {
+            val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to "Mozilla/5.0"))
+            val jsonText = response.text
+            val json = JSONObject(jsonText)
+
+            // Ambil semua key yang berisi link ke provider lain
+            val allKeys = json.keys().asSequence().toList()
+            for (key in allKeys) {
+                val value = json.optString(key, null)
+                if (!value.isNullOrEmpty() && (value.startsWith("http") || value.startsWith("//"))) {
+                    val fixedLink = if (value.startsWith("//")) "https:$value" else value
+                    // Ekstrak link provider menggunakan extractor yang terdaftar
+                    val result = loadExtractor(fixedLink, subtitleCallback, callback)
+                    if (result) anySuccess = true
+                }
+            }
+        } catch (e: Exception) {
+            // API gagal, lanjutkan
+        }
+
+        // ============================================================
+        // 3. FALLBACK: Cari link langsung di HTML (jika semua gagal)
+        // ============================================================
+        if (!anySuccess) {
+            try {
+                val response = app.get(embedUrl, headers = mapOf("User-Agent" to "Mozilla/5.0"))
+                val html = response.text
+                val doc = org.jsoup.Jsoup.parse(html)
+
+                // Cari video source
+                val videoSrc = doc.selectFirst("video source")?.attr("src")
+                if (!videoSrc.isNullOrEmpty()) {
+                    val fixed = if (videoSrc.startsWith("//")) "https:$videoSrc" else videoSrc
+                    callback(
+                        ExtractorLink(
+                            source = name,
+                            name = "$name - Direct",
+                            url = fixed,
+                            referer = embedUrl,
+                            quality = Qualities.Unknown.value,
+                            isM3u8 = fixed.contains(".m3u8"),
+                            headers = mapOf(
+                                "User-Agent" to "Mozilla/5.0",
+                                "Referer" to embedUrl
+                            )
+                        )
+                    )
+                    anySuccess = true
+                }
+            } catch (e: Exception) {}
+        }
+
+        return anySuccess
     }
 
-    /**
-     * Decrypt AES-CBC dengan key dan iv dari vidbasic.py
-     * Key: "94588293375053432799222445521289"
-     * IV:  "5259228356829423"
-     */
     private fun decryptVidBasic(encrypted: String): String {
         val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
         val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
