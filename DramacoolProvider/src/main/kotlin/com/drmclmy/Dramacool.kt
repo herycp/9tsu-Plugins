@@ -29,11 +29,11 @@ class Dramacool : MainAPI() {
     }
 
     /**
-     * Mengubah link episode menjadi link series (drama-detail)
+     * Konversi link episode -> link series
      * Contoh: /cang-feng-2025-episode-10.html -> /drama-detail/cang-feng-2025
      */
     private fun convertToSeriesLink(episodeLink: String): String {
-        // Hapus "-episode-{number}.html" dari akhir
+        // Ambil slug sebelum "-episode-{number}.html"
         val slug = episodeLink
             .substringAfterLast("/")
             .replace(Regex("-episode-\\d+\\.html$"), "")
@@ -43,7 +43,6 @@ class Dramacool : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val title = selectFirst("h3.title")?.text()?.trim() ?: return null
         val episodeLink = fixUrlNull(attr("href")) ?: return null
-        // Konversi ke link series
         val seriesLink = convertToSeriesLink(episodeLink)
         val img = selectFirst("img")
         val posterUrl = fixUrlNull(img?.attr("data-original") ?: img?.attr("src"))
@@ -62,39 +61,41 @@ class Dramacool : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
 
-        // Ambil judul
-        val title = document.selectFirst("h1")?.text()?.trim()
-            ?: document.selectFirst(".movie-title")?.text()?.trim()
+        // --- Ambil Judul ---
+        val title = document.selectFirst(".details .info h1")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
             ?: return null
 
-        // Ambil poster
-        val posterUrl = document.selectFirst("img.poster")?.attr("src")
-            ?: document.selectFirst(".film-poster img")?.attr("src")
-            ?.let { fixUrl(it) }
+        // --- Ambil Poster ---
+        val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
+            ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        // Ambil sinopsis
-        val description = document.selectFirst(".description, .synopsis, .plot")?.text()?.trim()
+        // --- Ambil Deskripsi ---
+        // Di HTML, deskripsi berada di dalam .info, setelah tag <p><span>Description:</span></p>
+        val description = document.select(".details .info p").mapNotNull { p ->
+            // Ambil paragraf yang tidak memiliki span, atau yang berisi teks panjang
+            if (p.select("span").isEmpty() && p.text().length > 50) {
+                p.text().trim()
+            } else null
+        }.joinToString("\n\n").ifEmpty {
+            // Fallback: ambil semua teks setelah "Description:"
+            document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
+        }
 
-        // Ambil daftar episode dari halaman series
-        val episodeElements = document.select(
-            "div.epdiv a, " +
-            "ul.episode-list li a, " +
-            ".episodes-list li a, " +
-            ".server .episode-item a, " +
-            "#episode-list a, " +
-            ".episode-item a"
-        )
-
+        // --- Ambil Daftar Episode ---
+        // Di HTML: <ul class="list-episode-item-2 all-episode">
+        val episodeElements = document.select("ul.list-episode-item-2.all-episode li a")
         val episodes = episodeElements.mapNotNull { el ->
-            val epName = el.text().trim().ifEmpty { "Episode" }
+            val epName = el.selectFirst("h3.title")?.text()?.trim()
+                ?: el.text().trim().ifEmpty { "Episode" }
             val epLink = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
             newEpisode(epName) {
                 this.data = epLink
             }
         }.reversed() // Episode terbaru di atas
 
+        // Jika tidak ada episode, anggap sebagai movie
         if (episodes.isEmpty()) {
-            // Jika tidak ada episode, anggap sebagai movie
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
@@ -115,7 +116,7 @@ class Dramacool : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // Method 1: Cari dari tombol play (onclick)
+        // Method 1: Cari iframe dari tombol play (onclick)
         var iframeUrl = document.selectFirst("#load-iframe")?.attr("onclick")
             ?.substringAfter("playThis(\"")?.substringBefore("\")")
         
@@ -124,13 +125,12 @@ class Dramacool : MainAPI() {
             iframeUrl = document.selectFirst("iframe")?.attr("src")
         }
         
-        // Method 3: Cari dari link download atau player
+        // Method 3: Cari dari link player
         if (iframeUrl == null) {
-            val playerLink = document.selectFirst(".player a, .watch a, #player a")?.attr("href")
-            iframeUrl = playerLink
+            iframeUrl = document.selectFirst(".player a, .watch a, #player a")?.attr("href")
         }
 
-        // Method 4: Cari video source langsung (untuk beberapa kasus)
+        // Method 4: Cari video source langsung
         if (iframeUrl == null) {
             val videoSrc = document.selectFirst("video source")?.attr("src")
             if (videoSrc != null) {
@@ -143,24 +143,18 @@ class Dramacool : MainAPI() {
                 )
                 return true
             }
-        }
-
-        if (iframeUrl == null) {
             return false
         }
 
         val iframeFullUrl = fixUrl(iframeUrl)
         
-        // Coba load iframe dan ekstrak link videonya
         try {
             val iframe = app.get(iframeFullUrl)
             val iframeDoc = iframe.document
             
-            // Coba ekstrak dari iframe
+            // Gunakan extractor yang terdaftar
             val extracted = loadExtractor(iframeDoc.html(), mainUrl, subtitleCallback, callback)
-            if (extracted) {
-                return true
-            }
+            if (extracted) return true
             
             // Jika gagal, coba cari langsung di dalam iframe
             val videoLink = iframeDoc.selectFirst("video source")?.attr("src")
@@ -177,7 +171,6 @@ class Dramacool : MainAPI() {
                 )
                 return true
             }
-            
             return false
         } catch (e: Exception) {
             return false
