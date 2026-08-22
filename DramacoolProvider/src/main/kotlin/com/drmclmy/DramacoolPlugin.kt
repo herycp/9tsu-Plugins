@@ -10,9 +10,14 @@ import com.lagradost.cloudstream3.extractors.StreamTape
 class DramacoolPlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(Dramacool())
+        
+        // Extractor bawaan
         registerExtractorAPI(Dwish())
         registerExtractorAPI(dlions())
         registerExtractorAPI(StreamTape())
         registerExtractorAPI(MixDropSi())
+        
+        // Extractor kustom untuk VidBasic
+        registerExtractorAPI(VidBasicExtractor())
     }
 }
