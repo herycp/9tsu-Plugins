@@ -36,13 +36,13 @@ class Dramacool : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Buat slug sederhana
         val searchTitle = query.replace(" ", "-")
         val url = "$mainUrl/search/$searchTitle"
         val document = app.get(url, referer = "$mainUrl/").document
         return document.select("#drama div.card").mapNotNull { it.toSearchResult() }
     }
 
+    @Suppress("DEPRECATION")
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, referer = "$mainUrl/").document
 
@@ -51,14 +51,17 @@ class Dramacool : MainAPI() {
         val posterUrl = document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
         val actors = document.select("div.slider div.img-container").map {
-            Actor(it.select("div.bottom-right").text(), it.select("img").attr("src"))
+            ActorData(
+                name = it.select("div.bottom-right").text(),
+                image = it.select("img").attr("src")
+            )
         }
 
         val episodes = document.select("div.epdiv").mapNotNull { el ->
             val name = el.selectFirst("a")?.text()?.substringAfter("Episode")?.trim() ?: return@mapNotNull null
             val rawHref = el.selectFirst("a")?.attr("href") ?: return@mapNotNull null
             val href = fixUrl(rawHref)
-            newEpisode(href, "Episode $name")
+            Episode(href, "Episode $name")
         }.reversed()
 
         return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -78,7 +81,7 @@ class Dramacool : MainAPI() {
         val server = document.selectFirst("#load-iframe")?.attr("onclick")
             ?.substringAfter("playThis(\"")?.substringBefore("\")")
 
-        val iframe = app.get(httpsify(server ?: return false))
+        val iframe = app.get(fixUrl(server ?: return false))
         val iframeDoc = iframe.document
 
         return loadExtractor(iframeDoc.html(), mainUrl, subtitleCallback, callback)
