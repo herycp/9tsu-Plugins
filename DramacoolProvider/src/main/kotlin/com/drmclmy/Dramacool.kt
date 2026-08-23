@@ -151,13 +151,13 @@ class Dramacool : MainAPI() {
         // ===== 1. AES DECRYPT =====
         try {
             val host = java.net.URL(embedUrl).host
-            val headers = mapOf(
+            val headersMap = mapOf(
                 "User-Agent" to userAgent,
                 "Referer" to "https://$host/",
                 "Origin" to "https://$host"
             )
 
-            val response = app.get(embedUrl, headers = headers)
+            val response = app.get(embedUrl, headers = headersMap)
             val html = response.text
 
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
@@ -169,14 +169,13 @@ class Dramacool : MainAPI() {
             }
 
             if (!dataVideo.isNullOrEmpty()) {
-                // Tangani relative paths dan absolute paths dengan benar
                 val fullUrl = when {
                     dataVideo.startsWith("http") -> dataVideo
                     dataVideo.startsWith("//") -> "https:$dataVideo"
                     else -> "https://$host$dataVideo"
                 }
 
-                val html2 = app.get(fullUrl, headers = headers).text
+                val html2 = app.get(fullUrl, headers = headersMap).text
 
                 // Ekstraksi Subtitle (VTT)
                 val subParamRegex = Regex("""[\?&]sub=([^&]+)""")
@@ -186,10 +185,9 @@ class Dramacool : MainAPI() {
                     try {
                         val subUrl = decryptVidBasic(URLDecoder.decode(subParam, "UTF-8"))
                         if (subUrl.startsWith("http")) {
-                            val encryptedVtt = app.get(subUrl, headers = headers).text
+                            val encryptedVtt = app.get(subUrl, headers = headersMap).text
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             
-                            // Konversi teks VTT ke format Data URI agar bisa langsung dibaca Exoplayer
                             val vttBase64 = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
                             val vttDataUrl = "data:text/vtt;base64,$vttBase64"
                             
@@ -212,11 +210,12 @@ class Dramacool : MainAPI() {
                                 name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
                                 source = name,
                                 url = decrypted,
-                                referer = fullUrl,
-                                quality = 0,
-                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                                headers = headers
-                            )
+                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = fullUrl
+                                this.quality = 0
+                                this.headers = headersMap
+                            }
                         )
                         anySuccess = true
                     }
@@ -265,7 +264,6 @@ class Dramacool : MainAPI() {
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         
-        // Regex yang lebih optimal untuk membaca angka episode meskipun ada desimal/spasi
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
 
         val episodes = episodeItems.mapNotNull { el ->
@@ -279,7 +277,7 @@ class Dramacool : MainAPI() {
         }.sortedByDescending { it.third ?: 0 }.map { (titleText, link, epNum) ->
             newEpisode(titleText) {
                 this.data = link
-                this.episode = epNum // Menyematkan urutan episode resmi dari judul
+                this.episode = epNum
             }
         }
 
