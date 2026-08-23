@@ -12,6 +12,9 @@ import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.util.Base64
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 private data class Quad<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -88,7 +91,7 @@ class Dramacool : MainAPI() {
         return null
     }
 
-    // ==================== EKSTRAKSI VIDEO UNTUK DEBUG ====================
+    // ==================== EKSTRAKSI VIDEO ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -120,6 +123,106 @@ class Dramacool : MainAPI() {
         return urls.distinct()
     }
 
+    // AES Decrypt untuk VidBasic
+    private fun decryptVidBasic(encrypted: String): String {
+        val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
+        val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
+
+        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+        val keySpec = SecretKeySpec(keyBytes, "AES")
+        val ivSpec = IvParameterSpec(ivBytes)
+
+        cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
+
+        val decoded = Base64.getDecoder().decode(encrypted)
+        val decrypted = cipher.doFinal(decoded)
+        return String(decrypted, Charsets.UTF_8)
+    }
+
+    // Proses VidBasic: AES Decrypt + API JSON
+    private suspend fun processVidBasic(
+        embedUrl: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        var anySuccess = false
+
+        // ===== 1. AES DECRYPT (Link dari server VidBasic sendiri) =====
+        try {
+            val response = app.get(embedUrl, headers = mapOf("User-Agent" to "Mozilla/5.0"))
+            val html = response.text
+
+            val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
+            var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
+            if (dataVideo.isNullOrEmpty()) {
+                val doc = org.jsoup.Jsoup.parse(html)
+                dataVideo = doc.selectFirst(".Standard Server.selected")?.attr("data-video")
+            }
+
+            if (!dataVideo.isNullOrEmpty()) {
+                val fullUrl = if (dataVideo.startsWith("//")) "https:$dataVideo" else dataVideo
+
+                val response2 = app.get(
+                    fullUrl,
+                    headers = mapOf(
+                        "User-Agent" to "Mozilla/5.0",
+                        "Referer" to embedUrl,
+                        "Origin" to "https://${java.net.URL(embedUrl).host}"
+                    )
+                )
+                val html2 = response2.text
+
+                val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
+                val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
+
+                if (!encrypted.isNullOrEmpty()) {
+                    val decrypted = decryptVidBasic(encrypted)
+
+                    if (decrypted.startsWith("http")) {
+                        val isM3u8 = decrypted.contains(".m3u8")
+                        callback(
+                            newExtractorLink(
+                                name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
+                                source = name,
+                                url = decrypted,
+                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = fullUrl
+                                this.quality = 0
+                                this.headers = mapOf(
+                                    "User-Agent" to "Mozilla/5.0",
+                                    "Referer" to fullUrl
+                                )
+                            }
+                        )
+                        anySuccess = true
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+
+        // ===== 2. API JSON (Link dari provider lain) =====
+        try {
+            val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to "Mozilla/5.0"))
+            val jsonText = response.text
+            val json = JSONObject(jsonText)
+
+            val allKeys = json.keys().asSequence().toList()
+            for (key in allKeys) {
+                val value = json.optString(key, null)
+                if (!value.isNullOrEmpty() && (value.startsWith("http") || value.startsWith("//"))) {
+                    val fixedLink = if (value.startsWith("//")) "https:$value" else value
+                    val result = loadExtractor(fixedLink, subtitleCallback, callback)
+                    if (result) anySuccess = true
+                }
+            }
+        } catch (e: Exception) {}
+
+        return anySuccess
+    }
+
+    // ==================== LOG UNTUK DEBUG ====================
     private suspend fun getVideoLogs(episodeUrl: String): String {
         val docRes = app.get(episodeUrl, headers = mapOf("User-Agent" to userAgent))
         val html = docRes.text
@@ -128,7 +231,6 @@ class Dramacool : MainAPI() {
         val allUrls = mutableSetOf<String>()
         val logs = mutableListOf<String>()
 
-        // Cari iframe vidbasic
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
             if (src.isNotBlank()) {
@@ -136,12 +238,11 @@ class Dramacool : MainAPI() {
                 allUrls.add(src)
                 logs.add("🔗 Iframe: $src")
                 if (src.contains("vidbasic.top") || src.contains("vidb.top")) {
-                    logs.add("  ✅ VidBasic detected, akan diproses oleh extractor")
+                    logs.add("  ✅ VidBasic detected")
                 }
             }
         }
 
-        // Cari data-video
         doc.select("[data-video]").forEach { el ->
             var video = el.attr("data-video")
             if (video.isNotBlank()) {
@@ -151,7 +252,6 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // Cari video source
         doc.select("video source, video").forEach { v ->
             var src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) {
@@ -161,7 +261,6 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // Script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -178,7 +277,6 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // General regex
         extractVideoUrls(html).forEach { url ->
             allUrls.add(fixUrlScheme(url))
             logs.add("🔎 General regex: $url")
@@ -201,8 +299,6 @@ class Dramacool : MainAPI() {
                 result.appendLine("  ... dan ${logs.size - 15} log lainnya")
             }
         }
-        result.appendLine()
-        result.appendLine("💡 Jika ada URL vidbasic.top, extractor akan memprosesnya otomatis.")
 
         return result.toString()
     }
@@ -291,7 +387,7 @@ class Dramacool : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // Kumpulkan semua URL dari iframe, video source, script, dll
+        // Kumpulkan semua URL
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
             if (src.isNotBlank()) {
@@ -337,20 +433,27 @@ class Dramacool : MainAPI() {
 
         extractVideoUrls(html).forEach { url -> allUrls.add(fixUrlScheme(url)) }
 
-        // Proses semua URL: pertama coba dengan loadExtractor (termasuk VidBasicExtractor)
         var linkFound = false
+
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
-            // Coba extractor yang terdaftar (VidBasicExtractor akan menangani vidbasic.top)
+            // Jika URL adalah VidBasic, proses khusus
+            if (cleanUrl.contains("vidbasic.top") || cleanUrl.contains("vidb.top")) {
+                val result = processVidBasic(cleanUrl, subtitleCallback, callback)
+                if (result) linkFound = true
+                continue
+            }
+
+            // Coba extractor yang terdaftar
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
-            // Fallback: jika .m3u8 atau .mp4, langsung tambahkan
+            // Fallback: jika .m3u8 atau .mp4
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
