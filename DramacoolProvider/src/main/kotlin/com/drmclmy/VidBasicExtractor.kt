@@ -3,6 +3,7 @@ package com.drmclmy
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.SubtitleFile
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.loadExtractor
@@ -12,15 +13,15 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class VidBasicExtractor : ExtractorApi {
+class VidBasicExtractor : ExtractorApi() {
     override val name = "VidBasic"
     override val mainUrl = "https://vidbasic.top"
     override val requiresReferer = true
 
-    override fun getExtractorUrl(url: String): String? {
+    override fun getExtractorUrl(id: String): String {
         val regex = Regex("""https?://(vidbasic\.top|vidb\.top)/embed/([0-9a-zA-Z]+)""")
-        val match = regex.find(url)
-        return match?.value
+        val match = regex.find(id)
+        return match?.value ?: ""
     }
 
     override suspend fun getLinks(
@@ -67,17 +68,18 @@ class VidBasicExtractor : ExtractorApi {
                         val isM3u8 = decrypted.contains(".m3u8")
                         callback(
                             newExtractorLink(
-                                source = name,
                                 name = if (isM3u8) "$name - HLS (VidBasic)" else "$name - Direct (VidBasic)",
+                                source = name,
                                 url = decrypted,
-                                referer = fullUrl,
-                                quality = 0,
-                                isM3u8 = isM3u8,
-                                headers = mapOf(
+                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            ) {
+                                this.referer = fullUrl
+                                this.quality = 0
+                                this.headers = mapOf(
                                     "User-Agent" to "Mozilla/5.0",
                                     "Referer" to fullUrl
                                 )
-                            )
+                            }
                         )
                         anySuccess = true
                     }
@@ -119,17 +121,18 @@ class VidBasicExtractor : ExtractorApi {
                     val fixed = if (videoSrc.startsWith("//")) "https:$videoSrc" else videoSrc
                     callback(
                         newExtractorLink(
-                            source = name,
                             name = "$name - Direct",
+                            source = name,
                             url = fixed,
-                            referer = embedUrl,
-                            quality = 0,
-                            isM3u8 = fixed.contains(".m3u8"),
-                            headers = mapOf(
+                            type = if (fixed.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        ) {
+                            this.referer = embedUrl
+                            this.quality = 0
+                            this.headers = mapOf(
                                 "User-Agent" to "Mozilla/5.0",
                                 "Referer" to embedUrl
                             )
-                        )
+                        }
                     )
                     anySuccess = true
                 }
