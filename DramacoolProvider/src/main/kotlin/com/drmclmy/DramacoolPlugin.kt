@@ -18,6 +18,6 @@ class DramacoolPlugin : Plugin() {
         registerExtractorAPI(MixDropSi())
         
         // Extractor kustom untuk VidBasic
-        registerExtractorAPI(VidBasicExtractor())
+        //registerExtractorAPI(VidBasicExtractor())
     }
 }
