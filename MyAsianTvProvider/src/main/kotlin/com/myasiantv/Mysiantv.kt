@@ -34,9 +34,7 @@ class MyAsianTv : MainAPI() {
         val url = if (page == 1) {
             "${mainUrl}${basePath}"
         } else {
-            // Handle pagination with query parameters
             if (basePath.contains("?")) {
-                // Insert /page/<page>/ before the query string
                 val parts = basePath.split("?", limit = 2)
                 val path = parts[0]
                 val query = if (parts.size > 1) parts[1] else ""
@@ -50,7 +48,6 @@ class MyAsianTv : MainAPI() {
 
         val items = when {
             request.data == "/" -> {
-                // Homepage: extract episode links and convert to series
                 document.select("ul.items li")
                     .mapNotNull { it.toSeriesFromEpisode() }
                     .distinctBy { it.url }
@@ -243,12 +240,10 @@ class MyAsianTv : MainAPI() {
             finalUrl = fixUrl(iframeSrc)
         }
 
-        // If it's a VidMoly URL, try to extract directly from the embed page
         if (finalUrl.contains("vidmoly")) {
             return extractVidMoly(finalUrl, subtitleCallback, callback)
         }
 
-        // General extraction
         val embedDoc = app.get(finalUrl, headers = defaultHeaders).document
         var anySuccess = false
 
@@ -260,7 +255,6 @@ class MyAsianTv : MainAPI() {
                     val cleanVideoUrl = fixUrl(videoUrl)
                     val serverName = item.text().trim().ifBlank { "Server" }
 
-                    // Try extractor
                     val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
                     val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
 
@@ -309,14 +303,11 @@ class MyAsianTv : MainAPI() {
     ): Boolean {
         return try {
             val doc = app.get(url, headers = defaultHeaders).document
-            // Try to find video source in script or player config
             val scripts = doc.select("script")
             var videoUrl: String? = null
 
-            // Look for sources array or file property
             for (script in scripts) {
                 val html = script.html()
-                // Common patterns in VidMoly embed
                 val patterns = listOf(
                     Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
                     Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
@@ -343,15 +334,12 @@ class MyAsianTv : MainAPI() {
                         name = "VidMoly",
                         source = name,
                         url = videoUrl,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
-                        quality = 0
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
-                // Subtitles might be available separately, but we ignore for now
                 return true
             }
 
-            // Fallback: try to find iframe source
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
                 val src = iframe.attr("src")
