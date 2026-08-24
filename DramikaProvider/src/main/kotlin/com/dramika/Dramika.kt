@@ -36,9 +36,12 @@ class Dramika : MainAPI() {
 
     private fun Element.toSearchResult(): SearchResponse? {
         val img = selectFirst("img")
-        val title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
-            ?: selectFirst("h2")?.text()?.trim()
-            ?: return null
+        // Ambil judul dari alt text gambar
+        var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
+        if (title.isNullOrEmpty()) {
+            title = selectFirst("h2")?.text()?.trim()
+        }
+        if (title.isNullOrEmpty()) return null
 
         val href = fixUrlNull(attr("href")) ?: return null
         val posterUrl = fixUrlNull(img?.attr("src"))
@@ -57,6 +60,9 @@ class Dramika : MainAPI() {
 
     // ==================== EKSTRAKSI EPISODE ====================
     private fun extractEpisodeNumber(title: String): Int? {
+        // Coba angka murni (misal "1", "2")
+        title.toIntOrNull()?.let { if (it > 0) return it }
+        // Pola lainnya
         val patterns = listOf(
             Regex("""(?i)Episode\s*(\d+)"""),
             Regex("""(?i)EP\s*(\d+)"""),
@@ -78,19 +84,19 @@ class Dramika : MainAPI() {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
         // Judul: h1.text-3xl atau h1.text-4xl
-        val title = document.selectFirst("h1.text-3xl, h1.text-4xl")?.text()?.trim()
-            ?: document.selectFirst("h1")?.text()?.trim()
+        val title = document.selectFirst("h1.text-3xl, h1.text-4xl, h1")?.text()?.trim()
             ?: return null
 
         // Poster: img.wp-post-image atau img.attachment-full
         val posterUrl = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
             ?.let { fixUrl(it) }
 
-        // Deskripsi: ambil semua paragraf di div.my-4 atau div.leading-relaxed
-        val description = document.select("div.my-4 p, div.leading-relaxed p").joinToString("\n\n") { it.text().trim() }
+        // Deskripsi: ambil dari div.text-secondary.leading-relaxed p
+        val description = document.select("div.text-secondary.leading-relaxed p")
+            .joinToString("\n\n") { it.text().trim() }
             .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
 
-        // Daftar episode: dari div.flex.flex-wrap.gap-2 a
+        // Daftar episode: div.flex.flex-wrap.gap-2 a (teks berupa angka)
         val episodeElements = document.select("div.flex.flex-wrap.gap-2 a")
         val episodes = episodeElements.mapNotNull { el ->
             val epNumText = el.text().trim()
