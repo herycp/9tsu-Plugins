@@ -36,9 +36,9 @@ class MyAsianTv : MainAPI() {
         val items = when {
             request.data == "/" -> {
                 // Homepage: extract episode links and convert to series
-                document.select("ul.items li, .episode-new .list li, .latest-episodes li")
+                document.select("ul.items li")
                     .mapNotNull { it.toSeriesFromEpisode() }
-                    .distinctBy { it.url } // deduplicate series
+                    .distinctBy { it.url }
             }
             else -> {
                 // Standard list page (drama, movies, shows with or without filters)
@@ -52,13 +52,18 @@ class MyAsianTv : MainAPI() {
     // Convert an episode list item to a series SearchResponse
     private fun Element.toSeriesFromEpisode(): SearchResponse? {
         val link = selectFirst("a") ?: return null
-        val episodeHref = fixUrlNull(link.attr("href")) ?: return null
+        val href = link.attr("href")
+        val episodeHref = fixUrlNull(href) ?: return null
 
-        // Extract the path from the full URL (remove domain)
-        val path = episodeHref.replace(mainUrl, "").trimStart('/')
+        // Get the path part (remove domain if present)
+        val path = if (episodeHref.startsWith(mainUrl)) {
+            episodeHref.replace(mainUrl, "").trimStart('/')
+        } else {
+            episodeHref.trimStart('/')
+        }
+
         // Remove the episode part: -ep-<number>-eng-sub/ or -ep-<number>-eng-sub
         val seriesPath = path.replace(Regex("""-ep-\d+-eng-sub/?$"""), "").trimEnd('/')
-        // Construct the series URL: /series/<seriesPath>
         val seriesUrl = "$mainUrl/series/$seriesPath"
 
         val img = selectFirst("img")
@@ -110,7 +115,13 @@ class MyAsianTv : MainAPI() {
     }
 
     // ==================== EXTRACT EPISODE NUMBER ====================
-    private fun extractEpisodeNumber(title: String): Int? {
+    private fun extractEpisodeNumberFromLink(link: String): Int? {
+        val pattern = Regex("""-ep-(\d+)-eng-sub""")
+        val match = pattern.find(link)
+        return match?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    private fun extractEpisodeNumberFromTitle(title: String): Int? {
         title.toIntOrNull()?.let { if (it > 0) return it }
         val patterns = listOf(
             Regex("""(?i)Episode\s*(\d+)"""),
@@ -132,23 +143,27 @@ class MyAsianTv : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
-        val title = document.selectFirst("h1")?.text()?.trim() ?: return null
+        val title = document.selectFirst("div.movie h1")?.text()?.trim() ?: return null
 
-        var rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("data-src")
-        if (rawPoster.isNullOrBlank()) rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
-        val cleanPosterUrl = fixUrlNull(rawPoster)
+        // Poster
+        var posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("src")
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("data-src")
+        }
+        val cleanPosterUrl = fixUrlNull(posterUrl)
 
-        val description = document.select("div.text-secondary.leading-relaxed p")
-            .joinToString("\n\n") { it.text().trim() }
-            .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
+        // Description (Plot)
+        val description = document.select("div.info").text().trim()
+            .ifEmpty { document.select("div.text-secondary.leading-relaxed").text() }
 
-        // Check for episode list
+        // Episode list
         val episodeElements = document.select("ul.list-episode li")
         val episodes = episodeElements.mapNotNull { el ->
             val link = el.selectFirst("a") ?: return@mapNotNull null
             val epLink = fixUrlNull(link.attr("href")) ?: return@mapNotNull null
             val epTitle = link.text().trim()
-            val epNum = extractEpisodeNumber(epTitle) ?: return@mapNotNull null
+            val epNum = extractEpisodeNumberFromLink(epLink) ?: extractEpisodeNumberFromTitle(epTitle)
+            if (epNum == null) return@mapNotNull null
             Triple(epTitle, epLink, epNum)
         }.sortedBy { it.third }
 
@@ -170,17 +185,15 @@ class MyAsianTv : MainAPI() {
             val (epTitle, epLink, _) = episodes.first()
             // Check if it's a movie: title contains "Movie" or episode title does not contain "Ep" / "Episode"
             val isMovie = title.contains("Movie", ignoreCase = true) ||
-                    !epTitle.contains(Regex("""(?i)\b(ep|episode|e)\b""")) // no episode indicator
+                    !epTitle.contains(Regex("""(?i)\b(ep|episode|e)\b"""))
 
             if (isMovie) {
-                // Movie: return movie response with the episode link as the data
                 return newMovieLoadResponse(title, url, TvType.Movie, epLink) {
                     this.posterUrl = cleanPosterUrl
                     this.posterHeaders = defaultHeaders
                     this.plot = description
                 }
             } else {
-                // Single-episode series
                 val episodeList = listOf(newEpisode(epTitle) { this.data = epLink })
                 return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeList) {
                     this.posterUrl = cleanPosterUrl
@@ -191,7 +204,6 @@ class MyAsianTv : MainAPI() {
         }
 
         // No episodes found: maybe it's a movie page with embedded player directly
-        // Check if there is an iframe
         val iframe = document.selectFirst("iframe#b, iframe")
         if (iframe != null) {
             val src = iframe.attr("data-src").ifBlank { iframe.attr("src") }
@@ -216,8 +228,8 @@ class MyAsianTv : MainAPI() {
     ): Boolean {
         if (data.isBlank()) return false
 
-        // data could be an episode URL (like /love-on-the-menu-2026-ep-1-eng-sub/) or an iframe URL (kisskh.space)
-        // If it's a relative URL, fetch the episode page and get the iframe
+        // data could be an episode URL (like /medical-examiner-dr-qin-bones-of-the-past-2026-ep-1-eng-sub/)
+        // or an iframe URL (kisskh.space)
         var finalUrl = data
         if (!data.startsWith("http")) {
             val doc = app.get("$mainUrl$data", headers = defaultHeaders).document
@@ -230,7 +242,6 @@ class MyAsianTv : MainAPI() {
             finalUrl = fixUrl(iframeSrc)
         }
 
-        // Now load the iframe (kisskh.space) to get video sources
         val embedDoc = app.get(finalUrl, headers = defaultHeaders).document
         var anySuccess = false
 
@@ -243,10 +254,7 @@ class MyAsianTv : MainAPI() {
                     val cleanVideoUrl = fixUrl(videoUrl)
                     val serverName = item.text().trim().ifBlank { "Server" }
 
-                    // Try extractor
                     val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
-
-                    // Manual backup
                     val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
 
                     if (extractorFound || manualFound) anySuccess = true
@@ -264,7 +272,7 @@ class MyAsianTv : MainAPI() {
             }
         }
 
-        // Fallback: direct video source in <video> tag
+        // Fallback: direct video source
         if (!anySuccess) {
             val videoSrc = embedDoc.selectFirst("video source")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
