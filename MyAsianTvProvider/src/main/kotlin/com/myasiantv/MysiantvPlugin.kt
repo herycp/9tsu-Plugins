@@ -5,9 +5,9 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 import com.lagradost.cloudstream3.extractors.StreamTape
 import com.lagradost.cloudstream3.extractors.MixDrop
-import com.lagradost.cloudstream3.extractors.Vidmolyme
-import com.lagradost.cloudstream3.extractors.Vidmolyto
-import com.lagradost.cloudstream3.extractors.Vidmolymbiz
+//import com.lagradost.cloudstream3.extractors.Vidmolyme
+//import com.lagradost.cloudstream3.extractors.Vidmolyto
+//import com.lagradost.cloudstream3.extractors.Vidmolymbiz
 
 @CloudstreamPlugin
 class MyAsianTvPlugin : Plugin() {
