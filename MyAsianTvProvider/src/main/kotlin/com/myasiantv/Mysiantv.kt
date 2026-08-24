@@ -305,31 +305,65 @@ class MyAsianTv : MainAPI() {
             val doc = app.get(url, headers = defaultHeaders).document
             val scripts = doc.select("script")
             var videoUrl: String? = null
+            var foundVideo = false
 
             for (script in scripts) {
                 val html = script.html()
-                val patterns = listOf(
-                    Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                    Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                    Regex(""""hls"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                    Regex(""""videoUrl"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                    Regex(""""url"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                    Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
-                    Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
-                )
-                for (pattern in patterns) {
-                    val match = pattern.find(html)
-                    if (match != null) {
-                        videoUrl = match.groupValues[1]
-                        break
+
+                // 1. Ekstrak URL Video
+                if (videoUrl == null) {
+                    val patterns = listOf(
+                        Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                        Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                        Regex(""""hls"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                        Regex(""""videoUrl"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                        Regex(""""url"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                        Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
+                        Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
+                    )
+                    for (pattern in patterns) {
+                        val match = pattern.find(html)
+                        if (match != null) {
+                            videoUrl = match.groupValues[1]
+                            break
+                        }
                     }
                 }
-                if (videoUrl != null) break
+
+                // 2. Ekstrak Soft Subtitle dari array 'tracks'
+                val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
+                if (tracksMatch != null) {
+                    val tracksHtml = tracksMatch.groupValues[1]
+                    // Ambil setiap objek di dalam array tracks
+                    val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
+                    
+                    for (track in individualTracks) {
+                        val trackData = track.groupValues[1]
+                        
+                        val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                        val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                        val kindMatch = Regex("""["']?kind["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+
+                        val file = fileMatch?.groupValues?.get(1)
+                        val label = labelMatch?.groupValues?.get(1) ?: "Subtitle"
+                        val kind = kindMatch?.groupValues?.get(1)
+
+                        // Abaikan track berupa 'thumbnails' (file .jpg atau .png)
+                        if (file != null && kind != "thumbnails" && !file.contains(".jpg") && !file.contains(".png")) {
+                            subtitleCallback.invoke(
+                                SubtitleFile(
+                                    lang = label,
+                                    url = file
+                                )
+                            )
+                        }
+                    }
+                }
             }
 
             if (videoUrl != null) {
                 val isM3u8 = videoUrl.contains(".m3u8")
-                callback(
+                callback.invoke(
                     newExtractorLink(
                         name = "VidMoly",
                         source = name,
@@ -337,9 +371,12 @@ class MyAsianTv : MainAPI() {
                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
-                return true
+                foundVideo = true
             }
 
+            if (foundVideo) return true
+
+            // Fallback iframe jika tidak ditemukan script langsung
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
                 val src = iframe.attr("src")
