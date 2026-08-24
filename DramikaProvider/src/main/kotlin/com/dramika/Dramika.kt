@@ -14,8 +14,9 @@ class Dramika : MainAPI() {
     override var name = "Dramika"
     override val hasMainPage = true
 
-    private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
-    private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
+    // Ubah ke UA Desktop yang lebih aman dari blokir Cloudflare
+    private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    private val defaultHeaders = mapOf("User-Agent" to userAgent)
 
     override val mainPage = mainPageOf(
         "/dramas/" to "Dramas",
@@ -44,7 +45,7 @@ class Dramika : MainAPI() {
 
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
-            this.posterHeaders = defaultHeaders
+            // posterHeaders TIDAK DISERTAKAN agar Glide (Image Loader Cloudstream) memuat secara natural
         }
     }
 
@@ -95,20 +96,34 @@ class Dramika : MainAPI() {
             Triple(epTitle, epLink, epNum)
         }.sortedBy { it.third }
 
+        val hasVideo = document.selectFirst("iframe, video") != null
+
+        // LOGIKA COMING SOON: Jika tidak ada daftar episode DAN tidak ada video/iframe
+        if (episodes.isEmpty() && !hasVideo) {
+            val comingSoonEp = newEpisode(url) {
+                this.name = "Coming Soon"
+            }
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(comingSoonEp)) {
+                this.posterUrl = posterUrl
+                this.plot = description
+                this.status = ShowStatus.Upcoming
+            }
+        }
+
+        // LOGIKA SERIES BIASA
         if (episodes.isNotEmpty()) {
             val episodeList = episodes.map { (epTitle, epLink, _) ->
                 newEpisode(epTitle) { this.data = epLink }
             }
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeList) {
                 this.posterUrl = posterUrl
-                this.posterHeaders = defaultHeaders
                 this.plot = description
             }
         }
 
+        // LOGIKA MOVIE
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
             this.posterUrl = posterUrl
-            this.posterHeaders = defaultHeaders
             this.plot = description
         }
     }
@@ -123,52 +138,66 @@ class Dramika : MainAPI() {
         if (data.isBlank()) return false
         val doc = app.get(data, headers = defaultHeaders).document
 
-        val serverItems = doc.select("#serverList li.server-item.linkserver")
-        if (serverItems.isNotEmpty()) {
-            var anySuccess = false
-            for (item in serverItems) {
-                val videoUrl = item.attr("data-video")
-                if (videoUrl.isNotBlank()) {
-                    if (loadExtractor(fixUrl(videoUrl), subtitleCallback, callback)) anySuccess = true
-                }
-            }
-            if (anySuccess) return true
-        }
+        var anySuccess = false
 
-        val iframeSrc = doc.selectFirst("iframe#embedvideo, iframe")?.attr("src")
+        // 1. Ambil URL Iframe dari halaman Dramika (yang mengarah ke KissKH)
+        val iframeSrc = doc.selectFirst("iframe")?.attr("src")
+        
         if (!iframeSrc.isNullOrBlank()) {
-            var cleanUrl = fixUrl(iframeSrc)
+            val embedUrl = fixUrl(iframeSrc)
             
-            // Penelusuran iframe untuk menembus kisskh.space
-            if (!cleanUrl.contains("kisskh.space", ignoreCase = true)) {
-                try {
-                    val iframeDoc = app.get(cleanUrl, headers = defaultHeaders).document
-                    val realIframeSrc = iframeDoc.selectFirst("iframe")?.attr("src")
-                    if (!realIframeSrc.isNullOrBlank()) {
-                        cleanUrl = fixUrl(realIframeSrc)
+            try {
+                // 2. Minta Cloudstream membuka halaman embed KissKH di balik layar
+                val embedDoc = app.get(embedUrl, headers = defaultHeaders).document
+                
+                // 3. Sekarang kita cari daftar server (Vidmoly, Streamtape, dll) di dalam KissKH
+                val serverItems = embedDoc.select("#serverList li.server-item.linkserver")
+                
+                if (serverItems.isNotEmpty()) {
+                    for (item in serverItems) {
+                        val videoUrl = item.attr("data-video")
+                        if (videoUrl.isNotBlank()) {
+                            // 4. Lempar URL server tersebut ke Extractor bawaan Cloudstream
+                            if (loadExtractor(fixUrl(videoUrl), subtitleCallback, callback)) {
+                                anySuccess = true
+                            }
+                        }
                     }
-                } catch (e: Exception) {
-                    // Abaikan jika pencarian iframe gagal, gunakan iframe pertama
+                } else {
+                    // Fallback jika #serverList gagal dimuat, cari iframe terdalam
+                    val deepIframe = embedDoc.selectFirst("iframe#embedvideo, iframe")?.attr("src")
+                    if (!deepIframe.isNullOrBlank()) {
+                        if (loadExtractor(fixUrl(deepIframe), subtitleCallback, callback)) {
+                            anySuccess = true
+                        }
+                    }
                 }
+            } catch (e: Exception) {
+                // Abaikan exception agar tidak memutus pencarian link berikutnya
             }
-            return loadExtractor(cleanUrl, subtitleCallback, callback)
         }
 
-        val videoSrc = doc.selectFirst("video source")?.attr("src")
-        if (!videoSrc.isNullOrBlank()) {
-            val cleanUrl = fixUrl(videoSrc)
-            val isM3u8 = cleanUrl.contains(".m3u8")
-            callback(
-                newExtractorLink(
-                    name = if (isM3u8) "Dramika - HLS" else "Dramika - Direct",
-                    source = name,
-                    url = cleanUrl,
-                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+        // Fallback jika video disematkan langsung di halaman Dramika menggunakan <video> (meski jarang)
+        if (!anySuccess) {
+            val videoSrc = doc.selectFirst("video source")?.attr("src")
+            if (!videoSrc.isNullOrBlank()) {
+                val cleanUrl = fixUrl(videoSrc)
+                val isM3u8 = cleanUrl.contains(".m3u8")
+                callback(
+                    newExtractorLink(
+                        name = if (isM3u8) "Dramika - HLS" else "Dramika - Direct",
+                        source = name,
+                        url = cleanUrl,
+                        referer = mainUrl,
+                        quality = 1080,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    )
                 )
-            )
-            return true
+                anySuccess = true
+            }
         }
-        return false
+
+        return anySuccess
     }
 
     // ==================== FUNGSI BANTU ====================
