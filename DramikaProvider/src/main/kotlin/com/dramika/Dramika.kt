@@ -15,8 +15,6 @@ class Dramika : MainAPI() {
     override val hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
-    
-    // Header default untuk menembus proteksi image hotlinking
     private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
 
     override val mainPage = mainPageOf(
@@ -36,7 +34,9 @@ class Dramika : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val img = selectFirst("img")
         var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
-        if (title.isNullOrEmpty()) title = selectFirst("h2")?.text()?.trim()
+        if (title.isNullOrEmpty()) {
+            title = selectFirst("h2")?.text()?.trim()
+        }
         if (title.isNullOrEmpty()) return null
 
         val href = fixUrlNull(attr("href")) ?: return null
@@ -44,7 +44,6 @@ class Dramika : MainAPI() {
 
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
-            // Sisipkan posterHeaders agar UI Cloudstream berhasil meload gambar
             this.posterHeaders = defaultHeaders
         }
     }
@@ -85,17 +84,16 @@ class Dramika : MainAPI() {
             .joinToString("\n\n") { it.text().trim() }
             .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
 
-        // Gunakan selector spesifik ke blok navigasi episode untuk menghindari elemen share
         val episodeElements = document.select("nav[aria-label='Episode Navigation'] a")
         val episodes = episodeElements.mapNotNull { el ->
             val epNumText = el.text().trim()
             val epNum = epNumText.toIntOrNull() ?: extractEpisodeNumber(epNumText)
-            if (epNum == null) return@mapNotNull null // Abaikan yang tidak valid tapi tolerir ep 0 jika ada
-
+            if (epNum == null) return@mapNotNull null
+            
             val epLink = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
             val epTitle = "Episode $epNum"
             Triple(epTitle, epLink, epNum)
-        }.sortedBy { it.third } // Urutkan ascending 
+        }.sortedBy { it.third }
 
         if (episodes.isNotEmpty()) {
             val episodeList = episodes.map { (epTitle, epLink, _) ->
@@ -141,7 +139,7 @@ class Dramika : MainAPI() {
         if (!iframeSrc.isNullOrBlank()) {
             var cleanUrl = fixUrl(iframeSrc)
             
-            // Penanganan Double Iframe untuk menembus ke kisskh.space
+            // Penelusuran iframe untuk menembus kisskh.space
             if (!cleanUrl.contains("kisskh.space", ignoreCase = true)) {
                 try {
                     val iframeDoc = app.get(cleanUrl, headers = defaultHeaders).document
@@ -150,10 +148,9 @@ class Dramika : MainAPI() {
                         cleanUrl = fixUrl(realIframeSrc)
                     }
                 } catch (e: Exception) {
-                    // Abaikan dan coba URL iframe pertama jika penelusuran middleman gagal
+                    // Abaikan jika pencarian iframe gagal, gunakan iframe pertama
                 }
             }
-            
             return loadExtractor(cleanUrl, subtitleCallback, callback)
         }
 
@@ -174,17 +171,9 @@ class Dramika : MainAPI() {
         return false
     }
 
+    // ==================== FUNGSI BANTU ====================
     private fun fixUrl(url: String): String {
         var fixed = url.trim()
-        if (fixed.startsWith("//")) fixed = "https:$fixed"
-        return fixed
-    }
-
-    private fun fixUrlNull(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        return fixUrl(url)
-    }
-}
         if (fixed.startsWith("//")) fixed = "https:$fixed"
         return fixed
     }
