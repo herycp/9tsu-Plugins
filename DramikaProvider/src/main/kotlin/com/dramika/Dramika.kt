@@ -24,18 +24,25 @@ class Dramika : MainAPI() {
 
     // ==================== MAIN PAGE ====================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "${mainUrl}${request.data}page/$page/"
+        val url = if (page == 1) {
+            "${mainUrl}${request.data}"
+        } else {
+            "${mainUrl}${request.data}page/$page/"
+        }
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-        val items = document.select("article.post, .type-post, .entry, .blog-item").mapNotNull { it.toSearchResult() }
+        val items = document.select("a.group").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(request.name, items)
     }
 
     private fun Element.toSearchResult(): SearchResponse? {
-        val titleElement = selectFirst("h2 a, h3 a, .entry-title a, a[rel='bookmark']") ?: return null
-        val title = titleElement.text().trim()
-        val href = fixUrlNull(titleElement.attr("href")) ?: return null
         val img = selectFirst("img")
-        val posterUrl = fixUrlNull(img?.attr("data-src") ?: img?.attr("src"))
+        val title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
+            ?: selectFirst("h2")?.text()?.trim()
+            ?: return null
+
+        val href = fixUrlNull(attr("href")) ?: return null
+        val posterUrl = fixUrlNull(img?.attr("src"))
+
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
         }
@@ -45,7 +52,7 @@ class Dramika : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=${query.replace(" ", "+")}"
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-        return document.select("article.post, .type-post, .entry, .blog-item").mapNotNull { it.toSearchResult() }
+        return document.select("a.group").mapNotNull { it.toSearchResult() }
     }
 
     // ==================== EKSTRAKSI EPISODE ====================
@@ -70,20 +77,27 @@ class Dramika : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
-        val title = document.selectFirst("h1.entry-title, h1.post-title, .title")?.text()?.trim()
+        // Judul: h1.text-3xl atau h1.text-4xl
+        val title = document.selectFirst("h1.text-3xl, h1.text-4xl")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
             ?: return null
 
-        val posterUrl = document.selectFirst(".post-thumbnail img, .entry-content img, .featured-image img, .wp-post-image")?.attr("src")
+        // Poster: img.wp-post-image atau img.attachment-full
+        val posterUrl = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
             ?.let { fixUrl(it) }
 
-        val description = document.selectFirst(".entry-content, .post-content, .description, .summary")?.text()?.trim()
+        // Deskripsi: ambil semua paragraf di div.my-4 atau div.leading-relaxed
+        val description = document.select("div.my-4 p, div.leading-relaxed p").joinToString("\n\n") { it.text().trim() }
+            .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
 
-        // Cari daftar episode
-        val episodeElements = document.select(".episode-list a, .episodes a, .season-list a, .episode-item a")
+        // Daftar episode: dari div.flex.flex-wrap.gap-2 a
+        val episodeElements = document.select("div.flex.flex-wrap.gap-2 a")
         val episodes = episodeElements.mapNotNull { el ->
-            val epTitle = el.text().trim()
+            val epNumText = el.text().trim()
+            val epNum = epNumText.toIntOrNull() ?: extractEpisodeNumber(epNumText)
+            if (epNum == null || epNum <= 0) return@mapNotNull null
             val epLink = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-            val epNum = extractEpisodeNumber(epTitle) ?: 0
+            val epTitle = "Episode $epNum"
             Triple(epTitle, epLink, epNum)
         }.sortedByDescending { it.third }
 
@@ -115,7 +129,7 @@ class Dramika : MainAPI() {
 
         val doc = app.get(data, headers = mapOf("User-Agent" to userAgent)).document
 
-        // ===== 1. Cari server dari #serverList =====
+        // Cari server list: #serverList li.server-item.linkserver
         val serverItems = doc.select("#serverList li.server-item.linkserver")
         if (serverItems.isNotEmpty()) {
             var anySuccess = false
@@ -124,21 +138,20 @@ class Dramika : MainAPI() {
                 if (videoUrl.isBlank()) continue
 
                 val cleanUrl = fixUrl(videoUrl)
-                // Gunakan loadExtractor yang akan memanggil StreamTape, MixDrop, Vidmoly dll
                 val result = loadExtractor(cleanUrl, subtitleCallback, callback)
                 if (result) anySuccess = true
             }
             if (anySuccess) return true
         }
 
-        // ===== 2. Fallback: cari iframe langsung =====
-        val iframeSrc = doc.selectFirst("iframe#embedvideo, iframe.player-iframe")?.attr("src")
+        // Fallback: iframe langsung
+        val iframeSrc = doc.selectFirst("iframe#embedvideo, iframe")?.attr("src")
         if (!iframeSrc.isNullOrBlank()) {
             val cleanUrl = fixUrl(iframeSrc)
             return loadExtractor(cleanUrl, subtitleCallback, callback)
         }
 
-        // ===== 3. Fallback: cari video source langsung =====
+        // Fallback: video source
         val videoSrc = doc.selectFirst("video source")?.attr("src")
         if (!videoSrc.isNullOrBlank()) {
             val cleanUrl = fixUrl(videoSrc)
