@@ -41,14 +41,13 @@ class Dramika : MainAPI() {
 
         val href = fixUrlNull(attr("href")) ?: return null
         
-        // Coba cari dari data-src dulu, baru src fallback
+        // Prioritaskan atribut lazy-load data-src
         var posterUrl = img?.attr("data-src")
         if (posterUrl.isNullOrBlank()) posterUrl = img?.attr("src")
         posterUrl = fixUrlNull(posterUrl)
 
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
-            // Kembalikan header untuk menembus proteksi Cloudflare (403 Forbidden)
             this.posterHeaders = defaultHeaders
         }
     }
@@ -79,17 +78,18 @@ class Dramika : MainAPI() {
         return null
     }
 
-    // ==================== LOAD DETAIL & INJECT DEBUG LOG ====================
+    // ==================== LOAD DETAIL ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
         val title = document.selectFirst("h1.text-3xl, h1.text-4xl, h1")?.text()?.trim() ?: return null
         
+        // Prioritaskan atribut lazy-load data-src
         var rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("data-src")
         if (rawPoster.isNullOrBlank()) rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
         val cleanPosterUrl = fixUrlNull(rawPoster)
 
-        var description = document.select("div.text-secondary.leading-relaxed p")
+        val description = document.select("div.text-secondary.leading-relaxed p")
             .joinToString("\n\n") { it.text().trim() }
             .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
 
@@ -105,47 +105,6 @@ class Dramika : MainAPI() {
         }.sortedBy { it.third }
 
         val hasVideo = document.selectFirst("iframe, video") != null
-
-        // ----------------------------------------------------
-        // SYSTEM LOGGING: BONGKAR IFRAME UNTUK DITAMPILKAN DI PLOT
-        // ----------------------------------------------------
-        var debugLog = "\n\n=== 🛠️ DEBUG LOG ===\n"
-        debugLog += "1. LINK GAMBAR:\n$cleanPosterUrl\n\n"
-        
-        try {
-            // Cek ke halaman episode 1 (jika series) atau halaman utama (jika movie)
-            val testTargetUrl = if (episodes.isNotEmpty()) episodes.first().second else url
-            debugLog += "2. CEK URL (Target Eksekusi):\n$testTargetUrl\n\n"
-            
-            val testDoc = app.get(testTargetUrl, headers = defaultHeaders).document
-            val foundIframe = testDoc.selectFirst("iframe")?.attr("src")
-            
-            debugLog += "3. IFRAME DI DRAMIKA:\n"
-            if (foundIframe.isNullOrBlank()) {
-                debugLog += "- TIDAK DITEMUKAN (Mungkin di-load via JavaScript)\n\n"
-            } else {
-                debugLog += "$foundIframe\n\n"
-                
-                // Coba tembus KissKH
-                val embedDoc = app.get(fixUrl(foundIframe), headers = defaultHeaders).document
-                val servers = embedDoc.select(".server-item, li[data-video]").map { it.attr("data-video") }
-                
-                debugLog += "4. SERVER LINK EMBED (KissKH):\n"
-                if (servers.isEmpty()) {
-                    debugLog += "- Kosong (Gagal load DOM KissKH)\n"
-                } else {
-                    servers.forEachIndexed { i, s -> 
-                        debugLog += "   ${i+1}. $s\n" 
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            debugLog += "ERROR DEBUG: ${e.message}\n"
-        }
-        
-        // Sisipkan log ke dalam deskripsi
-        description += debugLog
-        // ----------------------------------------------------
 
         if (episodes.isEmpty() && !hasVideo) {
             val comingSoonEp = newEpisode(url) { this.name = "Coming Soon" }
@@ -185,11 +144,18 @@ class Dramika : MainAPI() {
         val doc = app.get(data, headers = defaultHeaders).document
 
         var anySuccess = false
-        val iframeSrc = doc.selectFirst("iframe")?.attr("src")
+        
+        // Ekstrak target iframe dengan memprioritaskan "data-src" terlebih dahulu
+        val iframeElement = doc.selectFirst("iframe#b, iframe")
+        var iframeSrc = iframeElement?.attr("data-src")
+        if (iframeSrc.isNullOrBlank()) {
+            iframeSrc = iframeElement?.attr("src")
+        }
         
         if (!iframeSrc.isNullOrBlank()) {
             val embedUrl = fixUrl(iframeSrc)
             try {
+                // Tembus ke KissKH
                 val embedDoc = app.get(embedUrl, headers = defaultHeaders).document
                 val serverItems = embedDoc.select(".server-item, li[data-video]")
                 
@@ -203,7 +169,10 @@ class Dramika : MainAPI() {
                         }
                     }
                 } else {
-                    val deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
+                    // Coba cari iframe terdalam jika list server tidak ketemu (utamakan data-src juga)
+                    var deepIframe = embedDoc.selectFirst("iframe")?.attr("data-src")
+                    if (deepIframe.isNullOrBlank()) deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
+                    
                     if (!deepIframe.isNullOrBlank()) {
                         if (loadExtractor(fixUrl(deepIframe), subtitleCallback, callback)) {
                             anySuccess = true
@@ -211,11 +180,11 @@ class Dramika : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Abaikan
+                // Abaikan jika error koneksi agar fallback di bawahnya tetap dieksekusi
             }
         }
 
-        // Fallback untuk direct video tag (tanpa Named Arguments yang bikin error API)
+        // Fallback untuk direct video tag jika embed KissKH gagal total
         if (!anySuccess) {
             val videoSrc = doc.selectFirst("video source")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
