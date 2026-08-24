@@ -106,7 +106,6 @@ class Dramika : MainAPI() {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(comingSoonEp)) {
                 this.posterUrl = posterUrl
                 this.plot = description
-                this.status = ShowStatus.Upcoming
             }
         }
 
@@ -188,8 +187,6 @@ class Dramika : MainAPI() {
                         name = if (isM3u8) "Dramika - HLS" else "Dramika - Direct",
                         source = name,
                         url = cleanUrl,
-                        referer = mainUrl,
-                        quality = 1080,
                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                     )
                 )
