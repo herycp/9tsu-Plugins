@@ -53,9 +53,13 @@ class MyAsianTv : MainAPI() {
     private fun Element.toSeriesFromEpisode(): SearchResponse? {
         val link = selectFirst("a") ?: return null
         val episodeHref = fixUrlNull(link.attr("href")) ?: return null
-        // Extract series slug from episode URL: e.g., /love-on-the-menu-2026-ep-1-eng-sub/ -> /series/love-on-the-menu-2026/
-        val seriesSlug = episodeHref.replace(Regex("""-ep-\d+-eng-sub/?$"""), "").trimEnd('/')
-        val seriesUrl = "$mainUrl/series$seriesSlug" // Ensure correct format
+
+        // Extract the path from the full URL (remove domain)
+        val path = episodeHref.replace(mainUrl, "").trimStart('/')
+        // Remove the episode part: -ep-<number>-eng-sub/ or -ep-<number>-eng-sub
+        val seriesPath = path.replace(Regex("""-ep-\d+-eng-sub/?$"""), "").trimEnd('/')
+        // Construct the series URL: /series/<seriesPath>
+        val seriesUrl = "$mainUrl/series/$seriesPath"
 
         val img = selectFirst("img")
         var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
