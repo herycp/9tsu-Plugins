@@ -335,12 +335,4 @@ class MyAsianTv : MainAPI() {
         if (url.isNullOrBlank()) return null
         return fixUrl(url)
     }
-}        if (fixed.startsWith("//")) fixed = "https:$fixed"
-        return fixed
-    }
-
-    private fun fixUrlNull(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        return fixUrl(url)
-    }
 }
