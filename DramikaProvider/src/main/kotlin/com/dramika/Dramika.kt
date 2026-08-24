@@ -14,9 +14,8 @@ class Dramika : MainAPI() {
     override var name = "Dramika"
     override val hasMainPage = true
 
-    // Ubah ke UA Desktop yang lebih aman dari blokir Cloudflare
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    private val defaultHeaders = mapOf("User-Agent" to userAgent)
+    private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
 
     override val mainPage = mainPageOf(
         "/dramas/" to "Dramas",
@@ -41,11 +40,16 @@ class Dramika : MainAPI() {
         if (title.isNullOrEmpty()) return null
 
         val href = fixUrlNull(attr("href")) ?: return null
-        val posterUrl = fixUrlNull(img?.attr("src"))
+        
+        // Coba cari dari data-src dulu, baru src fallback
+        var posterUrl = img?.attr("data-src")
+        if (posterUrl.isNullOrBlank()) posterUrl = img?.attr("src")
+        posterUrl = fixUrlNull(posterUrl)
 
         return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
             this.posterUrl = posterUrl
-            // posterHeaders TIDAK DISERTAKAN agar Glide (Image Loader Cloudstream) memuat secara natural
+            // Kembalikan header untuk menembus proteksi Cloudflare (403 Forbidden)
+            this.posterHeaders = defaultHeaders
         }
     }
 
@@ -75,13 +79,17 @@ class Dramika : MainAPI() {
         return null
     }
 
-    // ==================== LOAD DETAIL ====================
+    // ==================== LOAD DETAIL & INJECT DEBUG LOG ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
         val title = document.selectFirst("h1.text-3xl, h1.text-4xl, h1")?.text()?.trim() ?: return null
-        val posterUrl = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")?.let { fixUrl(it) }
-        val description = document.select("div.text-secondary.leading-relaxed p")
+        
+        var rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("data-src")
+        if (rawPoster.isNullOrBlank()) rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
+        val cleanPosterUrl = fixUrlNull(rawPoster)
+
+        var description = document.select("div.text-secondary.leading-relaxed p")
             .joinToString("\n\n") { it.text().trim() }
             .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
 
@@ -98,31 +106,70 @@ class Dramika : MainAPI() {
 
         val hasVideo = document.selectFirst("iframe, video") != null
 
-        // LOGIKA COMING SOON: Jika tidak ada daftar episode DAN tidak ada video/iframe
-        if (episodes.isEmpty() && !hasVideo) {
-            val comingSoonEp = newEpisode(url) {
-                this.name = "Coming Soon"
+        // ----------------------------------------------------
+        // SYSTEM LOGGING: BONGKAR IFRAME UNTUK DITAMPILKAN DI PLOT
+        // ----------------------------------------------------
+        var debugLog = "\n\n=== 🛠️ DEBUG LOG ===\n"
+        debugLog += "1. LINK GAMBAR:\n$cleanPosterUrl\n\n"
+        
+        try {
+            // Cek ke halaman episode 1 (jika series) atau halaman utama (jika movie)
+            val testTargetUrl = if (episodes.isNotEmpty()) episodes.first().second else url
+            debugLog += "2. CEK URL (Target Eksekusi):\n$testTargetUrl\n\n"
+            
+            val testDoc = app.get(testTargetUrl, headers = defaultHeaders).document
+            val foundIframe = testDoc.selectFirst("iframe")?.attr("src")
+            
+            debugLog += "3. IFRAME DI DRAMIKA:\n"
+            if (foundIframe.isNullOrBlank()) {
+                debugLog += "- TIDAK DITEMUKAN (Mungkin di-load via JavaScript)\n\n"
+            } else {
+                debugLog += "$foundIframe\n\n"
+                
+                // Coba tembus KissKH
+                val embedDoc = app.get(fixUrl(foundIframe), headers = defaultHeaders).document
+                val servers = embedDoc.select(".server-item, li[data-video]").map { it.attr("data-video") }
+                
+                debugLog += "4. SERVER LINK EMBED (KissKH):\n"
+                if (servers.isEmpty()) {
+                    debugLog += "- Kosong (Gagal load DOM KissKH)\n"
+                } else {
+                    servers.forEachIndexed { i, s -> 
+                        debugLog += "   ${i+1}. $s\n" 
+                    }
+                }
             }
+        } catch (e: Exception) {
+            debugLog += "ERROR DEBUG: ${e.message}\n"
+        }
+        
+        // Sisipkan log ke dalam deskripsi
+        description += debugLog
+        // ----------------------------------------------------
+
+        if (episodes.isEmpty() && !hasVideo) {
+            val comingSoonEp = newEpisode(url) { this.name = "Coming Soon" }
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, listOf(comingSoonEp)) {
-                this.posterUrl = posterUrl
+                this.posterUrl = cleanPosterUrl
+                this.posterHeaders = defaultHeaders
                 this.plot = description
             }
         }
 
-        // LOGIKA SERIES BIASA
         if (episodes.isNotEmpty()) {
             val episodeList = episodes.map { (epTitle, epLink, _) ->
                 newEpisode(epTitle) { this.data = epLink }
             }
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeList) {
-                this.posterUrl = posterUrl
+                this.posterUrl = cleanPosterUrl
+                this.posterHeaders = defaultHeaders
                 this.plot = description
             }
         }
 
-        // LOGIKA MOVIE
         return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = posterUrl
+            this.posterUrl = cleanPosterUrl
+            this.posterHeaders = defaultHeaders
             this.plot = description
         }
     }
@@ -138,33 +185,25 @@ class Dramika : MainAPI() {
         val doc = app.get(data, headers = defaultHeaders).document
 
         var anySuccess = false
-
-        // 1. Ambil URL Iframe dari halaman Dramika (yang mengarah ke KissKH)
         val iframeSrc = doc.selectFirst("iframe")?.attr("src")
         
         if (!iframeSrc.isNullOrBlank()) {
             val embedUrl = fixUrl(iframeSrc)
-            
             try {
-                // 2. Minta Cloudstream membuka halaman embed KissKH di balik layar
                 val embedDoc = app.get(embedUrl, headers = defaultHeaders).document
-                
-                // 3. Sekarang kita cari daftar server (Vidmoly, Streamtape, dll) di dalam KissKH
-                val serverItems = embedDoc.select("#serverList li.server-item.linkserver")
+                val serverItems = embedDoc.select(".server-item, li[data-video]")
                 
                 if (serverItems.isNotEmpty()) {
                     for (item in serverItems) {
                         val videoUrl = item.attr("data-video")
                         if (videoUrl.isNotBlank()) {
-                            // 4. Lempar URL server tersebut ke Extractor bawaan Cloudstream
                             if (loadExtractor(fixUrl(videoUrl), subtitleCallback, callback)) {
                                 anySuccess = true
                             }
                         }
                     }
                 } else {
-                    // Fallback jika #serverList gagal dimuat, cari iframe terdalam
-                    val deepIframe = embedDoc.selectFirst("iframe#embedvideo, iframe")?.attr("src")
+                    val deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
                     if (!deepIframe.isNullOrBlank()) {
                         if (loadExtractor(fixUrl(deepIframe), subtitleCallback, callback)) {
                             anySuccess = true
@@ -172,11 +211,11 @@ class Dramika : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Abaikan exception agar tidak memutus pencarian link berikutnya
+                // Abaikan
             }
         }
 
-        // Fallback jika video disematkan langsung di halaman Dramika menggunakan <video> (meski jarang)
+        // Fallback untuk direct video tag (tanpa Named Arguments yang bikin error API)
         if (!anySuccess) {
             val videoSrc = doc.selectFirst("video source")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
