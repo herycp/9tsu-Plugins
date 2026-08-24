@@ -15,9 +15,9 @@ class MyAsianTvPlugin : Plugin() {
         registerMainAPI(MyAsianTv())
 
         // Daftarkan semua varian VidMoly
-        registerExtractorAPI(Vidmolyme())
-        registerExtractorAPI(Vidmolyto())
-        registerExtractorAPI(Vidmolymbiz())
+        registerExtractorAPI(Vidmoly())
+        //registerExtractorAPI(Vidmolyto())
+        //registerExtractorAPI(Vidmolymbiz())
 
         // Ekstraktor lainnya
         registerExtractorAPI(StreamTape())
