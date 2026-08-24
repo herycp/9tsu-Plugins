@@ -1,4 +1,4 @@
-package com.dramika
+package com.myasiantv
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -7,31 +7,97 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import org.jsoup.nodes.Element
 
-class Dramika : MainAPI() {
-    override val supportedTypes = setOf(TvType.AsianDrama, TvType.Movie, TvType.TvSeries)
+class MyAsianTv : MainAPI() {
+    override val supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.AsianDrama)
     override var lang = "en"
-    override var mainUrl = "https://dramika.com"
-    override var name = "Dramika"
+    override var mainUrl = "https://myasiantv.com.bz"
+    override var name = "MyAsianTv"
     override val hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     private val defaultHeaders = mapOf("User-Agent" to userAgent, "Referer" to mainUrl)
 
     override val mainPage = mainPageOf(
-        "/dramas/" to "Dramas",
-        "/movies/" to "Movies",
-        "/tvshows/" to "TV Shows"
+        "/" to "Latest",
+        "/drama/" to "Drama",
+        "/drama/?selCountry=Japanese&btnFilter=Submit" to "Drama Jepang",
+        "/drama/?selCountry=Thailand&btnFilter=Submit" to "Drama Thailand",
+        "/movies-list/" to "Movies",
+        "/movies-list/?selCountry=Japanese&btnFilter=Submit" to "Movie Jepang",
+        "/movies-list/?selCountry=Thailand&btnFilter=Submit" to "Movie Thailand",
+        "/shows/" to "TV Shows"
     )
 
     // ==================== MAIN PAGE ====================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = if (page == 1) "${mainUrl}${request.data}" else "${mainUrl}${request.data}page/$page/"
+        val basePath = request.data
+        val url = if (page == 1) {
+            "${mainUrl}${basePath}"
+        } else {
+            // Handle pagination with query parameters
+            if (basePath.contains("?")) {
+                // Insert /page/<page>/ before the query string
+                val parts = basePath.split("?", limit = 2)
+                val path = parts[0]
+                val query = if (parts.size > 1) parts[1] else ""
+                "${mainUrl}${path}page/$page/?$query"
+            } else {
+                "${mainUrl}${basePath}page/$page/"
+            }
+        }
+
         val document = app.get(url, headers = defaultHeaders).document
-        val items = document.select("a.group").mapNotNull { it.toSearchResult() }
+
+        val items = when {
+            request.data == "/" -> {
+                // Homepage: extract episode links and convert to series
+                document.select("ul.items li")
+                    .mapNotNull { it.toSeriesFromEpisode() }
+                    .distinctBy { it.url }
+            }
+            else -> {
+                document.select("ul.items li").mapNotNull { it.toSearchResult() }
+            }
+        }
+
         return newHomePageResponse(request.name, items)
     }
 
+    // Convert an episode list item to a series SearchResponse
+    private fun Element.toSeriesFromEpisode(): SearchResponse? {
+        val link = selectFirst("a") ?: return null
+        val href = link.attr("href")
+        val episodeHref = fixUrlNull(href) ?: return null
+
+        val path = if (episodeHref.startsWith(mainUrl)) {
+            episodeHref.replace(mainUrl, "").trimStart('/')
+        } else {
+            episodeHref.trimStart('/')
+        }
+
+        val seriesPath = path.replace(Regex("""-ep-\d+-eng-sub/?$"""), "").trimEnd('/')
+        val seriesUrl = "$mainUrl/series/$seriesPath"
+
+        val img = selectFirst("img")
+        var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
+        if (title.isNullOrEmpty()) {
+            title = link.text().trim()
+        }
+        if (title.isNullOrEmpty()) return null
+
+        var posterUrl = img?.attr("data-src")
+        if (posterUrl.isNullOrBlank()) posterUrl = img?.attr("src")
+        posterUrl = fixUrlNull(posterUrl)
+
+        return newAnimeSearchResponse(title, seriesUrl, TvType.TvSeries) {
+            this.posterUrl = posterUrl
+            this.posterHeaders = defaultHeaders
+        }
+    }
+
     private fun Element.toSearchResult(): SearchResponse? {
+        val link = selectFirst("a") ?: return null
+        val href = fixUrlNull(link.attr("href")) ?: return null
         val img = selectFirst("img")
         var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
         if (title.isNullOrEmpty()) {
@@ -39,13 +105,14 @@ class Dramika : MainAPI() {
         }
         if (title.isNullOrEmpty()) return null
 
-        val href = fixUrlNull(attr("href")) ?: return null
-        
         var posterUrl = img?.attr("data-src")
         if (posterUrl.isNullOrBlank()) posterUrl = img?.attr("src")
         posterUrl = fixUrlNull(posterUrl)
 
-        return newAnimeSearchResponse(title, href, TvType.AsianDrama) {
+        val isMovie = href.contains("/movies/") || title.contains("Movie", ignoreCase = true)
+        val type = if (isMovie) TvType.Movie else TvType.TvSeries
+
+        return newAnimeSearchResponse(title, href, type) {
             this.posterUrl = posterUrl
             this.posterHeaders = defaultHeaders
         }
@@ -55,11 +122,17 @@ class Dramika : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/?s=${query.replace(" ", "+")}"
         val document = app.get(url, headers = defaultHeaders).document
-        return document.select("a.group").mapNotNull { it.toSearchResult() }
+        return document.select("ul.items li").mapNotNull { it.toSearchResult() }
     }
 
-    // ==================== EKSTRAKSI EPISODE ====================
-    private fun extractEpisodeNumber(title: String): Int? {
+    // ==================== EXTRACT EPISODE NUMBER ====================
+    private fun extractEpisodeNumberFromLink(link: String): Int? {
+        val pattern = Regex("""-ep-(\d+)-eng-sub""")
+        val match = pattern.find(link)
+        return match?.groupValues?.get(1)?.toIntOrNull()
+    }
+
+    private fun extractEpisodeNumberFromTitle(title: String): Int? {
         title.toIntOrNull()?.let { if (it > 0) return it }
         val patterns = listOf(
             Regex("""(?i)Episode\s*(\d+)"""),
@@ -77,43 +150,32 @@ class Dramika : MainAPI() {
         return null
     }
 
-    // ==================== LOAD DETAIL ====================
+    // ==================== LOAD DETAIL (SERIES / MOVIE) ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
-        val title = document.selectFirst("h1.text-3xl, h1.text-4xl, h1")?.text()?.trim() ?: return null
-        
-        var rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("data-src")
-        if (rawPoster.isNullOrBlank()) rawPoster = document.selectFirst("img.wp-post-image, img.attachment-full")?.attr("src")
-        val cleanPosterUrl = fixUrlNull(rawPoster)
+        val title = document.selectFirst("div.movie h1")?.text()?.trim() ?: return null
 
-        val description = document.select("div.text-secondary.leading-relaxed p")
-            .joinToString("\n\n") { it.text().trim() }
-            .ifEmpty { document.select(".text-secondary.leading-relaxed").text() }
+        var posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("src")
+        if (posterUrl.isNullOrBlank()) {
+            posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("data-src")
+        }
+        val cleanPosterUrl = fixUrlNull(posterUrl)
 
-        val episodeElements = document.select("nav[aria-label='Episode Navigation'] a")
+        val description = document.select("div.info").text().trim()
+            .ifEmpty { document.select("div.text-secondary.leading-relaxed").text() }
+
+        val episodeElements = document.select("ul.list-episode li")
         val episodes = episodeElements.mapNotNull { el ->
-            val epNumText = el.text().trim()
-            val epNum = epNumText.toIntOrNull() ?: extractEpisodeNumber(epNumText)
+            val link = el.selectFirst("a") ?: return@mapNotNull null
+            val epLink = fixUrlNull(link.attr("href")) ?: return@mapNotNull null
+            val epTitle = link.text().trim()
+            val epNum = extractEpisodeNumberFromLink(epLink) ?: extractEpisodeNumberFromTitle(epTitle)
             if (epNum == null) return@mapNotNull null
-            
-            val epLink = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-            val epTitle = "Episode $epNum"
             Triple(epTitle, epLink, epNum)
         }.sortedBy { it.third }
 
-        val hasVideo = document.selectFirst("iframe, video") != null
-
-        // MENGGUNAKAN emptyList() AGAR UI MEMUNCULKAN "Episode Tidak Ditemukan" & "Segera hadir..."
-        if (episodes.isEmpty() && !hasVideo) {
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, emptyList()) {
-                this.posterUrl = cleanPosterUrl
-                this.posterHeaders = defaultHeaders
-                this.plot = description
-            }
-        }
-
-        if (episodes.isNotEmpty()) {
+        if (episodes.size > 1) {
             val episodeList = episodes.map { (epTitle, epLink, _) ->
                 newEpisode(epTitle) { this.data = epLink }
             }
@@ -124,11 +186,40 @@ class Dramika : MainAPI() {
             }
         }
 
-        return newMovieLoadResponse(title, url, TvType.Movie, url) {
-            this.posterUrl = cleanPosterUrl
-            this.posterHeaders = defaultHeaders
-            this.plot = description
+        if (episodes.size == 1) {
+            val (epTitle, epLink, _) = episodes.first()
+            val isMovie = title.contains("Movie", ignoreCase = true) ||
+                    !epTitle.contains(Regex("""(?i)\b(ep|episode|e)\b"""))
+
+            if (isMovie) {
+                return newMovieLoadResponse(title, url, TvType.Movie, epLink) {
+                    this.posterUrl = cleanPosterUrl
+                    this.posterHeaders = defaultHeaders
+                    this.plot = description
+                }
+            } else {
+                val episodeList = listOf(newEpisode(epTitle) { this.data = epLink })
+                return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodeList) {
+                    this.posterUrl = cleanPosterUrl
+                    this.posterHeaders = defaultHeaders
+                    this.plot = description
+                }
+            }
         }
+
+        val iframe = document.selectFirst("iframe#b, iframe")
+        if (iframe != null) {
+            val src = iframe.attr("data-src").ifBlank { iframe.attr("src") }
+            if (src.isNotBlank()) {
+                return newMovieLoadResponse(title, url, TvType.Movie, src) {
+                    this.posterUrl = cleanPosterUrl
+                    this.posterHeaders = defaultHeaders
+                    this.plot = description
+                }
+            }
+        }
+
+        return null
     }
 
     // ==================== LOAD LINKS ====================
@@ -139,62 +230,65 @@ class Dramika : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        val doc = app.get(data, headers = defaultHeaders).document
 
-        var anySuccess = false
-        
-        val iframeElement = doc.selectFirst("iframe#b, iframe")
-        var iframeSrc = iframeElement?.attr("data-src")
-        if (iframeSrc.isNullOrBlank()) {
-            iframeSrc = iframeElement?.attr("src")
+        var finalUrl = data
+        if (!data.startsWith("http")) {
+            val doc = app.get("$mainUrl$data", headers = defaultHeaders).document
+            val iframeElement = doc.selectFirst("iframe#b, iframe")
+            var iframeSrc = iframeElement?.attr("data-src")
+            if (iframeSrc.isNullOrBlank()) {
+                iframeSrc = iframeElement?.attr("src")
+            }
+            if (iframeSrc.isNullOrBlank()) return false
+            finalUrl = fixUrl(iframeSrc)
         }
-        
-        if (!iframeSrc.isNullOrBlank()) {
-            val embedUrl = fixUrl(iframeSrc)
-            try {
-                val embedDoc = app.get(embedUrl, headers = defaultHeaders).document
-                val serverItems = embedDoc.select(".server-item, li[data-video]")
-                
-                if (serverItems.isNotEmpty()) {
-                    for (item in serverItems) {
-                        val videoUrl = item.attr("data-video")
-                        if (videoUrl.isNotBlank()) {
-                            val cleanVideoUrl = fixUrl(videoUrl)
-                            val serverName = item.text().trim().ifBlank { "Server" }
-                            
-                            // 1. Coba extractor bawaan
-                            val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
-                            
-                            // 2. BACKUP SUPER AMAN: Paksa cari link .m3u8/.mp4 mandiri meskipun bawaan sukses (untuk jaga-jaga/redundansi)
-                            val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
-                            
-                            if (extractorFound || manualFound) anySuccess = true
-                        }
-                    }
-                } else {
-                    var deepIframe = embedDoc.selectFirst("iframe")?.attr("data-src")
-                    if (deepIframe.isNullOrBlank()) deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
-                    
-                    if (!deepIframe.isNullOrBlank()) {
-                        val cleanDeepIframe = fixUrl(deepIframe)
-                        val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
-                        val manualFound = manualExtractor(cleanDeepIframe, "Server", callback)
-                        if (extractorFound || manualFound) anySuccess = true
-                    }
+
+        // If it's a VidMoly URL, try to extract directly from the embed page
+        if (finalUrl.contains("vidmoly")) {
+            return extractVidMoly(finalUrl, subtitleCallback, callback)
+        }
+
+        // General extraction
+        val embedDoc = app.get(finalUrl, headers = defaultHeaders).document
+        var anySuccess = false
+
+        val serverItems = embedDoc.select(".server-item, li[data-video]")
+        if (serverItems.isNotEmpty()) {
+            for (item in serverItems) {
+                val videoUrl = item.attr("data-video")
+                if (videoUrl.isNotBlank()) {
+                    val cleanVideoUrl = fixUrl(videoUrl)
+                    val serverName = item.text().trim().ifBlank { "Server" }
+
+                    // Try extractor
+                    val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
+                    val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
+
+                    if (extractorFound || manualFound) anySuccess = true
                 }
-            } catch (e: Exception) {
-                // Abaikan jika error jaringan
+            }
+        } else {
+            var deepIframe = embedDoc.selectFirst("iframe")?.attr("data-src")
+            if (deepIframe.isNullOrBlank()) deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
+            if (!deepIframe.isNullOrBlank()) {
+                val cleanDeepIframe = fixUrl(deepIframe)
+                if (cleanDeepIframe.contains("vidmoly")) {
+                    return extractVidMoly(cleanDeepIframe, subtitleCallback, callback)
+                }
+                val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
+                val manualFound = manualExtractor(cleanDeepIframe, "Server", callback)
+                if (extractorFound || manualFound) anySuccess = true
             }
         }
 
         if (!anySuccess) {
-            val videoSrc = doc.selectFirst("video source")?.attr("src")
+            val videoSrc = embedDoc.selectFirst("video source")?.attr("src")
             if (!videoSrc.isNullOrBlank()) {
                 val cleanUrl = fixUrl(videoSrc)
                 val isM3u8 = cleanUrl.contains(".m3u8")
                 callback(
                     newExtractorLink(
-                        name = if (isM3u8) "Dramika - HLS" else "Dramika - Direct",
+                        name = if (isM3u8) "MyAsianTv - HLS" else "MyAsianTv - Direct",
                         source = name,
                         url = cleanUrl,
                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -207,8 +301,72 @@ class Dramika : MainAPI() {
         return anySuccess
     }
 
+    // ==================== VIDMOLY EXTRACTOR (MANUAL) ====================
+    private suspend fun extractVidMoly(
+        url: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
+        return try {
+            val doc = app.get(url, headers = defaultHeaders).document
+            // Try to find video source in script or player config
+            val scripts = doc.select("script")
+            var videoUrl: String? = null
+
+            // Look for sources array or file property
+            for (script in scripts) {
+                val html = script.html()
+                // Common patterns in VidMoly embed
+                val patterns = listOf(
+                    Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""hls"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""videoUrl"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""url"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
+                    Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
+                )
+                for (pattern in patterns) {
+                    val match = pattern.find(html)
+                    if (match != null) {
+                        videoUrl = match.groupValues[1]
+                        break
+                    }
+                }
+                if (videoUrl != null) break
+            }
+
+            if (videoUrl != null) {
+                val isM3u8 = videoUrl.contains(".m3u8")
+                callback(
+                    newExtractorLink(
+                        name = "VidMoly",
+                        source = name,
+                        url = videoUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO,
+                        quality = 0
+                    )
+                )
+                // Subtitles might be available separately, but we ignore for now
+                return true
+            }
+
+            // Fallback: try to find iframe source
+            val iframe = doc.selectFirst("iframe")
+            if (iframe != null) {
+                val src = iframe.attr("src")
+                if (src.isNotBlank()) {
+                    return loadExtractor(fixUrl(src), subtitleCallback, callback)
+                }
+            }
+
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     // ==================== MANUAL EXTRACTOR (BACKUP) ====================
-    // Menyedot file video langsung dari kode HTML jika API Cloudstream gagal
     private suspend fun manualExtractor(
         url: String,
         serverName: String,
@@ -216,11 +374,10 @@ class Dramika : MainAPI() {
     ): Boolean {
         return try {
             val playerHtml = app.get(url, headers = defaultHeaders).text
-            
-            // Regex mencari pola m3u8 atau mp4
+
             val m3u8Regex = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""")
             val mp4Regex = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
-            
+
             val m3u8Match = m3u8Regex.find(playerHtml)
             if (m3u8Match != null) {
                 callback(
@@ -233,7 +390,7 @@ class Dramika : MainAPI() {
                 )
                 return true
             }
-            
+
             val mp4Match = mp4Regex.find(playerHtml)
             if (mp4Match != null) {
                 callback(
@@ -252,7 +409,7 @@ class Dramika : MainAPI() {
         }
     }
 
-    // ==================== FUNGSI BANTU ====================
+    // ==================== HELPER FUNCTIONS ====================
     private fun fixUrl(url: String): String {
         var fixed = url.trim()
         if (fixed.startsWith("//")) fixed = "https:$fixed"
