@@ -215,7 +215,7 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 var subtitleUrl = ""
 
-                                // === 1. Upload ke Catbox ===
+                                // === 1. Upload ke Catbox (perbaikan format) ===
                                 try {
                                     val boundary = "----CloudStreamBoundary${System.currentTimeMillis()}"
                                     val bodyString = """
@@ -249,21 +249,47 @@ class Dramacool : MainAPI() {
                                     println("[VidBasic] Catbox upload error: ${e.message}")
                                 }
 
-                                // === 2. Fallback: Simpan ke file lokal ===
+                                // === 2. Jika Catbox gagal, coba Litterbox ===
                                 if (subtitleUrl.isBlank()) {
                                     try {
-                                        val subFile = File.createTempFile("sub_", ".vtt")
-                                        subFile.writeText(finalVtt)
-                                        subFile.setReadable(true, false)
-                                        subtitleUrl = "file://${subFile.absolutePath}"
-                                        println("[VidBasic] Subtitle saved to local file: $subtitleUrl")
+                                        val boundary = "----CloudStreamBoundary${System.currentTimeMillis()}"
+                                        val bodyString = """
+                                            --$boundary
+                                            Content-Disposition: form-data; name="reqtype"
+
+                                            fileupload
+                                            --$boundary
+                                            Content-Disposition: form-data; name="time"
+
+                                            1h
+                                            --$boundary
+                                            Content-Disposition: form-data; name="fileToUpload"; filename="sub.vtt"
+                                            Content-Type: text/vtt
+
+                                            $finalVtt
+                                            --$boundary--
+                                        """.trimIndent().replace("\n", "\r\n")
+
+                                        val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
+                                        val uploadResponse = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
+                                        println("[VidBasic] Litterbox response: $uploadResponse")
+
+                                        if (uploadResponse.startsWith("http")) {
+                                            subtitleUrl = uploadResponse
+                                            println("[VidBasic] Litterbox upload successful: $subtitleUrl")
+                                        } else {
+                                            println("[VidBasic] Litterbox upload failed, response: $uploadResponse")
+                                        }
                                     } catch (e: Exception) {
-                                        println("[VidBasic] Local file save error: ${e.message}")
-                                        // === 3. Fallback terakhir: data URI ===
-                                        val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                        subtitleUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
-                                        println("[VidBasic] Using data URI (length: ${subtitleUrl.length})")
+                                        println("[VidBasic] Litterbox upload error: ${e.message}")
                                     }
+                                }
+
+                                // === 3. Fallback: data URI (meskipun kemungkinan gagal) ===
+                                if (subtitleUrl.isBlank()) {
+                                    val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                    subtitleUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                                    println("[VidBasic] Using data URI (length: ${subtitleUrl.length})")
                                 }
 
                                 // === Kirim subtitle ===
