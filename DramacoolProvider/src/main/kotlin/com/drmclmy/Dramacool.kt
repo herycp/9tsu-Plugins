@@ -230,8 +230,7 @@ class Dramacool : MainAPI() {
                                         subtitleCallback.invoke(
                                             SubtitleFile(
                                                 "English (VidBasic)",
-                                                fileUri,
-                                                headers = emptyMap()
+                                                fileUri
                                             )
                                         )
                                     } else {
@@ -241,8 +240,7 @@ class Dramacool : MainAPI() {
                                         subtitleCallback.invoke(
                                             SubtitleFile(
                                                 "English (VidBasic)",
-                                                dataUri,
-                                                headers = emptyMap()
+                                                dataUri
                                             )
                                         )
                                     }
@@ -253,8 +251,7 @@ class Dramacool : MainAPI() {
                                     subtitleCallback.invoke(
                                         SubtitleFile(
                                             "English (VidBasic)",
-                                            dataUri,
-                                            headers = emptyMap()
+                                            dataUri
                                         )
                                     )
                                 }
