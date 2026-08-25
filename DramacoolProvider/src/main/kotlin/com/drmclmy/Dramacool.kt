@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
@@ -192,7 +191,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (AUTOMATIC TEMP-CLOUD PROXY VIA OKHTTP) ----
+                // ---- SUBTITLE (AUTOMATIC TEMP-CLOUD PROXY VIA CATBOX) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -214,41 +213,16 @@ class Dramacool : MainAPI() {
 
                             if (finalVtt.isNotBlank()) {
                                 var uploadedUrl = ""
-
-                                // TIER 1: Upload ke Litterbox Catbox (File hancur dalam 1 Jam, stabil)
                                 try {
-                                    val requestBody = MultipartBody.Builder()
-                                        .setType(MultipartBody.FORM)
-                                        .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("time", "1h")
-                                        .addFormDataPart(
-                                            "fileToUpload",
-                                            "sub.vtt",
-                                            finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
-                                        )
-                                        .build()
-
-                                    uploadedUrl = app.post(
-                                        "https://litterbox.catbox.moe/api",
-                                        requestBody = requestBody
-                                    ).text.trim()
+                                    val boundary = "---CloudstreamBoundary"
+                                    val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
+                                    val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
+                                    
+                                    uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
                                 } catch (e: Exception) {
                                     e.printStackTrace()
                                 }
 
-                                // TIER 2 (Fallback): Jika Catbox gagal, upload ke Transfer.sh
-                                if (!uploadedUrl.startsWith("http")) {
-                                    try {
-                                        uploadedUrl = app.put(
-                                            "https://transfer.sh/sub.vtt",
-                                            requestBody = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
-                                        ).text.trim()
-                                    } catch (e: Exception) {
-                                        e.printStackTrace()
-                                    }
-                                }
-
-                                // Jika berhasil di-upload, URL pasti valid HTTP dan berakhiran .vtt
                                 if (uploadedUrl.startsWith("http")) {
                                     subtitleCallback.invoke(
                                         SubtitleFile("English (VidBasic)", uploadedUrl)
@@ -318,7 +292,7 @@ class Dramacool : MainAPI() {
         return anySuccess
     }
 
-    // ==================== LOAD ====================
+    // ==================== LOAD (DEBUGGING MODE) ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -329,13 +303,13 @@ class Dramacool : MainAPI() {
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        val description = document.select(".details .info p").mapNotNull { p ->
+        var description = document.select(".details .info p").mapNotNull { p ->
             if (p.select("span").isEmpty() && p.text().length > 50) {
                 p.text().trim()
             } else null
         }.joinToString("\n\n").ifEmpty {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
-        }
+        } ?: ""
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -352,6 +326,96 @@ class Dramacool : MainAPI() {
                 this.episode = epNum
             }
         }.sortedByDescending { it.episode ?: 0 }
+
+        // ==========================================
+        // BLOK DEBUGGING: INJEKSI LOG KE PLOT
+        // ==========================================
+        var debugLog = "\n\n=== LOG DEBUG SUBTITLE ===\n"
+        try {
+            val testEp = episodes.lastOrNull()?.data
+            debugLog += "[*] Target Ep: $testEp\n"
+
+            if (testEp != null) {
+                val epDoc = app.get(testEp, headers = mapOf("User-Agent" to userAgent)).document
+                var embedUrl = ""
+                epDoc.select("iframe").forEach { iframe ->
+                    val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
+                    if (src.contains("vidbasic") || src.contains("vidb")) embedUrl = fixUrlScheme(src)
+                }
+                debugLog += "[*] Iframe VidBasic: $embedUrl\n"
+
+                if (embedUrl.isNotBlank()) {
+                    val host = java.net.URL(embedUrl).host
+                    val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
+                    val html = app.get(embedUrl, headers = headersMap).text
+                    
+                    val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
+                    var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
+                    if (dataVideo.isNullOrEmpty()) {
+                        val parsed = org.jsoup.Jsoup.parse(html)
+                        dataVideo = parsed.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
+                            ?: parsed.selectFirst("[data-video]")?.attr("data-video")
+                    }
+
+                    if (!dataVideo.isNullOrEmpty()) {
+                        val fullUrl = when {
+                            dataVideo.startsWith("http") -> dataVideo
+                            dataVideo.startsWith("//") -> "https:$dataVideo"
+                            else -> "https://$host$dataVideo"
+                        }
+                        debugLog += "[*] Player URL: $fullUrl\n"
+
+                        val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
+                            it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
+                        }
+
+                        if (!subParam.isNullOrEmpty()) {
+                            debugLog += "[*] Sub Param: Ditemukan!\n"
+                            val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
+                            val decryptedSubUrl = decryptVidBasic(decodedSubParam)
+                            debugLog += "[*] Sub URL Decrypted: $decryptedSubUrl\n"
+
+                            if (decryptedSubUrl.startsWith("http")) {
+                                val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
+                                debugLog += "[*] Raw VTT Length: ${encryptedVtt.length} karakter\n"
+                                
+                                val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
+                                var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                                if (cleanVtt.startsWith("WEBVTT")) {
+                                    cleanVtt = cleanVtt.substring(6).trim()
+                                }
+                                val finalVtt = "WEBVTT\n\n$cleanVtt"
+                                debugLog += "[*] Final VTT Length: ${finalVtt.length} karakter\n"
+                                debugLog += "[*] Preview VTT: ${finalVtt.take(40).replace("\n", " ")}...\n"
+
+                                try {
+                                    debugLog += "[*] Memulai upload ke Catbox...\n"
+                                    val boundary = "---CloudstreamBoundary"
+                                    val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
+                                    val req = okhttp3.RequestBody.Companion.toRequestBody(bodyString, okhttp3.MediaType.Companion.toMediaTypeOrNull("multipart/form-data; boundary=$boundary"))
+                                    
+                                    val catboxRes = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
+                                    debugLog += "[+] Catbox Result: $catboxRes\n"
+                                } catch (e: Exception) {
+                                    debugLog += "[!] Catbox Error: ${e.message}\n"
+                                }
+                            } else {
+                                debugLog += "[!] Decrypted URL tidak valid HTTP.\n"
+                            }
+                        } else {
+                            debugLog += "[!] Sub Param tidak ditemukan di URL Player.\n"
+                        }
+                    } else {
+                        debugLog += "[!] data-video tidak ditemukan.\n"
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            debugLog += "[!] CRASH: ${e.message}\n"
+        }
+        
+        description += debugLog
+        // ==========================================
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
