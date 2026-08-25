@@ -1,16 +1,16 @@
 package com.drmclmy
 
-import android.content.Context
-import android.net.Uri
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
-import java.io.File
 import java.net.URLDecoder
 import java.util.Base64
 import javax.crypto.Cipher
@@ -40,23 +40,6 @@ class Dramacool : MainAPI() {
             fixed = "https:$fixed"
         }
         return fixed
-    }
-
-    // Fungsi untuk mendapatkan Context aplikasi melalui refleksi
-    private fun getContext(): Context? {
-        return try {
-            val activityThreadClass = Class.forName("android.app.ActivityThread")
-            val currentApplicationMethod = activityThreadClass.getMethod("currentApplication")
-            currentApplicationMethod.invoke(null) as? Context
-        } catch (e: Exception) {
-            try {
-                val appGlobalsClass = Class.forName("android.app.AppGlobals")
-                val getInitialApplicationMethod = appGlobalsClass.getMethod("getInitialApplication")
-                getInitialApplicationMethod.invoke(null) as? Context
-            } catch (e2: Exception) {
-                null
-            }
-        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -153,14 +136,24 @@ class Dramacool : MainAPI() {
     }
 
     private fun decryptVidBasicSubtitle(vttContent: String): String {
-        // Subtitle VTT terenkripsi sebagai satu kesatuan, dekripsi langsung seluruh konten
-        return try {
-            val decrypted = decryptVidBasic(vttContent)
-            decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
-        } catch (e: Exception) {
-            // Jika gagal, mungkin sudah tidak terenkripsi
-            vttContent
-        }
+        val patterns = listOf(
+            Regex("""^WEBVTT"""),
+            Regex("""^\d+$"""),
+            Regex("""^\d{2}:\d{2}:\d{2}""")
+        )
+        return vttContent.lines().mapIndexed { _, line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
+                line
+            } else {
+                try {
+                    val decrypted = decryptVidBasic(trimmed)
+                    decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
+                } catch (e: Exception) {
+                    line
+                }
+            }
+        }.joinToString("\n")
     }
 
     private suspend fun processVidBasic(
@@ -199,7 +192,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE ----
+                // ---- SUBTITLE (AUTOMATIC TEMP-CLOUD PROXY VIA OKHTTP) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -220,39 +213,45 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Simpan ke file sementara dan gunakan file URI
+                                var uploadedUrl = ""
+
+                                // TIER 1: Upload ke Litterbox Catbox (File hancur dalam 1 Jam, stabil)
                                 try {
-                                    val context = getContext()
-                                    if (context != null) {
-                                        val subtitleFile = File(context.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
-                                        subtitleFile.writeText(finalVtt)
-                                        val fileUri = Uri.fromFile(subtitleFile).toString()
-                                        subtitleCallback.invoke(
-                                            SubtitleFile(
-                                                "English (VidBasic)",
-                                                fileUri
-                                            )
+                                    val requestBody = MultipartBody.Builder()
+                                        .setType(MultipartBody.FORM)
+                                        .addFormDataPart("reqtype", "fileupload")
+                                        .addFormDataPart("time", "1h")
+                                        .addFormDataPart(
+                                            "fileToUpload",
+                                            "sub.vtt",
+                                            finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
                                         )
-                                    } else {
-                                        // Fallback ke data URI
-                                        val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                        val dataUri = "data:text/vtt;base64,$base64Data"
-                                        subtitleCallback.invoke(
-                                            SubtitleFile(
-                                                "English (VidBasic)",
-                                                dataUri
-                                            )
-                                        )
-                                    }
+                                        .build()
+
+                                    uploadedUrl = app.post(
+                                        "https://litterbox.catbox.moe/api",
+                                        requestBody = requestBody
+                                    ).text.trim()
                                 } catch (e: Exception) {
-                                    // Fallback ke data URI
-                                    val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                    val dataUri = "data:text/vtt;base64,$base64Data"
+                                    e.printStackTrace()
+                                }
+
+                                // TIER 2 (Fallback): Jika Catbox gagal, upload ke Transfer.sh
+                                if (!uploadedUrl.startsWith("http")) {
+                                    try {
+                                        uploadedUrl = app.put(
+                                            "https://transfer.sh/sub.vtt",
+                                            requestBody = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
+                                        ).text.trim()
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                    }
+                                }
+
+                                // Jika berhasil di-upload, URL pasti valid HTTP dan berakhiran .vtt
+                                if (uploadedUrl.startsWith("http")) {
                                     subtitleCallback.invoke(
-                                        SubtitleFile(
-                                            "English (VidBasic)",
-                                            dataUri
-                                        )
+                                        SubtitleFile("English (VidBasic)", uploadedUrl)
                                     )
                                 }
                             }
