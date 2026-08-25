@@ -70,7 +70,6 @@ class MysiantvPlugin : MainAPI() {
         return document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
     }
 
-    // ==================== EKSTRAKSI VIDEO ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -189,7 +188,6 @@ class MysiantvPlugin : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (AUTOMATIC TEMP-CLOUD PROXY VIA CATBOX) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -216,7 +214,6 @@ class MysiantvPlugin : MainAPI() {
                                     val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
                                     
                                     val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
-                                    
                                     uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
                                 } catch (e: Exception) {
                                     e.printStackTrace()
@@ -234,7 +231,6 @@ class MysiantvPlugin : MainAPI() {
                     }
                 }
 
-                // ---- VIDEO ----
                 val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
                 val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
 
@@ -267,7 +263,6 @@ class MysiantvPlugin : MainAPI() {
             e.printStackTrace()
         }
 
-        // ---- JSON API FALLBACK ----
         try {
             val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
             val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
@@ -338,7 +333,6 @@ class MysiantvPlugin : MainAPI() {
         }
     }
 
-    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
