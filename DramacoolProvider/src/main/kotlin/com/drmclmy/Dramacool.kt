@@ -102,8 +102,19 @@ class Dramacool : MainAPI() {
         return urls.distinct()
     }
 
-    // AES Decrypt untuk VidBasic
+    // ===== FUNGSI BASE64 LENIENT (fallback jika MimeDecoder masih gagal) =====
+    private fun decodeBase64Lenient(input: String): ByteArray {
+        var base64 = input.trim().replace(Regex("\\s+"), "")
+        // Tambahkan padding '=' jika panjangnya bukan kelipatan 4
+        while (base64.length % 4 != 0) {
+            base64 += "="
+        }
+        return Base64.getMimeDecoder().decode(base64) // tetap pakai MimeDecoder untuk toleransi spasi
+    }
+
+    // AES Decrypt untuk VidBasic (dengan logging)
     private fun decryptVidBasic(encrypted: String): String {
+        println("[VidBasic] decryptVidBasic input length: ${encrypted.length}, first 20 chars: ${encrypted.take(20)}")
         val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
         val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
 
@@ -113,40 +124,62 @@ class Dramacool : MainAPI() {
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
 
-        // Bersihkan spasi atau karakter newline ekstra sebelum decode Base64
+        // Bersihkan spasi atau karakter newline ekstra
         val cleanEncrypted = encrypted.trim().replace(Regex("\\s+"), "")
-        val decoded = Base64.getDecoder().decode(cleanEncrypted)
+        println("[VidBasic] cleanEncrypted length: ${cleanEncrypted.length}")
+
+        // Gunakan MimeDecoder (toleran spasi dan padding opsional)
+        val decoded = try {
+            Base64.getMimeDecoder().decode(cleanEncrypted)
+        } catch (e: IllegalArgumentException) {
+            println("[VidBasic] MimeDecoder gagal, mencoba lenient fallback...")
+            decodeBase64Lenient(cleanEncrypted)
+        }
+        println("[VidBasic] Base64 decoded length: ${decoded.size} bytes")
+
         val decrypted = cipher.doFinal(decoded)
-        return String(decrypted, Charsets.UTF_8)
+        val result = String(decrypted, Charsets.UTF_8)
+        println("[VidBasic] Decrypted result: ${result.take(100)}...")
+        return result
     }
 
-    // Perbaikan Dekripsi Subtitle baris per baris merujuk logika python `vb_subs`[span_1](start_span)[span_1](end_span)
+    // Dekripsi subtitle baris per baris (dengan logging)
     private fun decryptVidBasicSubtitle(vttContent: String): String {
+        println("[VidBasic] decryptVidBasicSubtitle input lines: ${vttContent.lines().size}")
         val patterns = listOf(
             Regex("""^WEBVTT"""),
             Regex("""^\d+$"""),
             Regex("""^\d{2}:\d{2}:\d{2}""")
         )
-        return vttContent.lines().map { line ->
+        val result = vttContent.lines().mapIndexed { index, line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
                 line
             } else {
                 try {
-                    decryptVidBasic(trimmed)
+                    val decrypted = decryptVidBasic(trimmed)
+                    println("[VidBasic] Decrypted line $index successfully: ${decrypted.take(30)}")
+                    decrypted
                 } catch (e: Exception) {
-                    line
+                    println("[VidBasic] Failed to decrypt line $index: ${e.message}")
+                    line // fallback ke baris asli
                 }
             }
         }.joinToString("\n")
+        println("[VidBasic] Subtitle final length: ${result.length}")
+        return result
     }
 
-    // Proses VidBasic: AES Decrypt + Subtitle + API JSON
+    // Proses VidBasic dengan logging lengkap dan dummy subtitle
     private suspend fun processVidBasic(
         embedUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val log = StringBuilder()
+        log.append("=== VidBasic Debug Log ===\n")
+        log.append("Timestamp: ${System.currentTimeMillis()}\n")
+        log.append("Embed URL: $embedUrl\n")
         var anySuccess = false
 
         try {
@@ -156,17 +189,24 @@ class Dramacool : MainAPI() {
                 "Referer" to "https://$host/",
                 "Origin" to "https://$host"
             )
+            log.append("Host: $host\n")
+            log.append("Headers: $headersMap\n")
 
             val response = app.get(embedUrl, headers = headersMap)
             val html = response.text
+            log.append("Fetched embed page, length: ${html.length}\n")
+            log.append("First 500 chars of HTML: ${html.take(500)}\n")
 
+            // Cari data-video
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
             var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
+            log.append("dataVideo from regex: $dataVideo\n")
             
             if (dataVideo.isNullOrEmpty()) {
                 val doc = org.jsoup.Jsoup.parse(html)
                 dataVideo = doc.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
                     ?: doc.selectFirst("[data-video]")?.attr("data-video")
+                log.append("dataVideo from JSoup: $dataVideo\n")
             }
 
             if (!dataVideo.isNullOrEmpty()) {
@@ -175,77 +215,138 @@ class Dramacool : MainAPI() {
                     dataVideo.startsWith("//") -> "https:$dataVideo"
                     else -> "https://$host$dataVideo"
                 }
+                log.append("Full video URL: $fullUrl\n")
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
+                log.append("Video page length: ${html2.length}\n")
+                log.append("First 500 chars of video page: ${html2.take(500)}\n")
 
-                // Ekstraksi Subtitle (VTT)
+                // ===== SUBTITLE =====
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
-                
+                log.append("subParam found: $subParam\n")
+
                 if (!subParam.isNullOrEmpty()) {
                     try {
-                        val decryptedSubUrl = decryptVidBasic(URLDecoder.decode(subParam, "UTF-8"))
+                        val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
+                        log.append("Decoded subParam: $decodedSubParam\n")
+                        log.append("Decoded subParam length: ${decodedSubParam.length}\n")
+                        
+                        val decryptedSubUrl = decryptVidBasic(decodedSubParam)
+                        log.append("Decrypted sub URL: $decryptedSubUrl\n")
+                        
                         if (decryptedSubUrl.startsWith("http")) {
+                            log.append("Fetching encrypted VTT from: $decryptedSubUrl\n")
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
+                            log.append("Encrypted VTT length: ${encryptedVtt.length}\n")
+                            log.append("First 200 chars of encrypted VTT: ${encryptedVtt.take(200)}\n")
+                            
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
+                            log.append("Decrypted VTT length: ${decryptedVtt.length}\n")
+                            log.append("First 200 chars of decrypted VTT: ${decryptedVtt.take(200)}\n")
                             
                             val vttBase64 = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
                             val vttDataUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                            log.append("Subtitle data URL length: ${vttDataUrl.length}\n")
                             
                             subtitleCallback.invoke(SubtitleFile("English (VidBasic)", vttDataUrl))
+                            log.append("✅ Subtitle added successfully\n")
+                        } else {
+                            log.append("❌ Decrypted sub URL is not HTTP: $decryptedSubUrl\n")
                         }
-                    } catch (e: Exception) { e.printStackTrace() }
+                    } catch (e: Exception) {
+                        log.append("❌ Subtitle processing error: ${e.message}\n")
+                        log.append("Stack trace: ${e.stackTraceToString()}\n")
+                    }
+                } else {
+                    log.append("ℹ️ No sub parameter found in URL\n")
                 }
 
-                // Ekstraksi Video URL
+                // ===== VIDEO =====
                 val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
                 val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
+                log.append("Encrypted video data: ${encrypted?.take(50)}...\n")
 
                 if (!encrypted.isNullOrEmpty()) {
-                    val decrypted = decryptVidBasic(encrypted)
+                    try {
+                        val decrypted = decryptVidBasic(encrypted)
+                        log.append("Decrypted video URL: $decrypted\n")
 
-                    if (decrypted.startsWith("http")) {
-                        val isM3u8 = decrypted.contains(".m3u8")
-                        callback(
-                            newExtractorLink(
-                                name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
-                                source = name,
-                                url = decrypted,
-                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                            ) {
-                                this.referer = fullUrl
-                                this.quality = 0
-                                this.headers = headersMap
-                            }
-                        )
-                        anySuccess = true
+                        if (decrypted.startsWith("http")) {
+                            val isM3u8 = decrypted.contains(".m3u8")
+                            callback(
+                                newExtractorLink(
+                                    name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
+                                    source = name,
+                                    url = decrypted,
+                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                ) {
+                                    this.referer = fullUrl
+                                    this.quality = 0
+                                    this.headers = headersMap
+                                }
+                            )
+                            anySuccess = true
+                            log.append("✅ Video link added successfully\n")
+                        } else {
+                            log.append("❌ Decrypted video is not HTTP: $decrypted\n")
+                        }
+                    } catch (e: Exception) {
+                        log.append("❌ Video decryption error: ${e.message}\n")
+                        log.append("Stack trace: ${e.stackTraceToString()}\n")
                     }
+                } else {
+                    log.append("ℹ️ No crypto data found in video page\n")
                 }
+            } else {
+                log.append("❌ dataVideo not found in any form\n")
             }
-        } catch (e: Exception) { e.printStackTrace() }
+        } catch (e: Exception) {
+            log.append("❌ Exception in main process: ${e.message}\n")
+            log.append("Stack trace: ${e.stackTraceToString()}\n")
+        }
 
-        // ===== 2. API JSON =====
+        // ===== JSON API FALLBACK =====
         try {
             val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
+            log.append("Trying JSON API: $apiUrl\n")
             val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
             val jsonText = response.text
+            log.append("JSON response length: ${jsonText.length}\n")
+            
             val json = JSONObject(jsonText)
-
-            val allKeys = json.keys().asSequence().toList()
-            for (key in allKeys) {
+            val keys = json.keys().asSequence().toList()
+            log.append("JSON keys: $keys\n")
+            
+            for (key in keys) {
                 val value = json.optString(key, null)
                 if (!value.isNullOrEmpty() && (value.startsWith("http") || value.startsWith("//"))) {
                     val fixedLink = fixUrlScheme(value)
+                    log.append("Loading extractor for: $fixedLink\n")
                     val result = loadExtractor(fixedLink, subtitleCallback, callback)
-                    if (result) anySuccess = true
+                    if (result) {
+                        anySuccess = true
+                        log.append("✅ JSON extractor succeeded for $fixedLink\n")
+                    }
                 }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            log.append("❌ JSON API error: ${e.message}\n")
+        }
+
+        log.append("=== Final result: $anySuccess ===\n")
+        log.append("=== End of debug log ===\n")
+        
+        // Kirim dummy subtitle berisi log lengkap
+        val logDataUrl = "data:text/vtt;charset=utf-8;base64," +
+                Base64.getEncoder().encodeToString(log.toString().toByteArray(Charsets.UTF_8))
+        subtitleCallback.invoke(SubtitleFile("VidBasic Debug", logDataUrl))
 
         return anySuccess
     }
 
+    // ==================== LOAD ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -296,7 +397,7 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // ==================== loadLinks ====================
+    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -311,21 +412,25 @@ class Dramacool : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
+        // Ekstrak semua URL dari iframe
         doc.select("iframe").forEach { iframe ->
             val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(fixUrlScheme(src))
         }
 
+        // Ekstrak dari video tag
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(fixUrlScheme(src))
         }
 
+        // Ekstrak dari data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(fixUrlScheme(video))
         }
 
+        // Ekstrak dari script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -351,6 +456,7 @@ class Dramacool : MainAPI() {
             }
         }
 
+        // Ekstrak langsung dari HTML
         extractVideoUrls(html).forEach { url -> allUrls.add(fixUrlScheme(url)) }
 
         var linkFound = false
@@ -359,17 +465,20 @@ class Dramacool : MainAPI() {
             val cleanUrl = fixUrlScheme(rawUrl)
             if (!cleanUrl.startsWith("http")) continue
 
+            // Proses VidBasic
             if (cleanUrl.contains("vidbasic.top") || cleanUrl.contains("vidb.top")) {
                 val result = processVidBasic(cleanUrl, subtitleCallback, callback)
                 if (result) linkFound = true
                 continue
             }
 
+            // Coba extractor lain
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
+            // Direct link
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
