@@ -6,9 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.net.URLDecoder
@@ -16,6 +13,7 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -155,141 +153,6 @@ class Dramacool : MainAPI() {
         }.joinToString("\n")
     }
 
-    // ==================== LOG DEBUG KE PLOT 1 EPISODE ====================
-    private suspend fun getEpisodeDebugLog(episodeUrl: String): String {
-        val log = StringBuilder()
-        log.append("🔍 LOG SUBTITLE VIDBASIC\n")
-        try {
-            val docRes = app.get(episodeUrl, headers = mapOf("User-Agent" to userAgent))
-            val doc = docRes.document
-
-            var embedUrl = ""
-            doc.select("iframe").forEach { iframe ->
-                val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
-                if (src.contains("vidbasic.top") || src.contains("vidb.top")) {
-                    embedUrl = fixUrlScheme(src)
-                }
-            }
-
-            if (embedUrl.isEmpty()) {
-                return log.append("❌ Iframe VidBasic tidak ditemukan.").toString()
-            }
-            log.append("🔗 Embed: $embedUrl\n")
-
-            val host = java.net.URL(embedUrl).host
-            val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/")
-            
-            val html = app.get(embedUrl, headers = headersMap).text
-            var dataVideo = Regex("""data-video="([^"]+)">Standard""").find(html)?.groupValues?.get(1)
-            
-            if (dataVideo.isNullOrEmpty()) {
-                val parsed = org.jsoup.Jsoup.parse(html)
-                dataVideo = parsed.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
-                    ?: parsed.selectFirst("[data-video]")?.attr("data-video")
-            }
-
-            if (dataVideo.isNullOrEmpty()) return log.append("❌ data-video tidak ditemukan.\n").toString()
-            
-            val fullUrl = when {
-                dataVideo.startsWith("http") -> dataVideo
-                dataVideo.startsWith("//") -> "https:$dataVideo"
-                else -> "https://$host$dataVideo"
-            }
-            
-            val subParam = Regex("""[\?&]sub=([^&"'>]+)""").find(fullUrl)?.groupValues?.get(1)
-            if (subParam.isNullOrEmpty()) return log.append("❌ subParam (URL Subtitle) tidak ditemukan.\n").toString()
-            
-            val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
-            val decryptedSubUrl = decryptVidBasic(decodedSubParam)
-            log.append("🔓 Sub URL: $decryptedSubUrl\n")
-
-            if (!decryptedSubUrl.startsWith("http")) return log.append("❌ Sub URL bukan HTTP valid.\n").toString()
-
-            val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-            log.append("📦 VTT Terenkripsi (Size: ${encryptedVtt.length})\n")
-
-            val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
-            var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
-            if (cleanVtt.startsWith("WEBVTT")) {
-                cleanVtt = cleanVtt.substring(6).trim()
-            }
-            val finalVtt = "WEBVTT\n\n$cleanVtt"
-            
-            log.append("✅ VTT Berhasil Didekripsi!\n")
-            log.append("\n📄 PREVIEW VTT (100 Char):\n")
-            log.append(finalVtt.take(100).replace("\n", "\\n"))
-            
-        } catch (e: Exception) {
-            log.append("❌ Error: ${e.message}\n")
-        }
-        return log.toString()
-    }
-
-    // ==================== LOAD ====================
-    override suspend fun load(url: String): LoadResponse? {
-        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-
-        val title = document.selectFirst(".details .info h1")?.text()?.trim()
-            ?: document.selectFirst("h1")?.text()?.trim()
-            ?: return null
-
-        val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
-            ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
-
-        val description = document.select(".details .info p").mapNotNull { p ->
-            if (p.select("span").isEmpty() && p.text().length > 50) {
-                p.text().trim()
-            } else null
-        }.joinToString("\n\n").ifEmpty {
-            document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
-        }
-
-        val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
-        val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
-
-        val episodes = episodeItems.mapNotNull { el ->
-            val titleText = el.selectFirst("h3.title")?.text()?.trim() ?: return@mapNotNull null
-            val link = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-            
-            val epMatch = episodeRegex.find(titleText)
-            val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
-
-            Triple(titleText, link, epNum)
-        }.sortedByDescending { it.third ?: 0 }
-
-        // Mengambil log debug HANYA PADA EPISODE PERTAMA (index 0)
-        val finalEpisodes = coroutineScope {
-            episodes.mapIndexed { index, (titleText, link, epNum) ->
-                async {
-                    val episodeDescription = if (index == 0) {
-                        getEpisodeDebugLog(link)
-                    } else {
-                        "Episode $epNum"
-                    }
-                    
-                    newEpisode(titleText) {
-                        this.data = link
-                        this.episode = epNum
-                        this.description = episodeDescription
-                    }
-                }
-            }.awaitAll()
-        }
-
-        if (finalEpisodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.Movie, url) {
-                this.posterUrl = posterUrl
-                this.plot = description
-            }
-        }
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, finalEpisodes) {
-            this.posterUrl = posterUrl
-            this.plot = description
-        }
-    }
-
-    // ==================== LOAD LINKS ====================
     private suspend fun processVidBasic(
         embedUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
@@ -326,7 +189,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE ----
+                // ---- SUBTITLE (FILE CACHE METHOD) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -346,10 +209,16 @@ class Dramacool : MainAPI() {
                             }
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
-                            val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                            val dataUri = "data:text/vtt;filename=sub.vtt;base64,$vttBase64"
-                            
-                            subtitleCallback.invoke(SubtitleFile("English (VidBasic)", dataUri))
+                            if (finalVtt.isNotBlank()) {
+                                // Menyimpan subtitle hasil dekripsi ke sistem cache Android
+                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
+                                subFile.writeText(finalVtt)
+                                subFile.setReadable(true, false)
+                                subFile.deleteOnExit() // Membersihkan file saat aplikasi ditutup
+                                val fileUri = "file://${subFile.absolutePath}"
+                                
+                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
+                            }
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
@@ -413,6 +282,55 @@ class Dramacool : MainAPI() {
         return anySuccess
     }
 
+    // ==================== LOAD ====================
+    override suspend fun load(url: String): LoadResponse? {
+        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
+
+        val title = document.selectFirst(".details .info h1")?.text()?.trim()
+            ?: document.selectFirst("h1")?.text()?.trim()
+            ?: return null
+
+        val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
+            ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
+
+        val description = document.select(".details .info p").mapNotNull { p ->
+            if (p.select("span").isEmpty() && p.text().length > 50) {
+                p.text().trim()
+            } else null
+        }.joinToString("\n\n").ifEmpty {
+            document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
+        }
+
+        val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
+        val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
+
+        val episodes = episodeItems.mapNotNull { el ->
+            val titleText = el.selectFirst("h3.title")?.text()?.trim() ?: return@mapNotNull null
+            val link = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
+            
+            val epMatch = episodeRegex.find(titleText)
+            val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
+
+            newEpisode(titleText) {
+                this.data = link
+                this.episode = epNum
+            }
+        }.sortedByDescending { it.episode ?: 0 } // Memastikan episode diurutkan dengan benar
+
+        if (episodes.isEmpty()) {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+                this.posterUrl = posterUrl
+                this.plot = description
+            }
+        }
+
+        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            this.posterUrl = posterUrl
+            this.plot = description
+        }
+    }
+
+    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
