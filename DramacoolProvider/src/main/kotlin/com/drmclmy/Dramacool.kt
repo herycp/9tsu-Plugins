@@ -15,6 +15,12 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.io.File
 
+// ========== DEBUG STORE ==========
+object DebugStore {
+    var lastLog: String = ""
+    var lastSubtitleContent: String = ""
+}
+
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
     override var lang = "en"
@@ -169,8 +175,7 @@ class Dramacool : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val log = StringBuilder()
-        log.append("WEBVTT\n\n")
-        log.append("=== VidBasic Debug Log ===\n")
+        log.append("=== VIDBASIC DEBUG LOG ===\n")
         log.append("Timestamp: ${System.currentTimeMillis()}\n")
         log.append("Embed URL: $embedUrl\n\n")
         var anySuccess = false
@@ -223,31 +228,37 @@ class Dramacool : MainAPI() {
                     try {
                         val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
                         log.append("Decoded subParam: $decodedSubParam\n")
-                        log.append("Decoded subParam length: ${decodedSubParam.length}\n")
-                        
                         val decryptedSubUrl = decryptVidBasic(decodedSubParam)
                         log.append("Decrypted sub URL: $decryptedSubUrl\n")
-                        
                         if (decryptedSubUrl.startsWith("http")) {
                             log.append("Fetching encrypted VTT from: $decryptedSubUrl\n")
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
                             log.append("Encrypted VTT length: ${encryptedVtt.length}\n")
-                            log.append("First 200 chars of encrypted VTT:\n${encryptedVtt.take(200)}\n")
                             
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             log.append("Decrypted VTT length: ${decryptedVtt.length}\n")
-                            log.append("First 200 chars of decrypted VTT:\n${decryptedVtt.take(200)}\n")
-                            
-                            if (decryptedVtt.isNotBlank() && decryptedVtt.contains("WEBVTT")) {
-                                // Simpan subtitle asli ke file sementara
-                                val tempSubFile = File.createTempFile("subtitle_vidbasic", ".vtt")
-                                tempSubFile.writeText(decryptedVtt)
-                                val fileUri = "file://${tempSubFile.absolutePath}"
+
+                            // Normalisasi newline
+                            val normalizedVtt = decryptedVtt
+                                .replace("\r\n", "\n")
+                                .replace("\r", "\n")
+                                .trim()
+                            log.append("Normalized VTT (first 300 chars):\n${normalizedVtt.take(300)}\n")
+
+                            if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
+                                // Simpan ke file sementara
+                                val cacheDir = app.context?.cacheDir ?: File.createTempFile("temp", "").parentFile ?: File("/tmp")
+                                val subFile = File(cacheDir, "sub_${System.currentTimeMillis()}.vtt")
+                                subFile.writeText(normalizedVtt)
+                                val fileUri = "file://${subFile.absolutePath}"
                                 log.append("Subtitle saved to: $fileUri\n")
+                                log.append("File size: ${subFile.length()} bytes\n")
+
                                 subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
-                                log.append("✅ Subtitle added successfully\n")
+                                log.append("✅ Subtitle callback invoked\n")
                             } else {
-                                log.append("❌ Decrypted VTT is empty or invalid (does not contain WEBVTT)\n")
+                                log.append("❌ Decrypted VTT does not start with WEBVTT\n")
+                                log.append("First 200 chars: ${normalizedVtt.take(200)}\n")
                             }
                         } else {
                             log.append("❌ Decrypted sub URL is not HTTP: $decryptedSubUrl\n")
@@ -257,7 +268,7 @@ class Dramacool : MainAPI() {
                         log.append("Stack trace:\n${e.stackTraceToString()}\n")
                     }
                 } else {
-                    log.append("ℹ️ No sub parameter found in URL\n")
+                    log.append("ℹ️ No sub parameter found\n")
                 }
 
                 // ---- VIDEO ----
@@ -294,10 +305,10 @@ class Dramacool : MainAPI() {
                         log.append("Stack trace:\n${e.stackTraceToString()}\n")
                     }
                 } else {
-                    log.append("ℹ️ No crypto data found in video page\n")
+                    log.append("ℹ️ No crypto data found\n")
                 }
             } else {
-                log.append("❌ dataVideo not found in any form\n")
+                log.append("❌ dataVideo not found\n")
             }
         } catch (e: Exception) {
             log.append("❌ Exception in main process: ${e.message}\n")
@@ -333,22 +344,22 @@ class Dramacool : MainAPI() {
         }
 
         log.append("\n=== Final result: $anySuccess ===\n")
-        log.append("=== End of debug log ===\n")
-        
-        // Simpan log debug ke file sementara
+
+        // Simpan log ke DebugStore agar muncul di plot episode
+        DebugStore.lastLog = log.toString()
+
+        // Kirim subtitle debug
         val finalLog = log.toString()
         try {
-            val debugFile = File.createTempFile("subtitle_debug", ".vtt")
+            val debugFile = File.createTempFile("sub_debug", ".vtt")
             debugFile.writeText(finalLog)
             val debugUri = "file://${debugFile.absolutePath}"
-            println("[VidBasic] Debug subtitle saved to: $debugUri")
             subtitleCallback.invoke(SubtitleFile("VidBasic Debug", debugUri))
         } catch (e: Exception) {
-            println("[VidBasic] Failed to write debug subtitle: ${e.message}")
-            // Fallback ke data URI jika file gagal
+            // Fallback ke data URI
             val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
-            val logDataUrl = "data:application/octet-stream;charset=utf-8;base64,$logBase64"
-            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", logDataUrl))
+            val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
+            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", dataUri))
         }
 
         return anySuccess
@@ -365,12 +376,19 @@ class Dramacool : MainAPI() {
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        val description = document.select(".details .info p").mapNotNull { p ->
+        var description = document.select(".details .info p").mapNotNull { p ->
             if (p.select("span").isEmpty() && p.text().length > 50) {
                 p.text().trim()
             } else null
         }.joinToString("\n\n").ifEmpty {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
+        }
+
+        // Tambahkan log debug ke description jika ada
+        if (DebugStore.lastLog.isNotBlank()) {
+            val logLines = DebugStore.lastLog.split("\n")
+            val first5 = logLines.take(5).joinToString("\n")
+            description = (description ?: "") + "\n\n--- DEBUG (first 5 lines) ---\n$first5"
         }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
