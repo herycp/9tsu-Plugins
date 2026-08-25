@@ -252,8 +252,7 @@ class Dramacool : MainAPI() {
                                 // === 2. Fallback: Simpan ke file lokal ===
                                 if (subtitleUrl.isBlank()) {
                                     try {
-                                        val cacheDir = app.context?.cacheDir ?: File.createTempFile("", "").parentFile
-                                        val subFile = File(cacheDir, "sub_${System.currentTimeMillis()}.vtt")
+                                        val subFile = File.createTempFile("sub_", ".vtt")
                                         subFile.writeText(finalVtt)
                                         subFile.setReadable(true, false)
                                         subtitleUrl = "file://${subFile.absolutePath}"
