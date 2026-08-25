@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.extractors.helper.JwPlayerHelper
 import org.jsoup.nodes.Element
 
 class MyAsianTv : MainAPI() {
@@ -295,88 +296,43 @@ class MyAsianTv : MainAPI() {
         return anySuccess
     }
 
-    // ==================== VIDMOLY EXTRACTOR (MANUAL) ====================
+    // ==================== VIDMOLY EXTRACTOR (MANUAL & JWPLAYER) ====================
     private suspend fun extractVidMoly(
         url: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
-            val doc = app.get(url, headers = defaultHeaders).document
-            val scripts = doc.select("script")
-            var videoUrl: String? = null
-            var foundVideo = false
+            val headers = mapOf(
+                "user-agent" to userAgent,
+                "Sec-Fetch-Dest" to "iframe"
+            )
 
-            for (script in scripts) {
-                val html = script.html()
+            // 1. Format URL sesuai dengan standar ekstraktor official Vidmoly
+            val newUrl = if (url.contains("/w/")) 
+                url.replaceFirst("/w/", "/embed-") + ".html" 
+            else url
 
-                // 1. Ekstrak URL Video
-                if (videoUrl == null) {
-                    val patterns = listOf(
-                        Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                        Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                        Regex(""""hls"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                        Regex(""""videoUrl"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                        Regex(""""url"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
-                        Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
-                        Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
-                    )
-                    for (pattern in patterns) {
-                        val match = pattern.find(html)
-                        if (match != null) {
-                            videoUrl = match.groupValues[1]
-                            break
-                        }
-                    }
-                }
+            val doc = app.get(newUrl, headers = headers, referer = mainUrl).document
 
-                // 2. Ekstrak Soft Subtitle dari array 'tracks'
-                val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
-                if (tracksMatch != null) {
-                    val tracksHtml = tracksMatch.groupValues[1]
-                    // Ambil setiap objek di dalam array tracks
-                    val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
-                    
-                    for (track in individualTracks) {
-                        val trackData = track.groupValues[1]
-                        
-                        val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
-                        val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
-                        val kindMatch = Regex("""["']?kind["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+            // 2. Ambil isi dari tag script yang memuat konfigurasi 'sources:'
+            val scriptData = doc.select("script")
+                .firstOrNull { it.data().contains("sources:") }
+                ?.data()
 
-                        val file = fileMatch?.groupValues?.get(1)
-                        val label = labelMatch?.groupValues?.get(1) ?: "Subtitle"
-                        val kind = kindMatch?.groupValues?.get(1)
-
-                        // Abaikan track berupa 'thumbnails' (file .jpg atau .png)
-                        if (file != null && kind != "thumbnails" && !file.contains(".jpg") && !file.contains(".png")) {
-                            subtitleCallback.invoke(
-                                SubtitleFile(
-                                    lang = label,
-                                    url = file
-                                )
-                            )
-                        }
-                    }
-                }
-            }
-
-            if (videoUrl != null) {
-                val isM3u8 = videoUrl.contains(".m3u8")
-                callback.invoke(
-                    newExtractorLink(
-                        name = "VidMoly",
-                        source = name,
-                        url = videoUrl,
-                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                    )
+            if (!scriptData.isNullOrBlank()) {
+                // 3. Gunakan Helper bawaan Cloudstream yang otomatis mem-parsing subtitle dan stream
+                JwPlayerHelper.extractStreamLinks(
+                    scriptData,
+                    "VidMoly",
+                    newUrl,
+                    callback,
+                    subtitleCallback
                 )
-                foundVideo = true
+                return true
             }
 
-            if (foundVideo) return true
-
-            // Fallback iframe jika tidak ditemukan script langsung
+            // Fallback iframe jika tidak ditemukan script JWPlayer secara langsung
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
                 val src = iframe.attr("src")
