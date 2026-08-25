@@ -15,6 +15,7 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -235,7 +236,7 @@ class Dramacool : MainAPI() {
                                     """.trimIndent().replace("\n", "\r\n")
 
                                     val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
-                                    val uploadResponse = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
+                                    val uploadResponse = app.post("https://catbox.moe/user/api.php", requestBody = req).text.trim()
                                     println("[VidBasic] Catbox response: $uploadResponse")
 
                                     if (uploadResponse.startsWith("http")) {
@@ -248,17 +249,28 @@ class Dramacool : MainAPI() {
                                     println("[VidBasic] Catbox upload error: ${e.message}")
                                 }
 
-                                // === 2. Jika upload gagal, gunakan data URI ===
+                                // === 2. Fallback: Simpan ke file lokal ===
                                 if (subtitleUrl.isBlank()) {
-                                    val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                    subtitleUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
-                                    println("[VidBasic] Using data URI (length: ${subtitleUrl.length})")
+                                    try {
+                                        val cacheDir = app.context?.cacheDir ?: File.createTempFile("", "").parentFile
+                                        val subFile = File(cacheDir, "sub_${System.currentTimeMillis()}.vtt")
+                                        subFile.writeText(finalVtt)
+                                        subFile.setReadable(true, false)
+                                        subtitleUrl = "file://${subFile.absolutePath}"
+                                        println("[VidBasic] Subtitle saved to local file: $subtitleUrl")
+                                    } catch (e: Exception) {
+                                        println("[VidBasic] Local file save error: ${e.message}")
+                                        // === 3. Fallback terakhir: data URI ===
+                                        val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                        subtitleUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                                        println("[VidBasic] Using data URI (length: ${subtitleUrl.length})")
+                                    }
                                 }
 
-                                // === 3. Kirim subtitle ===
+                                // === Kirim subtitle ===
                                 if (subtitleUrl.isNotBlank()) {
                                     subtitleCallback.invoke(newSubtitleFile("en", subtitleUrl))
-                                    println("[VidBasic] Subtitle sent via ${if (subtitleUrl.startsWith("data")) "data URI" else "Catbox"}")
+                                    println("[VidBasic] Subtitle sent via ${subtitleUrl.take(20)}...")
                                 }
                             }
                         }
