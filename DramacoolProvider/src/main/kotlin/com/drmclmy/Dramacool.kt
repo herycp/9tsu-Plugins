@@ -66,7 +66,6 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // Paging: Halaman 1 tanpa parameter page, Halaman 2+ dengan &page=N
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim().replace(" ", "+")
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -352,7 +351,7 @@ class Dramacool : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // Rekomendasi/Related Series dari tags dengan paging ?page=1
+        // Mengambil SEMUA tag di dalam div.tags (kecuali drama & kdrama)
         val recommendations = mutableListOf<SearchResponse>()
         val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
         
@@ -367,7 +366,6 @@ class Dramacool : MainAPI() {
                     val items = tagDoc.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
                     recommendations.addAll(items)
                 } catch (e: Exception) {}
-                break
             }
         }
         val finalRecommendations = recommendations.filter { it.url != url }.distinctBy { it.url }
