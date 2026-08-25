@@ -15,12 +15,6 @@ import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.io.File
 
-// ========== DEBUG STORE ==========
-object DebugStore {
-    var lastLog: String = ""
-    var lastSubtitleContent: String = ""
-}
-
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
     override var lang = "en"
@@ -169,16 +163,21 @@ class Dramacool : MainAPI() {
         return result
     }
 
+    // Variabel untuk menyimpan subtitle 5 baris pertama (untuk ditampilkan di plot)
+    private var subtitlePreview = ""
+
     private suspend fun processVidBasic(
         embedUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val log = StringBuilder()
-        log.append("=== VIDBASIC DEBUG LOG ===\n")
+        log.append("WEBVTT\n\n")
+        log.append("=== VidBasic Debug Log ===\n")
         log.append("Timestamp: ${System.currentTimeMillis()}\n")
         log.append("Embed URL: $embedUrl\n\n")
         var anySuccess = false
+        subtitlePreview = ""
 
         try {
             val host = java.net.URL(embedUrl).host
@@ -238,17 +237,21 @@ class Dramacool : MainAPI() {
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             log.append("Decrypted VTT length: ${decryptedVtt.length}\n")
 
-                            // Normalisasi newline
+                            // Normalisasi
                             val normalizedVtt = decryptedVtt
                                 .replace("\r\n", "\n")
                                 .replace("\r", "\n")
                                 .trim()
-                            log.append("Normalized VTT (first 300 chars):\n${normalizedVtt.take(300)}\n")
+                            log.append("Normalized VTT (first 500 chars):\n${normalizedVtt.take(500)}\n")
+
+                            // Simpan 5 baris pertama subtitle untuk ditampilkan di plot
+                            val lines = normalizedVtt.lines()
+                            subtitlePreview = lines.take(5).joinToString("\n")
+                            log.append("Subtitle preview (5 lines):\n$subtitlePreview\n")
 
                             if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
                                 // Simpan ke file sementara
-                                val cacheDir = app.context?.cacheDir ?: File.createTempFile("temp", "").parentFile ?: File("/tmp")
-                                val subFile = File(cacheDir, "sub_${System.currentTimeMillis()}.vtt")
+                                val subFile = File.createTempFile("sub_vidbasic", ".vtt")
                                 subFile.writeText(normalizedVtt)
                                 val fileUri = "file://${subFile.absolutePath}"
                                 log.append("Subtitle saved to: $fileUri\n")
@@ -258,7 +261,6 @@ class Dramacool : MainAPI() {
                                 log.append("✅ Subtitle callback invoked\n")
                             } else {
                                 log.append("❌ Decrypted VTT does not start with WEBVTT\n")
-                                log.append("First 200 chars: ${normalizedVtt.take(200)}\n")
                             }
                         } else {
                             log.append("❌ Decrypted sub URL is not HTTP: $decryptedSubUrl\n")
@@ -344,9 +346,7 @@ class Dramacool : MainAPI() {
         }
 
         log.append("\n=== Final result: $anySuccess ===\n")
-
-        // Simpan log ke DebugStore agar muncul di plot episode
-        DebugStore.lastLog = log.toString()
+        log.append("=== End of debug log ===\n")
 
         // Kirim subtitle debug
         val finalLog = log.toString()
@@ -384,11 +384,9 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        // Tambahkan log debug ke description jika ada
-        if (DebugStore.lastLog.isNotBlank()) {
-            val logLines = DebugStore.lastLog.split("\n")
-            val first5 = logLines.take(5).joinToString("\n")
-            description = (description ?: "") + "\n\n--- DEBUG (first 5 lines) ---\n$first5"
+        // Tambahkan preview subtitle ke description jika ada
+        if (subtitlePreview.isNotBlank()) {
+            description = (description ?: "") + "\n\n--- Subtitle Preview (5 lines) ---\n$subtitlePreview"
         }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
