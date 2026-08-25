@@ -113,12 +113,14 @@ class Dramacool : MainAPI() {
 
         cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
 
-        val decoded = Base64.getDecoder().decode(encrypted.trim())
+        // Bersihkan spasi atau karakter newline ekstra sebelum decode Base64
+        val cleanEncrypted = encrypted.trim().replace(Regex("\\s+"), "")
+        val decoded = Base64.getDecoder().decode(cleanEncrypted)
         val decrypted = cipher.doFinal(decoded)
         return String(decrypted, Charsets.UTF_8)
     }
 
-    // Ekstraksi & Dekripsi Subtitle baris per baris yang lebih aman terhadap spasi/baris kosong
+    // Perbaikan Dekripsi Subtitle baris per baris merujuk logika python `vb_subs`[span_1](start_span)[span_1](end_span)
     private fun decryptVidBasicSubtitle(vttContent: String): String {
         val patterns = listOf(
             Regex("""^WEBVTT"""),
@@ -128,12 +130,12 @@ class Dramacool : MainAPI() {
         return vttContent.lines().map { line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
-                line // Kembalikan string utuh untuk menjaga format struktur asli VTT
+                line
             } else {
                 try {
                     decryptVidBasic(trimmed)
                 } catch (e: Exception) {
-                    line // Gunakan nilai asli bila gagal dekripsi alih-alih melempar error
+                    line
                 }
             }
         }.joinToString("\n")
@@ -147,7 +149,6 @@ class Dramacool : MainAPI() {
     ): Boolean {
         var anySuccess = false
 
-        // ===== 1. AES DECRYPT =====
         try {
             val host = java.net.URL(embedUrl).host
             val headersMap = mapOf(
@@ -177,22 +178,20 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // Ekstraksi Subtitle (VTT) dari fullUrl atau embedUrl
+                // Ekstraksi Subtitle (VTT)
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
                 
                 if (!subParam.isNullOrEmpty()) {
                     try {
-                        val subUrl = decryptVidBasic(URLDecoder.decode(subParam, "UTF-8"))
-                        if (subUrl.startsWith("http")) {
-                            val encryptedVtt = app.get(subUrl, headers = headersMap).text
+                        val decryptedSubUrl = decryptVidBasic(URLDecoder.decode(subParam, "UTF-8"))
+                        if (decryptedSubUrl.startsWith("http")) {
+                            val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             
                             val vttBase64 = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
-                            
-                            // Trik menambahkan "#sub.vtt" agar pendeteksi Cloudstream / ExoPlayer menyetujui format URL ini
-                            val vttDataUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64#sub.vtt"
+                            val vttDataUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
                             
                             subtitleCallback.invoke(SubtitleFile("English (VidBasic)", vttDataUrl))
                         }
