@@ -1,5 +1,6 @@
 package com.drmclmy
 
+import android.net.Uri
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -8,6 +9,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import org.jsoup.nodes.Element
 import org.json.JSONObject
+import java.io.File
 import java.net.URLDecoder
 import java.util.Base64
 import javax.crypto.Cipher
@@ -133,24 +135,14 @@ class Dramacool : MainAPI() {
     }
 
     private fun decryptVidBasicSubtitle(vttContent: String): String {
-        val patterns = listOf(
-            Regex("""^WEBVTT"""),
-            Regex("""^\d+$"""),
-            Regex("""^\d{2}:\d{2}:\d{2}""")
-        )
-        return vttContent.lines().mapIndexed { _, line ->
-            val trimmed = line.trim()
-            if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
-                line
-            } else {
-                try {
-                    val decrypted = decryptVidBasic(trimmed)
-                    decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
-                } catch (e: Exception) {
-                    line
-                }
-            }
-        }.joinToString("\n")
+        // Subtitle VTT terenkripsi sebagai satu kesatuan, dekripsi langsung seluruh konten
+        return try {
+            val decrypted = decryptVidBasic(vttContent)
+            decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
+        } catch (e: Exception) {
+            // Jika gagal, mungkin sudah tidak terenkripsi
+            vttContent
+        }
     }
 
     private suspend fun processVidBasic(
@@ -189,7 +181,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (DATA URI BASE64 MURNI TANPA OKHTTP FETCH) ----
+                // ---- SUBTITLE ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -210,16 +202,29 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Encode langsung ke Base64 Data URI agar dibaca langsung oleh ExoPlayer sebagai string stream
-                                val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                val dataUri = "data:text/vtt;base64,$base64Data"
-
-                                subtitleCallback.invoke(
-                                    SubtitleFile(
-                                        "English (VidBasic)",
-                                        dataUri
+                                // Simpan ke file sementara dan gunakan file URI
+                                try {
+                                    val context = app.context
+                                    val subtitleFile = File(context.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
+                                    subtitleFile.writeText(finalVtt)
+                                    val fileUri = Uri.fromFile(subtitleFile).toString()
+                                    subtitleCallback.invoke(
+                                        SubtitleFile(
+                                            "English (VidBasic)",
+                                            fileUri
+                                        )
                                     )
-                                )
+                                } catch (e: Exception) {
+                                    // Fallback ke data URI jika penyimpanan gagal
+                                    val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                    val dataUri = "data:text/vtt;base64,$base64Data"
+                                    subtitleCallback.invoke(
+                                        SubtitleFile(
+                                            "English (VidBasic)",
+                                            dataUri
+                                        )
+                                    )
+                                }
                             }
                         }
                     } catch (e: Exception) {
