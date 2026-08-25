@@ -26,12 +26,12 @@ class Dramacool : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
+    // Completed Series dihapus dari halaman utama
     override val mainPage = mainPageOf(
         "recently-added" to "Recently Added",
         "recently-added-movie" to "Recently Added Movies",
         "most-popular-drama" to "Most Popular",
-        "popular-ongoing-series" to "Ongoing Series",
-        "popular-completed-series" to "Completed Series"
+        "popular-ongoing-series" to "Ongoing Series"
     )
 
     private fun fixUrlScheme(url: String): String {
@@ -67,13 +67,25 @@ class Dramacool : MainAPI() {
         }
     }
 
-    override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search?type=movies&keyword=${query.replace(" ", "+")}"
-        val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-        return document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
+    // True Paging Search menggunakan SearchResponseList
+    override suspend fun search(query: String, page: Int): SearchResponseList {
+        val cleanQuery = query.trim().replace(" ", "+")
+        if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
+
+        val url = "$mainUrl/search?type=movies&keyword=$cleanQuery&page=$page"
+        
+        return try {
+            val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
+            val results = document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
+            val hasNext = results.isNotEmpty()
+            
+            newSearchResponseList(results, hasNext)
+        } catch (e: Exception) {
+            newSearchResponseList(emptyList(), false)
+        }
     }
 
-    // ==================== EKSTRAKSI VIDEO ====================
+    // ==================== EKSTRAKSI VIDEO & SUBTITLE ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -192,7 +204,6 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (Upload ke Catbox / Server Cadangan) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -215,7 +226,6 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 var uploadedUrl = ""
                                 
-                                // Server 1: Catbox API Utama
                                 try {
                                     val reqBody = MultipartBody.Builder()
                                         .setType(MultipartBody.FORM)
@@ -225,9 +235,8 @@ class Dramacool : MainAPI() {
                                     
                                     val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody).text.trim()
                                     if (res.startsWith("http")) uploadedUrl = res
-                                } catch (e: Exception) { }
+                                } catch (e: Exception) {}
 
-                                // Server 2: 0x0.st Backup
                                 if (uploadedUrl.isBlank()) {
                                     try {
                                         val reqBody2 = MultipartBody.Builder()
@@ -252,7 +261,6 @@ class Dramacool : MainAPI() {
                     }
                 }
 
-                // ---- VIDEO ----
                 val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
                 val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
 
@@ -285,7 +293,6 @@ class Dramacool : MainAPI() {
             e.printStackTrace()
         }
 
-        // ---- JSON API FALLBACK ----
         try {
             val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
             val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
@@ -309,7 +316,7 @@ class Dramacool : MainAPI() {
         return anySuccess
     }
 
-    // ==================== LOAD DENGAN LOG DEBUG ====================
+    // ==================== LOAD DETAIL ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -320,13 +327,13 @@ class Dramacool : MainAPI() {
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        var description = document.select(".details .info p").mapNotNull { p ->
+        val description = document.select(".details .info p").mapNotNull { p ->
             if (p.select("span").isEmpty() && p.text().length > 50) {
                 p.text().trim()
             } else null
         }.joinToString("\n\n").ifEmpty {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
-        } ?: ""
+        }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -344,128 +351,45 @@ class Dramacool : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // ==========================================
-        // BLOK DEBUGGING: INJEKSI LOG KE PLOT
-        // ==========================================
-        var debugLog = "\n\n=== LOG DEBUG SUBTITLE ===\n"
-        try {
-            val testEp = episodes.lastOrNull()?.data
-            debugLog += "[*] 1. Target Ep: $testEp\n"
-
-            if (testEp != null) {
-                val epDoc = app.get(testEp, headers = mapOf("User-Agent" to userAgent)).document
-                var embedUrl = ""
-                epDoc.select("iframe").forEach { iframe ->
-                    val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
-                    if (src.contains("vidbasic") || src.contains("vidb")) embedUrl = fixUrlScheme(src)
-                }
-                debugLog += "[*] 2. Iframe Ditemukan: $embedUrl\n"
-
-                if (embedUrl.isNotBlank()) {
-                    val host = java.net.URL(embedUrl).host
-                    val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
-                    val html = app.get(embedUrl, headers = headersMap).text
-                    
-                    val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
-                    var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
-                    if (dataVideo.isNullOrEmpty()) {
-                        val parsed = org.jsoup.Jsoup.parse(html)
-                        dataVideo = parsed.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
-                            ?: parsed.selectFirst("[data-video]")?.attr("data-video")
-                    }
-
-                    if (!dataVideo.isNullOrEmpty()) {
-                        val fullUrl = when {
-                            dataVideo.startsWith("http") -> dataVideo
-                            dataVideo.startsWith("//") -> "https:$dataVideo"
-                            else -> "https://$host$dataVideo"
-                        }
-                        debugLog += "[*] 3. Player URL: $fullUrl\n"
-
-                        val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
-                            it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
-                        }
-
-                        if (!subParam.isNullOrEmpty()) {
-                            debugLog += "[+] 4. Sub Param: Ditemukan!\n"
-                            val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
-                            val decryptedSubUrl = decryptVidBasic(decodedSubParam)
-                            debugLog += "[+] 5. URL Subtitle (Decoded): $decryptedSubUrl\n"
-
-                            if (decryptedSubUrl.startsWith("http")) {
-                                val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-                                val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
-
-                                var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
-                                if (cleanVtt.startsWith("WEBVTT")) {
-                                    cleanVtt = cleanVtt.substring(6).trim()
-                                }
-                                val finalVtt = "WEBVTT\n\n$cleanVtt"
-                                debugLog += "[+] 8. Berhasil Decrypt VTT (Size: ${finalVtt.length})\n"
-
-                                var catboxSuccessUrl = ""
-                                try {
-                                    debugLog += "[*] 9a. Mencoba upload ke API Utama Catbox...\n"
-                                    val reqBody = MultipartBody.Builder()
-                                        .setType(MultipartBody.FORM)
-                                        .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("fileToUpload", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
-                                        .build()
-                                    
-                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody).text.trim()
-                                    if (res.startsWith("http")) {
-                                        catboxSuccessUrl = res
-                                        debugLog += "[+] 10. BERHASIL (Catbox): $catboxSuccessUrl\n"
-                                    } else {
-                                        debugLog += "[-] Server menolak: $res\n"
-                                    }
-                                } catch (e: Exception) {
-                                    debugLog += "[-] ERROR API Utama: ${e.message}\n"
-                                }
-
-                                if (catboxSuccessUrl.isBlank()) {
-                                    try {
-                                        debugLog += "[*] 9b. Mencoba server cadangan 0x0.st...\n"
-                                        val reqBody2 = MultipartBody.Builder()
-                                            .setType(MultipartBody.FORM)
-                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
-                                            .build()
-                                        
-                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2).text.trim()
-                                        if (res2.startsWith("http")) {
-                                            debugLog += "[+] 10. BERHASIL (0x0.st): $res2\n"
-                                        }
-                                    } catch (e: Exception) {}
-                                }
-
-                            } else {
-                                debugLog += "[-] ERROR: Decrypted URL tidak valid HTTP.\n"
-                            }
-                        } else {
-                            debugLog += "[-] ERROR: Sub Param tidak ditemukan di URL Player.\n"
-                        }
-                    } else {
-                        debugLog += "[-] ERROR: data-video tidak ditemukan.\n"
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            debugLog += "[-] CRASH TOTAL: ${e.message}\n"
-        }
+        // Related Series berdasarkan Tag (Kecualikan "drama" dan "kdrama")
+        val recommendations = mutableListOf<SearchResponse>()
+        val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
         
-        description += debugLog
-        // ==========================================
+        for (tagUrl in tags) {
+            val cleanTag = tagUrl.substringAfterLast("/")
+            val tagLower = cleanTag.lowercase()
+            
+            if (tagLower != "drama" && tagLower != "kdrama") {
+                try {
+                    val tagPageUrl = "$mainUrl/tags/$cleanTag?page=1"
+                    val tagDoc = app.get(tagPageUrl, headers = mapOf("User-Agent" to userAgent)).document
+                    val items = tagDoc.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
+                    recommendations.addAll(items)
+                } catch (e: Exception) {}
+                break
+            }
+        }
+        val finalRecommendations = recommendations.filter { it.url != url }.distinctBy { it.url }
 
+        // Deteksi Movie (jika episode kosong atau hanya 1 episode)
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
+                this.recommendations = finalRecommendations
             }
-        }
-
-        return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
-            this.posterUrl = posterUrl
-            this.plot = description
+        } else if (episodes.size == 1) {
+            return newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
+                this.posterUrl = posterUrl
+                this.plot = description
+                this.recommendations = finalRecommendations
+            }
+        } else {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+                this.posterUrl = posterUrl
+                this.plot = description
+                this.recommendations = finalRecommendations
+            }
         }
     }
 
