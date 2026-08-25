@@ -29,7 +29,6 @@ class MyAsianTv : MainAPI() {
     )
 
     // ==================== HELPER EXTENSIONS ====================
-    // Membersihkan akhiran " - Myasiantv" dari judul
     private fun String.cleanTitle(): String {
         return this.replace(Regex("""(?i)\s*-\s*Myasiantv\s*$"""), "").trim()
     }
@@ -77,7 +76,6 @@ class MyAsianTv : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
-    // Convert an episode list item to a series SearchResponse
     private fun Element.toSeriesFromEpisode(): SearchResponse? {
         val link = selectFirst("a") ?: return null
         val href = link.attr("href")
@@ -273,8 +271,6 @@ class MyAsianTv : MainAPI() {
                     val serverName = item.text().trim().ifBlank { "Server" }
 
                     val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
-                    
-                    // PERHATIKAN: Menambahkan subtitleCallback ke manualExtractor
                     val manualFound = manualExtractor(cleanVideoUrl, serverName, subtitleCallback, callback)
 
                     if (extractorFound || manualFound) anySuccess = true
@@ -287,8 +283,6 @@ class MyAsianTv : MainAPI() {
                 val cleanDeepIframe = fixUrl(deepIframe)
                 
                 val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
-                
-                // PERHATIKAN: Menambahkan subtitleCallback ke manualExtractor
                 val manualFound = manualExtractor(cleanDeepIframe, "Server", subtitleCallback, callback)
                 
                 if (extractorFound || manualFound) anySuccess = true
@@ -373,20 +367,29 @@ class MyAsianTv : MainAPI() {
         }
     }
 
-    // ==================== MANUAL EXTRACTOR (BACKUP + SUBTITLE) ====================
+    // ==================== MANUAL EXTRACTOR (BACKUP + FULL DBG + BRUTEFORCE) ====================
     private suspend fun manualExtractor(
         url: String,
         serverName: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // [LOG 1] Tanda fungsi manualExtractor terakses
+        subtitleCallback.invoke(SubtitleFile("DBG: 1. Masuk Manual Extractor", "https://localhost/d.vtt"))
+
         return try {
             val playerHtml = app.get(url, headers = defaultHeaders).text
 
+            // [LOG 2] Tanda berhasil download string HTML page
+            subtitleCallback.invoke(SubtitleFile("DBG: 2. HTML Ter-load", "https://localhost/d.vtt"))
+
             // --- EKSTRAKSI SUBTITLE MANUAL ---
-            // Cari block tracks dan ambil file subtitle-nya
+            var subtitleFoundCount = 0
+
+            // Pendekatan 1: Cari block "tracks: [...]" (Sesuai dengan format JWPlayer standard)
             val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(playerHtml)
             if (tracksMatch != null) {
+                subtitleCallback.invoke(SubtitleFile("DBG: 3a. Regex Tracks ADA!", "https://localhost/d.vtt"))
                 val tracksHtml = tracksMatch.groupValues[1]
                 val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
                 
@@ -398,16 +401,38 @@ class MyAsianTv : MainAPI() {
                     val file = fileMatch?.groupValues?.get(1)
                     val label = labelMatch?.groupValues?.get(1) ?: "Subtitle"
                     
-                    // Filter: hindari file gambar atau thumbnail sprite
                     if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
-                        subtitleCallback.invoke(
-                            SubtitleFile(label, file)
-                        )
+                        subtitleCallback.invoke(SubtitleFile("Sub: $label", fixUrl(file)))
+                        subtitleFoundCount++
+                    }
+                }
+            } else {
+                subtitleCallback.invoke(SubtitleFile("DBG: 3a. Regex Tracks GAGAL", "https://localhost/d.vtt"))
+            }
+
+            // Pendekatan 2 (BRUTE FORCE): Sapu semua teks di dalam file mencari '.vtt' / '.srt'
+            if (subtitleFoundCount == 0) {
+                subtitleCallback.invoke(SubtitleFile("DBG: 3b. Mulai Mode Brute Force...", "https://localhost/d.vtt"))
+                
+                // Cari URL apapun yang mengandung akhiran .vtt atau .srt
+                val bruteForceRegex = Regex("""["']([^"']+\.(?:vtt|srt)[^"']*)["']""")
+                val allMatches = bruteForceRegex.findAll(playerHtml)
+                
+                allMatches.forEachIndexed { index, match ->
+                    val fileUrl = fixUrl(match.groupValues[1])
+                    // Lewati jika terbaca gambar
+                    if (!fileUrl.contains(".jpg") && !fileUrl.contains(".png")) {
+                        subtitleCallback.invoke(SubtitleFile("Force Sub ${index + 1}", fileUrl))
+                        subtitleFoundCount++
                     }
                 }
             }
+            
+            // [LOG Akhir Subtitle]
+            subtitleCallback.invoke(SubtitleFile("DBG: 4. Total Ditemukan: $subtitleFoundCount", "https://localhost/d.vtt"))
             // ---------------------------------
 
+            // Ekstraksi Video m3u8 dan mp4
             val m3u8Regex = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""")
             val mp4Regex = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
 
@@ -438,6 +463,8 @@ class MyAsianTv : MainAPI() {
             }
             false
         } catch (e: Exception) {
+            // [LOG ERROR] Menangkap jika ekstensi mengalami crash saat memparsing HLS
+            subtitleCallback.invoke(SubtitleFile("DBG: ERR! ${e.message?.take(20)}", "https://localhost/d.vtt"))
             false
         }
     }
