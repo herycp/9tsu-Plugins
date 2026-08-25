@@ -26,7 +26,6 @@ class Dramacool : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Completed Series dihapus dari halaman utama
     override val mainPage = mainPageOf(
         "recently-added" to "Recently Added",
         "recently-added-movie" to "Recently Added Movies",
@@ -67,12 +66,16 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // True Paging Search menggunakan SearchResponseList
+    // Paging: Halaman 1 tanpa parameter page, Halaman 2+ dengan &page=N
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim().replace(" ", "+")
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
 
-        val url = "$mainUrl/search?type=movies&keyword=$cleanQuery&page=$page"
+        val url = if (page <= 1) {
+            "$mainUrl/search?type=movies&keyword=$cleanQuery"
+        } else {
+            "$mainUrl/search?type=movies&keyword=$cleanQuery&page=$page"
+        }
         
         return try {
             val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
@@ -85,7 +88,6 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // ==================== EKSTRAKSI VIDEO & SUBTITLE ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -316,7 +318,6 @@ class Dramacool : MainAPI() {
         return anySuccess
     }
 
-    // ==================== LOAD DETAIL ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -351,15 +352,15 @@ class Dramacool : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // Related Series berdasarkan Tag (Kecualikan "drama" dan "kdrama")
+        // Rekomendasi/Related Series dari tags dengan paging ?page=1
         val recommendations = mutableListOf<SearchResponse>()
         val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
         
         for (tagUrl in tags) {
-            val cleanTag = tagUrl.substringAfterLast("/")
+            val cleanTag = tagUrl.substringAfterLast("/tags/").substringAfterLast("/")
             val tagLower = cleanTag.lowercase()
             
-            if (tagLower != "drama" && tagLower != "kdrama") {
+            if (tagLower.isNotBlank() && tagLower != "drama" && tagLower != "kdrama") {
                 try {
                     val tagPageUrl = "$mainUrl/tags/$cleanTag?page=1"
                     val tagDoc = app.get(tagPageUrl, headers = mapOf("User-Agent" to userAgent)).document
@@ -371,7 +372,6 @@ class Dramacool : MainAPI() {
         }
         val finalRecommendations = recommendations.filter { it.url != url }.distinctBy { it.url }
 
-        // Deteksi Movie (jika episode kosong atau hanya 1 episode)
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
@@ -393,7 +393,6 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
