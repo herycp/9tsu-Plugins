@@ -245,7 +245,8 @@ class Dramacool : MainAPI() {
                                 log.append("Subtitle saved to: $fileUri\n")
                                 log.append("File size: ${subFile.length()} bytes\n")
                                 
-                                subtitleCallback.invoke(SubtitleFile(fileUri, "en"))
+                                // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
+                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))[span_1](start_span)[span_1](end_span)
                                 log.append("✅ Subtitle sent via file URI\n")
                             } else {
                                 log.append("❌ VTT does not start with WEBVTT\n")
@@ -342,12 +343,14 @@ class Dramacool : MainAPI() {
             debugFile.writeText(finalLog)
             debugFile.setReadable(true, false)
             val debugUri = "file://${debugFile.absolutePath}"
-            subtitleCallback.invoke(SubtitleFile(debugUri, "en"))
+            // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
+            subtitleCallback.invoke(SubtitleFile("Debug VTT", debugUri))[span_2](start_span)[span_2](end_span)
         } catch (e: Exception) {
             // Fallback: kirim sebagai data URI jika file gagal
             val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
             val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
-            subtitleCallback.invoke(SubtitleFile(dataUri, "en"))
+            // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
+            subtitleCallback.invoke(SubtitleFile("Debug Base64", dataUri))[span_3](start_span)[span_3](end_span)
         }
 
         return anySuccess
