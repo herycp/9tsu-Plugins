@@ -6,11 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.MultipartBody
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.net.URLDecoder
@@ -218,26 +213,30 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 var subtitleUrl = ""
 
-                                // === Upload ke Catbox menggunakan OkHttp ===
+                                // === 1. Upload ke Catbox menggunakan app.post ===
                                 try {
-                                    val client = app.client // asumsikan ini OkHttpClient
-                                    val requestBody = MultipartBody.Builder()
-                                        .setType(MultipartBody.FORM)
-                                        .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("time", "1h")
-                                        .addFormDataPart(
-                                            "fileToUpload",
-                                            "sub.vtt",
-                                            finalVtt.toByteArray(Charsets.UTF_8).toRequestBody("text/vtt".toMediaTypeOrNull())
-                                        )
-                                        .build()
+                                    val boundary = "----CloudStreamBoundary${System.currentTimeMillis()}"
+                                    val bodyString = """
+                                        --$boundary
+                                        Content-Disposition: form-data; name="reqtype"
 
-                                    val request = Request.Builder()
-                                        .url("https://catbox.moe/user/api.php")
-                                        .post(requestBody)
-                                        .build()
+                                        fileupload
+                                        --$boundary
+                                        Content-Disposition: form-data; name="time"
 
-                                    val uploadResponse = client.newCall(request).execute().body?.string()?.trim() ?: ""
+                                        1h
+                                        --$boundary
+                                        Content-Disposition: form-data; name="fileToUpload"; filename="sub.vtt"
+                                        Content-Type: text/vtt
+
+                                        $finalVtt
+                                        --$boundary--
+                                    """.trimIndent().replace("\n", "\r\n")
+
+                                    val uploadHeaders = mapOf(
+                                        "Content-Type" to "multipart/form-data; boundary=$boundary"
+                                    )
+                                    val uploadResponse = app.post("https://catbox.moe/user/api.php", headers = uploadHeaders, requestBody = bodyString).text.trim()
                                     println("[VidBasic] Catbox response: $uploadResponse")
 
                                     if (uploadResponse.startsWith("http")) {
@@ -250,27 +249,31 @@ class Dramacool : MainAPI() {
                                     println("[VidBasic] Catbox upload error: ${e.message}")
                                 }
 
-                                // === Jika Catbox gagal, coba Litterbox ===
+                                // === 2. Jika Catbox gagal, coba Litterbox ===
                                 if (subtitleUrl.isBlank()) {
                                     try {
-                                        val client = app.client
-                                        val requestBody = MultipartBody.Builder()
-                                            .setType(MultipartBody.FORM)
-                                            .addFormDataPart("reqtype", "fileupload")
-                                            .addFormDataPart("time", "1h")
-                                            .addFormDataPart(
-                                                "fileToUpload",
-                                                "sub.vtt",
-                                                finalVtt.toByteArray(Charsets.UTF_8).toRequestBody("text/vtt".toMediaTypeOrNull())
-                                            )
-                                            .build()
+                                        val boundary = "----CloudStreamBoundary${System.currentTimeMillis()}"
+                                        val bodyString = """
+                                            --$boundary
+                                            Content-Disposition: form-data; name="reqtype"
 
-                                        val request = Request.Builder()
-                                            .url("https://litterbox.catbox.moe/api")
-                                            .post(requestBody)
-                                            .build()
+                                            fileupload
+                                            --$boundary
+                                            Content-Disposition: form-data; name="time"
 
-                                        val uploadResponse = client.newCall(request).execute().body?.string()?.trim() ?: ""
+                                            1h
+                                            --$boundary
+                                            Content-Disposition: form-data; name="fileToUpload"; filename="sub.vtt"
+                                            Content-Type: text/vtt
+
+                                            $finalVtt
+                                            --$boundary--
+                                        """.trimIndent().replace("\n", "\r\n")
+
+                                        val uploadHeaders = mapOf(
+                                            "Content-Type" to "multipart/form-data; boundary=$boundary"
+                                        )
+                                        val uploadResponse = app.post("https://litterbox.catbox.moe/api", headers = uploadHeaders, requestBody = bodyString).text.trim()
                                         println("[VidBasic] Litterbox response: $uploadResponse")
 
                                         if (uploadResponse.startsWith("http")) {
@@ -284,7 +287,7 @@ class Dramacool : MainAPI() {
                                     }
                                 }
 
-                                // === Fallback: simpan ke file lokal (sebagai upaya terakhir) ===
+                                // === 3. Fallback: Simpan ke file lokal ===
                                 if (subtitleUrl.isBlank()) {
                                     try {
                                         val subFile = File.createTempFile("sub_", ".vtt")
@@ -294,7 +297,7 @@ class Dramacool : MainAPI() {
                                         println("[VidBasic] Subtitle saved to local file: $subtitleUrl")
                                     } catch (e: Exception) {
                                         println("[VidBasic] Local file save error: ${e.message}")
-                                        // Terakhir: data URI (tidak akan berhasil tapi dicoba)
+                                        // === 4. Fallback terakhir: data URI ===
                                         val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                         subtitleUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
                                         println("[VidBasic] Using data URI (length: ${subtitleUrl.length})")
