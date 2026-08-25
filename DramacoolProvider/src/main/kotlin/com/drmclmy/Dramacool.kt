@@ -13,7 +13,6 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -139,7 +138,7 @@ class Dramacool : MainAPI() {
             Regex("""^\d+$"""),
             Regex("""^\d{2}:\d{2}:\d{2}""")
         )
-        return vttContent.lines().mapIndexed { index, line ->
+        return vttContent.lines().mapIndexed { _, line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
                 line
@@ -158,9 +157,6 @@ class Dramacool : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val log = StringBuilder()
-        log.append("=== VidBasic Debug Log ===\n")
-        log.append("Embed URL: $embedUrl\n")
         var anySuccess = false
 
         try {
@@ -170,11 +166,9 @@ class Dramacool : MainAPI() {
                 "Referer" to "https://$host/",
                 "Origin" to "https://$host"
             )
-            log.append("Host: $host\n")
 
             val response = app.get(embedUrl, headers = headersMap)
             val html = response.text
-            log.append("Fetched embed page, length: ${html.length}\n")
 
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
             var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
@@ -191,11 +185,10 @@ class Dramacool : MainAPI() {
                     dataVideo.startsWith("//") -> "https:$dataVideo"
                     else -> "https://$host$dataVideo"
                 }
-                log.append("Full video URL: $fullUrl\n")
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE ----
+                // ---- SUBTITLE (Pure Data URI) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -203,12 +196,10 @@ class Dramacool : MainAPI() {
                 if (!subParam.isNullOrEmpty()) {
                     try {
                         val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
-                        
                         val decryptedSubUrl = decryptVidBasic(decodedSubParam)
                         
                         if (decryptedSubUrl.startsWith("http")) {
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-                            
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
 
                             val normalizedVtt = decryptedVtt
@@ -216,17 +207,23 @@ class Dramacool : MainAPI() {
                                 .replace("\r", "\n")
                                 .trim()
 
-                            if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
-                                val subFile = File.createTempFile("sub_", ".vtt")
-                                subFile.writeText(normalizedVtt)
-                                subFile.setReadable(true, false)
-                                val fileUri = "file://${subFile.absolutePath}"
+                            if (normalizedVtt.isNotBlank()) {
+                                // Pastikan baris pertama mutlak adalah WEBVTT agar ExoPlayer tidak bingung
+                                val finalVtt = if (normalizedVtt.startsWith("WEBVTT")) {
+                                    normalizedVtt
+                                } else {
+                                    "WEBVTT\n\n$normalizedVtt"
+                                }
+
+                                // Encode ke Base64 murni tanpa #sub.vtt
+                                val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                val dataUri = "data:text/vtt;base64,$vttBase64"
                                 
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
+                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", dataUri))
                             }
                         }
                     } catch (e: Exception) {
-                        log.append("❌ Subtitle processing error: ${e.message}\n")
+                        e.printStackTrace()
                     }
                 }
 
@@ -255,12 +252,12 @@ class Dramacool : MainAPI() {
                             anySuccess = true
                         }
                     } catch (e: Exception) {
-                        log.append("❌ Video decryption error: ${e.message}\n")
+                        e.printStackTrace()
                     }
                 }
             }
         } catch (e: Exception) {
-            log.append("❌ Exception in main process: ${e.message}\n")
+            e.printStackTrace()
         }
 
         // ---- JSON API FALLBACK ----
@@ -282,25 +279,7 @@ class Dramacool : MainAPI() {
                     }
                 }
             }
-        } catch (e: Exception) {
-            log.append("❌ JSON API error: ${e.message}\n")
-        }
-
-        // ---- SUBTITLE DEBUG ----
-        val finalLog = log.toString()
-        try {
-            val debugFile = File.createTempFile("sub_debug_", ".vtt")
-            debugFile.writeText(finalLog)
-            debugFile.setReadable(true, false)
-            val debugUri = "file://${debugFile.absolutePath}"
-            
-            subtitleCallback.invoke(SubtitleFile("Debug VTT", debugUri))
-        } catch (e: Exception) {
-            val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
-            val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
-            
-            subtitleCallback.invoke(SubtitleFile("Debug Base64", dataUri))
-        }
+        } catch (e: Exception) {}
 
         return anySuccess
     }
