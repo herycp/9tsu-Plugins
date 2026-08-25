@@ -1,4 +1,4 @@
-package com.myasiantv
+package com.drmclmy
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -16,19 +16,21 @@ import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
-class MysiantvPlugin : MainAPI() {
+class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
     override var lang = "en"
-    override var mainUrl = "https://myasiantv.ac"
-    override var name = "MyAsianTv"
+    override var mainUrl = "https://dramacool.my"
+    override var name = "Dramacool"
     override val hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
     override val mainPage = mainPageOf(
         "recently-added" to "Recently Added",
-        "movie" to "Movies",
-        "trending" to "Trending"
+        "recently-added-movie" to "Recently Added Movies",
+        "most-popular-drama" to "Most Popular",
+        "popular-ongoing-series" to "Ongoing Series",
+        "popular-completed-series" to "Completed Series"
     )
 
     private fun fixUrlScheme(url: String): String {
@@ -65,11 +67,12 @@ class MysiantvPlugin : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search?keyword=${query.replace(" ", "+")}"
+        val url = "$mainUrl/search?type=movies&keyword=${query.replace(" ", "+")}"
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
         return document.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
     }
 
+    // ==================== EKSTRAKSI VIDEO ====================
     private fun unescapeJs(str: String): String {
         return str.replace("\\/", "/").replace("\\\"", "\"").replace("\\\\", "\\")
     }
@@ -188,6 +191,7 @@ class MysiantvPlugin : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
+                // ---- SUBTITLE (AUTOMATIC TEMP-CLOUD PROXY VIA CATBOX) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -214,6 +218,7 @@ class MysiantvPlugin : MainAPI() {
                                     val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
                                     
                                     val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
+                                    
                                     uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
                                 } catch (e: Exception) {
                                     e.printStackTrace()
@@ -231,6 +236,7 @@ class MysiantvPlugin : MainAPI() {
                     }
                 }
 
+                // ---- VIDEO ----
                 val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
                 val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
 
@@ -263,6 +269,7 @@ class MysiantvPlugin : MainAPI() {
             e.printStackTrace()
         }
 
+        // ---- JSON API FALLBACK ----
         try {
             val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
             val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
@@ -286,6 +293,7 @@ class MysiantvPlugin : MainAPI() {
         return anySuccess
     }
 
+    // ==================== LOAD (DEBUGGING MODE) ====================
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -296,13 +304,13 @@ class MysiantvPlugin : MainAPI() {
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        val description = document.select(".details .info p").mapNotNull { p ->
+        var description = document.select(".details .info p").mapNotNull { p ->
             if (p.select("span").isEmpty() && p.text().length > 50) {
                 p.text().trim()
             } else null
         }.joinToString("\n\n").ifEmpty {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
-        }
+        } ?: ""
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -320,6 +328,97 @@ class MysiantvPlugin : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
+        // ==========================================
+        // BLOK DEBUGGING: INJEKSI LOG KE PLOT
+        // ==========================================
+        var debugLog = "\n\n=== LOG DEBUG SUBTITLE ===\n"
+        try {
+            val testEp = episodes.lastOrNull()?.data
+            debugLog += "[*] Target Ep: $testEp\n"
+
+            if (testEp != null) {
+                val epDoc = app.get(testEp, headers = mapOf("User-Agent" to userAgent)).document
+                var embedUrl = ""
+                epDoc.select("iframe").forEach { iframe ->
+                    val src = iframe.attr("src").ifBlank { iframe.attr("data-src") }
+                    if (src.contains("vidbasic") || src.contains("vidb")) embedUrl = fixUrlScheme(src)
+                }
+                debugLog += "[*] Iframe VidBasic: $embedUrl\n"
+
+                if (embedUrl.isNotBlank()) {
+                    val host = java.net.URL(embedUrl).host
+                    val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
+                    val html = app.get(embedUrl, headers = headersMap).text
+                    
+                    val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
+                    var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
+                    if (dataVideo.isNullOrEmpty()) {
+                        val parsed = org.jsoup.Jsoup.parse(html)
+                        dataVideo = parsed.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
+                            ?: parsed.selectFirst("[data-video]")?.attr("data-video")
+                    }
+
+                    if (!dataVideo.isNullOrEmpty()) {
+                        val fullUrl = when {
+                            dataVideo.startsWith("http") -> dataVideo
+                            dataVideo.startsWith("//") -> "https:$dataVideo"
+                            else -> "https://$host$dataVideo"
+                        }
+                        debugLog += "[*] Player URL: $fullUrl\n"
+
+                        val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
+                            it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
+                        }
+
+                        if (!subParam.isNullOrEmpty()) {
+                            debugLog += "[*] Sub Param: Ditemukan!\n"
+                            val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
+                            val decryptedSubUrl = decryptVidBasic(decodedSubParam)
+                            debugLog += "[*] Sub URL Decrypted: $decryptedSubUrl\n"
+
+                            if (decryptedSubUrl.startsWith("http")) {
+                                val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
+                                debugLog += "[*] Raw VTT Length: ${encryptedVtt.length} karakter\n"
+                                
+                                val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
+                                var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                                if (cleanVtt.startsWith("WEBVTT")) {
+                                    cleanVtt = cleanVtt.substring(6).trim()
+                                }
+                                val finalVtt = "WEBVTT\n\n$cleanVtt"
+                                debugLog += "[*] Final VTT Length: ${finalVtt.length} karakter\n"
+                                debugLog += "[*] Preview VTT: ${finalVtt.take(40).replace("\n", " ")}...\n"
+
+                                try {
+                                    debugLog += "[*] Memulai upload ke Catbox...\n"
+                                    val boundary = "---CloudstreamBoundary"
+                                    val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
+                                    
+                                    val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
+                                    
+                                    val catboxRes = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
+                                    debugLog += "[+] Catbox Result: $catboxRes\n"
+                                } catch (e: Exception) {
+                                    debugLog += "[!] Catbox Error: ${e.message}\n"
+                                }
+                            } else {
+                                debugLog += "[!] Decrypted URL tidak valid HTTP.\n"
+                            }
+                        } else {
+                            debugLog += "[!] Sub Param tidak ditemukan di URL Player.\n"
+                        }
+                    } else {
+                        debugLog += "[!] data-video tidak ditemukan.\n"
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            debugLog += "[!] CRASH: ${e.message}\n"
+        }
+        
+        description += debugLog
+        // ==========================================
+
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
@@ -333,6 +432,7 @@ class MysiantvPlugin : MainAPI() {
         }
     }
 
+    // ==================== LOAD LINKS ====================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -410,7 +510,7 @@ class MysiantvPlugin : MainAPI() {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
                     newExtractorLink(
-                        name = if (isM3) "MyAsianTv - HLS" else "MyAsianTv - MP4",
+                        name = if (isM3) "Dramacool - HLS" else "Dramacool - MP4",
                         source = this.name,
                         url = cleanUrl,
                         type = if (isM3) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
