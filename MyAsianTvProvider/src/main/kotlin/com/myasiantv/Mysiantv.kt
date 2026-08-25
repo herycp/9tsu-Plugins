@@ -5,7 +5,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.extractors.helper.JwPlayerHelper
 import org.jsoup.nodes.Element
 
 class MyAsianTv : MainAPI() {
@@ -30,6 +29,7 @@ class MyAsianTv : MainAPI() {
     )
 
     // ==================== HELPER EXTENSIONS ====================
+    // Membersihkan akhiran " - Myasiantv" dari judul
     private fun String.cleanTitle(): String {
         return this.replace(Regex("""(?i)\s*-\s*Myasiantv\s*$"""), "").trim()
     }
@@ -77,6 +77,7 @@ class MyAsianTv : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
+    // Convert an episode list item to a series SearchResponse
     private fun Element.toSeriesFromEpisode(): SearchResponse? {
         val link = selectFirst("a") ?: return null
         val href = link.attr("href")
@@ -271,15 +272,12 @@ class MyAsianTv : MainAPI() {
                     val cleanVideoUrl = fixUrl(videoUrl)
                     val serverName = item.text().trim().ifBlank { "Server" }
 
-                    // PERBAIKAN: Cek apakah link server ini milik Vidmoly
-                    if (cleanVideoUrl.contains("vidmoly", ignoreCase = true)) {
-                        val vidmolyFound = extractVidMoly(cleanVideoUrl, subtitleCallback, callback)
-                        if (vidmolyFound) anySuccess = true
-                    } else {
-                        val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
-                        val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
-                        if (extractorFound || manualFound) anySuccess = true
-                    }
+                    val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
+                    
+                    // PERHATIKAN: Menambahkan subtitleCallback ke manualExtractor
+                    val manualFound = manualExtractor(cleanVideoUrl, serverName, subtitleCallback, callback)
+
+                    if (extractorFound || manualFound) anySuccess = true
                 }
             }
         } else {
@@ -288,15 +286,12 @@ class MyAsianTv : MainAPI() {
             if (!deepIframe.isNullOrBlank()) {
                 val cleanDeepIframe = fixUrl(deepIframe)
                 
-                // PERBAIKAN: Sama untuk deepIframe, pastikan lari ke extractVidMoly
-                if (cleanDeepIframe.contains("vidmoly", ignoreCase = true)) {
-                    val vidmolyFound = extractVidMoly(cleanDeepIframe, subtitleCallback, callback)
-                    if (vidmolyFound) anySuccess = true
-                } else {
-                    val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
-                    val manualFound = manualExtractor(cleanDeepIframe, "Server", callback)
-                    if (extractorFound || manualFound) anySuccess = true
-                }
+                val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
+                
+                // PERHATIKAN: Menambahkan subtitleCallback ke manualExtractor
+                val manualFound = manualExtractor(cleanDeepIframe, "Server", subtitleCallback, callback)
+                
+                if (extractorFound || manualFound) anySuccess = true
             }
         }
 
@@ -320,68 +315,51 @@ class MyAsianTv : MainAPI() {
         return anySuccess
     }
 
-    // ==================== VIDMOLY EXTRACTOR ====================
+    // ==================== VIDMOLY EXTRACTOR (LAWAS) ====================
     private suspend fun extractVidMoly(
         url: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Log Debug Awal
-        subtitleCallback.invoke(SubtitleFile("DBG: 1. Fungsi extractVidMoly dipanggil!", "https://localhost/d.vtt"))
-
         return try {
-            val headers = mapOf(
-                "user-agent" to userAgent,
-                "Sec-Fetch-Dest" to "iframe"
-            )
+            val doc = app.get(url, headers = defaultHeaders).document
+            val scripts = doc.select("script")
+            var videoUrl: String? = null
 
-            val newUrl = if (url.contains("/w/")) 
-                url.replaceFirst("/w/", "/embed-") + ".html" 
-            else url
-
-            val doc = app.get(newUrl, headers = headers, referer = mainUrl).document
-
-            val scriptData = doc.select("script")
-                .firstOrNull { it.data().contains("sources:") }
-                ?.data()
-
-            if (!scriptData.isNullOrBlank()) {
-                // Ekstraksi Manual sebagai cadangan
-                val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(scriptData)
-                if (tracksMatch != null) {
-                    val tracksHtml = tracksMatch.groupValues[1]
-                    val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
-                    
-                    for (track in individualTracks) {
-                        val trackData = track.groupValues[1]
-                        val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
-                        val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
-                        
-                        val file = fileMatch?.groupValues?.get(1)
-                        val label = labelMatch?.groupValues?.get(1) ?: "Sub"
-                        
-                        if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
-                            // Mengirim subtitle hasil parsing mandiri
-                            subtitleCallback.invoke(SubtitleFile("Auto: $label", file))
-                        }
+            for (script in scripts) {
+                val html = script.html()
+                val patterns = listOf(
+                    Regex(""""file"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""src"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""hls"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""videoUrl"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex(""""url"\s*:\s*"([^"]+\.m3u8[^"]*)""""),
+                    Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)"""),
+                    Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
+                )
+                for (pattern in patterns) {
+                    val match = pattern.find(html)
+                    if (match != null) {
+                        videoUrl = match.groupValues[1]
+                        break
                     }
                 }
+                if (videoUrl != null) break
+            }
 
-                // Log Debug Tengah
-                subtitleCallback.invoke(SubtitleFile("DBG: 2. JwPlayerHelper Berjalan", "https://localhost/d.vtt"))
-
-                // Ekstraksi Resmi Cloudstream
-                JwPlayerHelper.extractStreamLinks(
-                    scriptData,
-                    "VidMoly",
-                    newUrl,
-                    callback,
-                    subtitleCallback
+            if (videoUrl != null) {
+                val isM3u8 = videoUrl.contains(".m3u8")
+                callback(
+                    newExtractorLink(
+                        name = "VidMoly",
+                        source = name,
+                        url = videoUrl,
+                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                    )
                 )
                 return true
             }
 
-            // Fallback iframe
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
                 val src = iframe.attr("src")
@@ -389,22 +367,46 @@ class MyAsianTv : MainAPI() {
                     return loadExtractor(fixUrl(src), subtitleCallback, callback)
                 }
             }
-
             false
         } catch (e: Exception) {
-            subtitleCallback.invoke(SubtitleFile("DBG: ERR! ${e.message?.take(20)}", "https://localhost/d.vtt"))
             false
         }
     }
 
-    // ==================== MANUAL EXTRACTOR (BACKUP) ====================
+    // ==================== MANUAL EXTRACTOR (BACKUP + SUBTITLE) ====================
     private suspend fun manualExtractor(
         url: String,
         serverName: String,
+        subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         return try {
             val playerHtml = app.get(url, headers = defaultHeaders).text
+
+            // --- EKSTRAKSI SUBTITLE MANUAL ---
+            // Cari block tracks dan ambil file subtitle-nya
+            val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(playerHtml)
+            if (tracksMatch != null) {
+                val tracksHtml = tracksMatch.groupValues[1]
+                val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
+                
+                for (track in individualTracks) {
+                    val trackData = track.groupValues[1]
+                    val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                    val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                    
+                    val file = fileMatch?.groupValues?.get(1)
+                    val label = labelMatch?.groupValues?.get(1) ?: "Subtitle"
+                    
+                    // Filter: hindari file gambar atau thumbnail sprite
+                    if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
+                        subtitleCallback.invoke(
+                            SubtitleFile(label, file)
+                        )
+                    }
+                }
+            }
+            // ---------------------------------
 
             val m3u8Regex = Regex("""(https?://[^"'\s]+\.m3u8[^"'\s]*)""")
             val mp4Regex = Regex("""(https?://[^"'\s]+\.mp4[^"'\s]*)""")
