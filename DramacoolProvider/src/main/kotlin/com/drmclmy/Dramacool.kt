@@ -188,7 +188,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (Pure Data URI) ----
+                // ---- SUBTITLE ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -202,25 +202,22 @@ class Dramacool : MainAPI() {
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
 
-                            val normalizedVtt = decryptedVtt
-                                .replace("\r\n", "\n")
-                                .replace("\r", "\n")
-                                .trim()
-
-                            if (normalizedVtt.isNotBlank()) {
-                                // Pastikan baris pertama mutlak adalah WEBVTT agar ExoPlayer tidak bingung
-                                val finalVtt = if (normalizedVtt.startsWith("WEBVTT")) {
-                                    normalizedVtt
-                                } else {
-                                    "WEBVTT\n\n$normalizedVtt"
-                                }
-
-                                // Encode ke Base64 murni tanpa #sub.vtt
-                                val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                val dataUri = "data:text/vtt;base64,$vttBase64"
-                                
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", dataUri))
+                            // Pastikan file murni WEBVTT dan formatnya terstandarisasi untuk ExoPlayer
+                            var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                            if (cleanVtt.startsWith("WEBVTT")) {
+                                cleanVtt = cleanVtt.substring(6).trim()
                             }
+                            val finalVtt = "WEBVTT\n\n$cleanVtt"
+
+                            // Konversi ke Base64 (NO_WRAP sangat penting agar tidak ada jeda baris korup di string)
+                            val vttBase64 = android.util.Base64.encodeToString(finalVtt.toByteArray(Charsets.UTF_8), android.util.Base64.NO_WRAP)
+                            
+                            // TRIK UTAMA: Tulis .vtt sebelum koma!
+                            // Cloudstream akan mendeteksi ".vtt" -> Mengeset MimeType ke TEXT_VTT
+                            // ExoPlayer memecah string berdasarkan "," pertama -> Murni membaca Base64
+                            val dataUri = "data:text/vtt;filename=sub.vtt;base64,$vttBase64"
+                            
+                            subtitleCallback.invoke(SubtitleFile("English (VidBasic)", dataUri))
                         }
                     } catch (e: Exception) {
                         e.printStackTrace()
