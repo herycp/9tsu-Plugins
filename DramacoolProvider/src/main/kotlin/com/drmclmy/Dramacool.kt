@@ -5,6 +5,7 @@ import android.net.Uri
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.SubtitleOrigin
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
@@ -49,7 +50,6 @@ class Dramacool : MainAPI() {
             val currentApplicationMethod = activityThreadClass.getMethod("currentApplication")
             currentApplicationMethod.invoke(null) as? Context
         } catch (e: Exception) {
-            // Alternatif jika cara pertama gagal
             try {
                 val appGlobalsClass = Class.forName("android.app.AppGlobals")
                 val getInitialApplicationMethod = appGlobalsClass.getMethod("getInitialApplication")
@@ -221,7 +221,7 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Simpan ke file sementara dan gunakan file URI
+                                // Simpan ke file sementara dan gunakan file URI dengan origin LOCAL
                                 try {
                                     val context = getContext()
                                     if (context != null) {
@@ -231,11 +231,14 @@ class Dramacool : MainAPI() {
                                         subtitleCallback.invoke(
                                             SubtitleFile(
                                                 "English (VidBasic)",
-                                                fileUri
+                                                fileUri,
+                                                origin = SubtitleOrigin.LOCAL,
+                                                mimeType = "text/vtt",
+                                                languageCode = "en"
                                             )
                                         )
                                     } else {
-                                        // Fallback ke data URI jika tidak bisa mendapatkan context
+                                        // Fallback ke data URI (kemungkinan gagal, tapi coba)
                                         val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                         val dataUri = "data:text/vtt;base64,$base64Data"
                                         subtitleCallback.invoke(
@@ -246,7 +249,7 @@ class Dramacool : MainAPI() {
                                         )
                                     }
                                 } catch (e: Exception) {
-                                    // Fallback ke data URI jika penyimpanan gagal
+                                    // Fallback ke data URI
                                     val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                     val dataUri = "data:text/vtt;base64,$base64Data"
                                     subtitleCallback.invoke(
