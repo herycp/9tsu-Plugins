@@ -237,11 +237,16 @@ class Dramacool : MainAPI() {
                             log.append("Normalized VTT (first 200 chars):\n${normalizedVtt.take(200)}\n")
 
                             if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
-                                val vttBase64 = Base64.getEncoder().encodeToString(normalizedVtt.toByteArray(Charsets.UTF_8))
-                                val dataUri = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                                // Simpan subtitle ke file sementara
+                                val subFile = File.createTempFile("sub_", ".vtt")
+                                subFile.writeText(normalizedVtt)
+                                subFile.setReadable(true, false) // izinkan akses baca untuk semua
+                                val fileUri = "file://${subFile.absolutePath}"
+                                log.append("Subtitle saved to: $fileUri\n")
+                                log.append("File size: ${subFile.length()} bytes\n")
                                 
-                                subtitleCallback.invoke(SubtitleFile(dataUri, "en"))
-                                log.append("✅ Subtitle sent via data URI\n")
+                                subtitleCallback.invoke(SubtitleFile(fileUri, "en"))
+                                log.append("✅ Subtitle sent via file URI\n")
                             } else {
                                 log.append("❌ VTT does not start with WEBVTT\n")
                             }
@@ -339,6 +344,7 @@ class Dramacool : MainAPI() {
             val debugUri = "file://${debugFile.absolutePath}"
             subtitleCallback.invoke(SubtitleFile(debugUri, "en"))
         } catch (e: Exception) {
+            // Fallback: kirim sebagai data URI jika file gagal
             val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
             val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
             subtitleCallback.invoke(SubtitleFile(dataUri, "en"))
