@@ -30,7 +30,6 @@ class MyAsianTv : MainAPI() {
     )
 
     // ==================== HELPER EXTENSIONS ====================
-    // Membersihkan akhiran " - Myasiantv" dari judul
     private fun String.cleanTitle(): String {
         return this.replace(Regex("""(?i)\s*-\s*Myasiantv\s*$"""), "").trim()
     }
@@ -78,7 +77,6 @@ class MyAsianTv : MainAPI() {
         return newHomePageResponse(request.name, items)
     }
 
-    // Convert an episode list item to a series SearchResponse
     private fun Element.toSeriesFromEpisode(): SearchResponse? {
         val link = selectFirst("a") ?: return null
         val href = link.attr("href")
@@ -169,7 +167,7 @@ class MyAsianTv : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
-        var title = document.selectFirst("div.movie h1")?.text()?.cleanTitle() ?: return null
+        val title = document.selectFirst("div.movie h1")?.text()?.cleanTitle() ?: return null
 
         var posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("src")
         if (posterUrl.isNullOrBlank()) {
@@ -258,7 +256,7 @@ class MyAsianTv : MainAPI() {
             finalUrl = fixUrl(iframeSrc)
         }
 
-        if (finalUrl.contains("vidmoly")) {
+        if (finalUrl.contains("vidmoly", ignoreCase = true)) {
             return extractVidMoly(finalUrl, subtitleCallback, callback)
         }
 
@@ -273,10 +271,15 @@ class MyAsianTv : MainAPI() {
                     val cleanVideoUrl = fixUrl(videoUrl)
                     val serverName = item.text().trim().ifBlank { "Server" }
 
-                    val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
-                    val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
-
-                    if (extractorFound || manualFound) anySuccess = true
+                    // PERBAIKAN: Cek apakah link server ini milik Vidmoly
+                    if (cleanVideoUrl.contains("vidmoly", ignoreCase = true)) {
+                        val vidmolyFound = extractVidMoly(cleanVideoUrl, subtitleCallback, callback)
+                        if (vidmolyFound) anySuccess = true
+                    } else {
+                        val extractorFound = loadExtractor(cleanVideoUrl, subtitleCallback, callback)
+                        val manualFound = manualExtractor(cleanVideoUrl, serverName, callback)
+                        if (extractorFound || manualFound) anySuccess = true
+                    }
                 }
             }
         } else {
@@ -284,12 +287,16 @@ class MyAsianTv : MainAPI() {
             if (deepIframe.isNullOrBlank()) deepIframe = embedDoc.selectFirst("iframe")?.attr("src")
             if (!deepIframe.isNullOrBlank()) {
                 val cleanDeepIframe = fixUrl(deepIframe)
-                if (cleanDeepIframe.contains("vidmoly")) {
-                    return extractVidMoly(cleanDeepIframe, subtitleCallback, callback)
+                
+                // PERBAIKAN: Sama untuk deepIframe, pastikan lari ke extractVidMoly
+                if (cleanDeepIframe.contains("vidmoly", ignoreCase = true)) {
+                    val vidmolyFound = extractVidMoly(cleanDeepIframe, subtitleCallback, callback)
+                    if (vidmolyFound) anySuccess = true
+                } else {
+                    val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
+                    val manualFound = manualExtractor(cleanDeepIframe, "Server", callback)
+                    if (extractorFound || manualFound) anySuccess = true
                 }
-                val extractorFound = loadExtractor(cleanDeepIframe, subtitleCallback, callback)
-                val manualFound = manualExtractor(cleanDeepIframe, "Server", callback)
-                if (extractorFound || manualFound) anySuccess = true
             }
         }
 
@@ -319,8 +326,8 @@ class MyAsianTv : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // DUMMY SUBTITLE DEBUG: Tanda awal ekstraktor berjalan
-        subtitleCallback.invoke(SubtitleFile("DBG: 1. Mulai VidMoly", "https://localhost/d.vtt"))
+        // Log Debug Awal
+        subtitleCallback.invoke(SubtitleFile("DBG: 1. Fungsi extractVidMoly dipanggil!", "https://localhost/d.vtt"))
 
         return try {
             val headers = mapOf(
@@ -332,8 +339,6 @@ class MyAsianTv : MainAPI() {
                 url.replaceFirst("/w/", "/embed-") + ".html" 
             else url
 
-            subtitleCallback.invoke(SubtitleFile("DBG: 2. Fetching $newUrl", "https://localhost/d.vtt"))
-
             val doc = app.get(newUrl, headers = headers, referer = mainUrl).document
 
             val scriptData = doc.select("script")
@@ -341,16 +346,11 @@ class MyAsianTv : MainAPI() {
                 ?.data()
 
             if (!scriptData.isNullOrBlank()) {
-                subtitleCallback.invoke(SubtitleFile("DBG: 3. Script Ditemukan", "https://localhost/d.vtt"))
-                
-                // EKSTRAKSI MANUAL (Sebagai backup jika JwPlayerHelper gagal membaca array)
+                // Ekstraksi Manual sebagai cadangan
                 val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(scriptData)
                 if (tracksMatch != null) {
-                    subtitleCallback.invoke(SubtitleFile("DBG: 4. Block 'tracks' ada", "https://localhost/d.vtt"))
-                    
                     val tracksHtml = tracksMatch.groupValues[1]
                     val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
-                    var subCount = 0
                     
                     for (track in individualTracks) {
                         val trackData = track.groupValues[1]
@@ -360,19 +360,17 @@ class MyAsianTv : MainAPI() {
                         val file = fileMatch?.groupValues?.get(1)
                         val label = labelMatch?.groupValues?.get(1) ?: "Sub"
                         
-                        // Validasi file bukan gambar thumbnail
                         if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
-                            subCount++
-                            // Kirim subtitle beneran hasil parsing manual
-                            subtitleCallback.invoke(SubtitleFile("Manual: $label", file))
+                            // Mengirim subtitle hasil parsing mandiri
+                            subtitleCallback.invoke(SubtitleFile("Auto: $label", file))
                         }
                     }
-                    subtitleCallback.invoke(SubtitleFile("DBG: 5. Ketemu $subCount Subs", "https://localhost/d.vtt"))
-                } else {
-                    subtitleCallback.invoke(SubtitleFile("DBG: 4. Block 'tracks' KOSONG", "https://localhost/d.vtt"))
                 }
 
-                // EKSTRAKSI HELPER OFFICIAL CLOUDSTREAM
+                // Log Debug Tengah
+                subtitleCallback.invoke(SubtitleFile("DBG: 2. JwPlayerHelper Berjalan", "https://localhost/d.vtt"))
+
+                // Ekstraksi Resmi Cloudstream
                 JwPlayerHelper.extractStreamLinks(
                     scriptData,
                     "VidMoly",
@@ -381,14 +379,11 @@ class MyAsianTv : MainAPI() {
                     subtitleCallback
                 )
                 return true
-            } else {
-                subtitleCallback.invoke(SubtitleFile("DBG: 3. Script TIDAK Ditemukan", "https://localhost/d.vtt"))
             }
 
             // Fallback iframe
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
-                subtitleCallback.invoke(SubtitleFile("DBG: 6. Fallback Iframe Aktif", "https://localhost/d.vtt"))
                 val src = iframe.attr("src")
                 if (src.isNotBlank()) {
                     return loadExtractor(fixUrl(src), subtitleCallback, callback)
