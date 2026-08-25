@@ -145,7 +145,9 @@ class Dramacool : MainAPI() {
                 line
             } else {
                 try {
-                    decryptVidBasic(trimmed)
+                    val decrypted = decryptVidBasic(trimmed)
+                    // Sanitasi ketat: Hapus karakter kontrol tersembunyi (BOM, dll) yang bisa merusak parser ExoPlayer
+                    decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
                 } catch (e: Exception) {
                     line
                 }
@@ -189,7 +191,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (FILE CACHE METHOD) ----
+                // ---- MULTI-TRACK SUBTITLE INJECTION ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -203,21 +205,25 @@ class Dramacool : MainAPI() {
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
 
-                            var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
-                            if (cleanVtt.startsWith("WEBVTT")) {
-                                cleanVtt = cleanVtt.substring(6).trim()
+                            val cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                            val finalVtt = if (cleanVtt.startsWith("WEBVTT")) {
+                                "WEBVTT\n\n" + cleanVtt.substring(6).trim()
+                            } else {
+                                "WEBVTT\n\n$cleanVtt"
                             }
-                            val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Menyimpan subtitle hasil dekripsi ke sistem cache Android
+                                // 1 & 2. Metode File Cache
                                 val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
                                 subFile.writeText(finalVtt)
                                 subFile.setReadable(true, false)
-                                subFile.deleteOnExit() // Membersihkan file saat aplikasi ditutup
-                                val fileUri = "file://${subFile.absolutePath}"
                                 
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
+                                subtitleCallback.invoke(SubtitleFile("English (File URI)", "file://${subFile.absolutePath}"))
+                                subtitleCallback.invoke(SubtitleFile("English (Path)", subFile.absolutePath))
+
+                                // 3. Metode Data URI Murni
+                                val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                subtitleCallback.invoke(SubtitleFile("English (Data URI)", "data:text/vtt;base64,$vttBase64"))
                             }
                         }
                     } catch (e: Exception) {
@@ -315,7 +321,7 @@ class Dramacool : MainAPI() {
                 this.data = link
                 this.episode = epNum
             }
-        }.sortedByDescending { it.episode ?: 0 } // Memastikan episode diurutkan dengan benar
+        }.sortedByDescending { it.episode ?: 0 }
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
