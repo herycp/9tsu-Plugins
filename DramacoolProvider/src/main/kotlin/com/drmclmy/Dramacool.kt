@@ -204,7 +204,8 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 // Simpan ke file sementara dan gunakan file URI
                                 try {
-                                    val subtitleFile = File(app.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
+                                    val cacheDir = app.baseContext.cacheDir // Perbaikan di sini
+                                    val subtitleFile = File(cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
                                     subtitleFile.writeText(finalVtt)
                                     val fileUri = Uri.fromFile(subtitleFile).toString()
                                     subtitleCallback.invoke(
