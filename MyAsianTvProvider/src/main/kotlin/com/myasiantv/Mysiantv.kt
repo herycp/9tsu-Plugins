@@ -29,6 +29,23 @@ class MyAsianTv : MainAPI() {
         "/shows/" to "TV Shows"
     )
 
+    // ==================== HELPER EXTENSIONS ====================
+    // Membersihkan akhiran " - Myasiantv" dari judul
+    private fun String.cleanTitle(): String {
+        return this.replace(Regex("""(?i)\s*-\s*Myasiantv\s*$"""), "").trim()
+    }
+
+    private fun fixUrl(url: String): String {
+        var fixed = url.trim()
+        if (fixed.startsWith("//")) fixed = "https:$fixed"
+        return fixed
+    }
+
+    private fun fixUrlNull(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        return fixUrl(url)
+    }
+
     // ==================== MAIN PAGE ====================
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val basePath = request.data
@@ -77,9 +94,9 @@ class MyAsianTv : MainAPI() {
         val seriesUrl = "$mainUrl/series/$seriesPath"
 
         val img = selectFirst("img")
-        var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
+        var title = img?.attr("alt")?.replace("Poster for ", "")?.cleanTitle()
         if (title.isNullOrEmpty()) {
-            title = link.text().trim()
+            title = link.text().cleanTitle()
         }
         if (title.isNullOrEmpty()) return null
 
@@ -97,9 +114,9 @@ class MyAsianTv : MainAPI() {
         val link = selectFirst("a") ?: return null
         val href = fixUrlNull(link.attr("href")) ?: return null
         val img = selectFirst("img")
-        var title = img?.attr("alt")?.replace("Poster for ", "")?.trim()
+        var title = img?.attr("alt")?.replace("Poster for ", "")?.cleanTitle()
         if (title.isNullOrEmpty()) {
-            title = selectFirst("h2")?.text()?.trim()
+            title = selectFirst("h2")?.text()?.cleanTitle()
         }
         if (title.isNullOrEmpty()) return null
 
@@ -152,7 +169,7 @@ class MyAsianTv : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = defaultHeaders).document
 
-        val title = document.selectFirst("div.movie h1")?.text()?.trim() ?: return null
+        var title = document.selectFirst("div.movie h1")?.text()?.cleanTitle() ?: return null
 
         var posterUrl = document.selectFirst("img.poster, img.wp-post-image")?.attr("src")
         if (posterUrl.isNullOrBlank()) {
@@ -296,32 +313,66 @@ class MyAsianTv : MainAPI() {
         return anySuccess
     }
 
-    // ==================== VIDMOLY EXTRACTOR (MANUAL & JWPLAYER) ====================
+    // ==================== VIDMOLY EXTRACTOR ====================
     private suspend fun extractVidMoly(
         url: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // DUMMY SUBTITLE DEBUG: Tanda awal ekstraktor berjalan
+        subtitleCallback.invoke(SubtitleFile("DBG: 1. Mulai VidMoly", "https://localhost/d.vtt"))
+
         return try {
             val headers = mapOf(
                 "user-agent" to userAgent,
                 "Sec-Fetch-Dest" to "iframe"
             )
 
-            // 1. Format URL sesuai dengan standar ekstraktor official Vidmoly
             val newUrl = if (url.contains("/w/")) 
                 url.replaceFirst("/w/", "/embed-") + ".html" 
             else url
 
+            subtitleCallback.invoke(SubtitleFile("DBG: 2. Fetching $newUrl", "https://localhost/d.vtt"))
+
             val doc = app.get(newUrl, headers = headers, referer = mainUrl).document
 
-            // 2. Ambil isi dari tag script yang memuat konfigurasi 'sources:'
             val scriptData = doc.select("script")
                 .firstOrNull { it.data().contains("sources:") }
                 ?.data()
 
             if (!scriptData.isNullOrBlank()) {
-                // 3. Gunakan Helper bawaan Cloudstream yang otomatis mem-parsing subtitle dan stream
+                subtitleCallback.invoke(SubtitleFile("DBG: 3. Script Ditemukan", "https://localhost/d.vtt"))
+                
+                // EKSTRAKSI MANUAL (Sebagai backup jika JwPlayerHelper gagal membaca array)
+                val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(scriptData)
+                if (tracksMatch != null) {
+                    subtitleCallback.invoke(SubtitleFile("DBG: 4. Block 'tracks' ada", "https://localhost/d.vtt"))
+                    
+                    val tracksHtml = tracksMatch.groupValues[1]
+                    val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
+                    var subCount = 0
+                    
+                    for (track in individualTracks) {
+                        val trackData = track.groupValues[1]
+                        val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                        val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                        
+                        val file = fileMatch?.groupValues?.get(1)
+                        val label = labelMatch?.groupValues?.get(1) ?: "Sub"
+                        
+                        // Validasi file bukan gambar thumbnail
+                        if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
+                            subCount++
+                            // Kirim subtitle beneran hasil parsing manual
+                            subtitleCallback.invoke(SubtitleFile("Manual: $label", file))
+                        }
+                    }
+                    subtitleCallback.invoke(SubtitleFile("DBG: 5. Ketemu $subCount Subs", "https://localhost/d.vtt"))
+                } else {
+                    subtitleCallback.invoke(SubtitleFile("DBG: 4. Block 'tracks' KOSONG", "https://localhost/d.vtt"))
+                }
+
+                // EKSTRAKSI HELPER OFFICIAL CLOUDSTREAM
                 JwPlayerHelper.extractStreamLinks(
                     scriptData,
                     "VidMoly",
@@ -330,11 +381,14 @@ class MyAsianTv : MainAPI() {
                     subtitleCallback
                 )
                 return true
+            } else {
+                subtitleCallback.invoke(SubtitleFile("DBG: 3. Script TIDAK Ditemukan", "https://localhost/d.vtt"))
             }
 
-            // Fallback iframe jika tidak ditemukan script JWPlayer secara langsung
+            // Fallback iframe
             val iframe = doc.selectFirst("iframe")
             if (iframe != null) {
+                subtitleCallback.invoke(SubtitleFile("DBG: 6. Fallback Iframe Aktif", "https://localhost/d.vtt"))
                 val src = iframe.attr("src")
                 if (src.isNotBlank()) {
                     return loadExtractor(fixUrl(src), subtitleCallback, callback)
@@ -343,6 +397,7 @@ class MyAsianTv : MainAPI() {
 
             false
         } catch (e: Exception) {
+            subtitleCallback.invoke(SubtitleFile("DBG: ERR! ${e.message?.take(20)}", "https://localhost/d.vtt"))
             false
         }
     }
@@ -388,17 +443,5 @@ class MyAsianTv : MainAPI() {
         } catch (e: Exception) {
             false
         }
-    }
-
-    // ==================== HELPER FUNCTIONS ====================
-    private fun fixUrl(url: String): String {
-        var fixed = url.trim()
-        if (fixed.startsWith("//")) fixed = "https:$fixed"
-        return fixed
-    }
-
-    private fun fixUrlNull(url: String?): String? {
-        if (url.isNullOrBlank()) return null
-        return fixUrl(url)
     }
 }
