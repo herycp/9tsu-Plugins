@@ -190,7 +190,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (BYPASS CLOUDSTREAM OKHTTP VIA DPASTE) ----
+                // ---- SUBTITLE (FIXED CACHE & MIMETYPE) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -204,34 +204,28 @@ class Dramacool : MainAPI() {
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
 
-                            val cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
-                            val finalVtt = if (cleanVtt.startsWith("WEBVTT")) {
-                                "WEBVTT\n\n" + cleanVtt.substring(6).trim()
-                            } else {
-                                "WEBVTT\n\n$cleanVtt"
+                            var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                            if (cleanVtt.startsWith("WEBVTT")) {
+                                cleanVtt = cleanVtt.substring(6).trim()
                             }
+                            val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Trik Cloud Hosting Sementara untuk membodohi OkHttp Cloudstream
-                                try {
-                                    val pasteResponse = app.post(
-                                        "https://dpaste.com/api/v2/",
-                                        data = mapOf("content" to finalVtt, "expiry_days" to "1")
-                                    ).text.trim()
-                                    
-                                    if (pasteResponse.startsWith("http")) {
-                                        val rawUrl = if (pasteResponse.endsWith(".txt")) pasteResponse else "$pasteResponse.txt"
-                                        subtitleCallback.invoke(SubtitleFile("English (VidBasic Auto)", rawUrl))
-                                    }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                }
-                                
-                                // Fallback sekunder bila pengguna menggunakan mod / custom player
-                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
+                                // Buat file cache dengan ekstensi .vtt yang jelas
+                                val cacheDir = app.context.cacheDir
+                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt", cacheDir)
                                 subFile.writeText(finalVtt)
                                 subFile.setReadable(true, false)
-                                subtitleCallback.invoke(SubtitleFile("English (Local Cache)", "file://${subFile.absolutePath}"))
+                                subFile.deleteOnExit()
+
+                                // Kirim subtitle dengan memaksa MimeType text/vtt agar ExoPlayer tidak salah parsing
+                                subtitleCallback.invoke(
+                                    SubtitleFile(
+                                        lang = "English (VidBasic)",
+                                        url = "file://${subFile.absolutePath}",
+                                        mimeType = "text/vtt"
+                                    )
+                                )
                             }
                         }
                     } catch (e: Exception) {
