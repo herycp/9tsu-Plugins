@@ -190,7 +190,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (FIXED TEMP FILE & HEADERS PARAM) ----
+                // ---- SUBTITLE (PUBLIC 2-PARAM CONSTRUCTOR) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -219,8 +219,7 @@ class Dramacool : MainAPI() {
                                 subtitleCallback.invoke(
                                     SubtitleFile(
                                         "English (VidBasic)",
-                                        "file://${subFile.absolutePath}",
-                                        null
+                                        "file://${subFile.absolutePath}"
                                     )
                                 )
                             }
