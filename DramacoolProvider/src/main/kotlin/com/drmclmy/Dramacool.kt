@@ -13,6 +13,7 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -168,7 +169,7 @@ class Dramacool : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val log = StringBuilder()
-        log.append("WEBVTT\n\n")  // Wajib untuk VTT
+        log.append("WEBVTT\n\n")
         log.append("=== VidBasic Debug Log ===\n")
         log.append("Timestamp: ${System.currentTimeMillis()}\n")
         log.append("Embed URL: $embedUrl\n\n")
@@ -238,10 +239,12 @@ class Dramacool : MainAPI() {
                             log.append("First 200 chars of decrypted VTT:\n${decryptedVtt.take(200)}\n")
                             
                             if (decryptedVtt.isNotBlank() && decryptedVtt.contains("WEBVTT")) {
-                                val vttBase64 = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
-                                val vttDataUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64"
-                                log.append("Subtitle data URL length: ${vttDataUrl.length}\n")
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", vttDataUrl))
+                                // Simpan subtitle asli ke file sementara
+                                val tempSubFile = File.createTempFile("subtitle_vidbasic", ".vtt")
+                                tempSubFile.writeText(decryptedVtt)
+                                val fileUri = "file://${tempSubFile.absolutePath}"
+                                log.append("Subtitle saved to: $fileUri\n")
+                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
                                 log.append("✅ Subtitle added successfully\n")
                             } else {
                                 log.append("❌ Decrypted VTT is empty or invalid (does not contain WEBVTT)\n")
@@ -332,22 +335,21 @@ class Dramacool : MainAPI() {
         log.append("\n=== Final result: $anySuccess ===\n")
         log.append("=== End of debug log ===\n")
         
-        // Kirim subtitle debug dengan MIME type yang lebih kompatibel
-        val logData = log.toString()
-        if (logData.isBlank() || logData == "WEBVTT\n\n") {
-            log.append("WEBVTT\n\n")
-            log.append("ERROR: No log data collected - processVidBasic may not have been called.\n")
-        }
+        // Simpan log debug ke file sementara
         val finalLog = log.toString()
-        val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
-        // Gunakan application/octet-stream agar lebih kompatibel
-        val logDataUrl = "data:application/octet-stream;charset=utf-8;base64,$logBase64"
-        
-        println("[VidBasic] Debug subtitle data URL length: ${logDataUrl.length}")
-        println("[VidBasic] Debug subtitle content length: ${finalLog.length}")
-        println("[VidBasic] Debug subtitle first 200 chars: ${finalLog.take(200)}")
-        
-        subtitleCallback.invoke(SubtitleFile("VidBasic Debug", logDataUrl))
+        try {
+            val debugFile = File.createTempFile("subtitle_debug", ".vtt")
+            debugFile.writeText(finalLog)
+            val debugUri = "file://${debugFile.absolutePath}"
+            println("[VidBasic] Debug subtitle saved to: $debugUri")
+            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", debugUri))
+        } catch (e: Exception) {
+            println("[VidBasic] Failed to write debug subtitle: ${e.message}")
+            // Fallback ke data URI jika file gagal
+            val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
+            val logDataUrl = "data:application/octet-stream;charset=utf-8;base64,$logBase64"
+            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", logDataUrl))
+        }
 
         return anySuccess
     }
