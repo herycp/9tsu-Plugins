@@ -351,11 +351,14 @@ class Dramacool : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // Mengambil SEMUA tag di dalam div.tags (kecuali drama & kdrama)
+        // Mengambil rekomendasi dari tag dengan batas maksimal 15 judul
         val recommendations = mutableListOf<SearchResponse>()
         val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
+        val maxRecommendations = 15
         
         for (tagUrl in tags) {
+            if (recommendations.size >= maxRecommendations) break
+            
             val cleanTag = tagUrl.substringAfterLast("/tags/").substringAfterLast("/")
             val tagLower = cleanTag.lowercase()
             
@@ -364,11 +367,17 @@ class Dramacool : MainAPI() {
                     val tagPageUrl = "$mainUrl/tags/$cleanTag?page=1"
                     val tagDoc = app.get(tagPageUrl, headers = mapOf("User-Agent" to userAgent)).document
                     val items = tagDoc.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
-                    recommendations.addAll(items)
+                    
+                    for (item in items) {
+                        if (item.url != url && recommendations.none { it.url == item.url }) {
+                            recommendations.add(item)
+                            if (recommendations.size >= maxRecommendations) break
+                        }
+                    }
                 } catch (e: Exception) {}
             }
         }
-        val finalRecommendations = recommendations.filter { it.url != url }.distinctBy { it.url }
+        val finalRecommendations = recommendations.distinctBy { it.url }
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
