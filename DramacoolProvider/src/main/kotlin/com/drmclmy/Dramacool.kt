@@ -118,26 +118,25 @@ class Dramacool : MainAPI() {
         return String(decrypted, Charsets.UTF_8)
     }
 
-    // Ekstraksi & Dekripsi Subtitle baris per baris
+    // Ekstraksi & Dekripsi Subtitle baris per baris yang lebih aman terhadap spasi/baris kosong
     private fun decryptVidBasicSubtitle(vttContent: String): String {
         val patterns = listOf(
             Regex("""^WEBVTT"""),
             Regex("""^\d+$"""),
             Regex("""^\d{2}:\d{2}:\d{2}""")
         )
-        val decryptedLines = vttContent.lines().map { line ->
+        return vttContent.lines().map { line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
-                trimmed
+                line // Kembalikan string utuh untuk menjaga format struktur asli VTT
             } else {
                 try {
                     decryptVidBasic(trimmed)
                 } catch (e: Exception) {
-                    trimmed // Kembalikan string asli jika gagal
+                    line // Gunakan nilai asli bila gagal dekripsi alih-alih melempar error
                 }
             }
-        }
-        return decryptedLines.joinToString("\n")
+        }.joinToString("\n")
     }
 
     // Proses VidBasic: AES Decrypt + Subtitle + API JSON
@@ -165,7 +164,8 @@ class Dramacool : MainAPI() {
             
             if (dataVideo.isNullOrEmpty()) {
                 val doc = org.jsoup.Jsoup.parse(html)
-                dataVideo = doc.selectFirst(".Standard Server.selected")?.attr("data-video")
+                dataVideo = doc.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
+                    ?: doc.selectFirst("[data-video]")?.attr("data-video")
             }
 
             if (!dataVideo.isNullOrEmpty()) {
@@ -177,9 +177,10 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // Ekstraksi Subtitle (VTT)
-                val subParamRegex = Regex("""[\?&]sub=([^&]+)""")
-                val subParam = subParamRegex.find(fullUrl)?.groupValues?.get(1)
+                // Ekstraksi Subtitle (VTT) dari fullUrl atau embedUrl
+                val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
+                    it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
+                }
                 
                 if (!subParam.isNullOrEmpty()) {
                     try {
@@ -189,7 +190,9 @@ class Dramacool : MainAPI() {
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             
                             val vttBase64 = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
-                            val vttDataUrl = "data:text/vtt;base64,$vttBase64"
+                            
+                            // Trik menambahkan "#sub.vtt" agar pendeteksi Cloudstream / ExoPlayer menyetujui format URL ini
+                            val vttDataUrl = "data:text/vtt;charset=utf-8;base64,$vttBase64#sub.vtt"
                             
                             subtitleCallback.invoke(SubtitleFile("English (VidBasic)", vttDataUrl))
                         }
