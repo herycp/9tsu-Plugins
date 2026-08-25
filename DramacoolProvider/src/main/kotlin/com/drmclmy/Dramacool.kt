@@ -146,7 +146,6 @@ class Dramacool : MainAPI() {
             } else {
                 try {
                     val decrypted = decryptVidBasic(trimmed)
-                    // Sanitasi ketat: Hapus karakter kontrol tersembunyi (BOM, dll) yang bisa merusak parser ExoPlayer
                     decrypted.replace(Regex("""[\u0000-\u0008\u000B-\u001F\uFEFF]"""), "").trim()
                 } catch (e: Exception) {
                     line
@@ -191,7 +190,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- MULTI-TRACK SUBTITLE INJECTION ----
+                // ---- SUBTITLE (BYPASS CLOUDSTREAM OKHTTP VIA DPASTE) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -213,17 +212,26 @@ class Dramacool : MainAPI() {
                             }
 
                             if (finalVtt.isNotBlank()) {
-                                // 1 & 2. Metode File Cache
+                                // Trik Cloud Hosting Sementara untuk membodohi OkHttp Cloudstream
+                                try {
+                                    val pasteResponse = app.post(
+                                        "https://dpaste.com/api/v2/",
+                                        data = mapOf("content" to finalVtt, "expiry_days" to "1")
+                                    ).text.trim()
+                                    
+                                    if (pasteResponse.startsWith("http")) {
+                                        val rawUrl = if (pasteResponse.endsWith(".txt")) pasteResponse else "$pasteResponse.txt"
+                                        subtitleCallback.invoke(SubtitleFile("English (VidBasic Auto)", rawUrl))
+                                    }
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                }
+                                
+                                // Fallback sekunder bila pengguna menggunakan mod / custom player
                                 val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
                                 subFile.writeText(finalVtt)
                                 subFile.setReadable(true, false)
-                                
-                                subtitleCallback.invoke(SubtitleFile("English (File URI)", "file://${subFile.absolutePath}"))
-                                subtitleCallback.invoke(SubtitleFile("English (Path)", subFile.absolutePath))
-
-                                // 3. Metode Data URI Murni
-                                val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
-                                subtitleCallback.invoke(SubtitleFile("English (Data URI)", "data:text/vtt;base64,$vttBase64"))
+                                subtitleCallback.invoke(SubtitleFile("English (Local Cache)", "file://${subFile.absolutePath}"))
                             }
                         }
                     } catch (e: Exception) {
