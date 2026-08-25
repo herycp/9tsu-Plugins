@@ -1,5 +1,6 @@
 package com.drmclmy
 
+import android.content.Context
 import android.net.Uri
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -39,6 +40,24 @@ class Dramacool : MainAPI() {
             fixed = "https:$fixed"
         }
         return fixed
+    }
+
+    // Fungsi untuk mendapatkan Context aplikasi melalui refleksi
+    private fun getContext(): Context? {
+        return try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val currentApplicationMethod = activityThreadClass.getMethod("currentApplication")
+            currentApplicationMethod.invoke(null) as? Context
+        } catch (e: Exception) {
+            // Alternatif jika cara pertama gagal
+            try {
+                val appGlobalsClass = Class.forName("android.app.AppGlobals")
+                val getInitialApplicationMethod = appGlobalsClass.getMethod("getInitialApplication")
+                getInitialApplicationMethod.invoke(null) as? Context
+            } catch (e2: Exception) {
+                null
+            }
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -204,18 +223,30 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 // Simpan ke file sementara dan gunakan file URI
                                 try {
-                                    val cacheDir = app.baseContext.cacheDir // Perbaikan di sini
-                                    val subtitleFile = File(cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
-                                    subtitleFile.writeText(finalVtt)
-                                    val fileUri = Uri.fromFile(subtitleFile).toString()
-                                    subtitleCallback.invoke(
-                                        SubtitleFile(
-                                            "English (VidBasic)",
-                                            fileUri
+                                    val context = getContext()
+                                    if (context != null) {
+                                        val subtitleFile = File(context.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
+                                        subtitleFile.writeText(finalVtt)
+                                        val fileUri = Uri.fromFile(subtitleFile).toString()
+                                        subtitleCallback.invoke(
+                                            SubtitleFile(
+                                                "English (VidBasic)",
+                                                fileUri
+                                            )
                                         )
-                                    )
+                                    } else {
+                                        // Fallback ke data URI jika tidak bisa mendapatkan context
+                                        val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                        val dataUri = "data:text/vtt;base64,$base64Data"
+                                        subtitleCallback.invoke(
+                                            SubtitleFile(
+                                                "English (VidBasic)",
+                                                dataUri
+                                            )
+                                        )
+                                    }
                                 } catch (e: Exception) {
-                                    // Fallback ke data URI
+                                    // Fallback ke data URI jika penyimpanan gagal
                                     val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                     val dataUri = "data:text/vtt;base64,$base64Data"
                                     subtitleCallback.invoke(
