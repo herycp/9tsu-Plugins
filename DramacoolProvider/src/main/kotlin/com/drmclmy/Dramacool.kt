@@ -15,6 +15,7 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -161,6 +162,8 @@ class Dramacool : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         var anySuccess = false
+        var uploadedUrl = ""
+        var localFileUri = ""
 
         try {
             val host = java.net.URL(embedUrl).host
@@ -191,7 +194,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (UPLOAD KE CATBOX) ----
+                // ---- SUBTITLE ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -212,7 +215,7 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                var uploadedUrl = ""
+                                // ---- STRATEGI 1: UPLOAD KE CATBOX ----
                                 try {
                                     val boundary = "---CloudstreamBoundary"
                                     val bodyString = """
@@ -234,18 +237,59 @@ class Dramacool : MainAPI() {
 
                                     val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
                                     uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
+                                    println("[VidBasic] Catbox upload result: $uploadedUrl")
                                 } catch (e: Exception) {
-                                    e.printStackTrace()
+                                    println("[VidBasic] Catbox upload error: ${e.message}")
                                 }
 
+                                // ---- STRATEGI 2: SIMPAN KE FILE LOKAL ----
+                                try {
+                                    val subFile = File.createTempFile("sub_", ".vtt")
+                                    subFile.writeText(finalVtt)
+                                    subFile.setReadable(true, false)
+                                    localFileUri = "file://${subFile.absolutePath}"
+                                    println("[VidBasic] Local file saved: $localFileUri")
+                                } catch (e: Exception) {
+                                    println("[VidBasic] Local file save error: ${e.message}")
+                                }
+
+                                // ---- KIRIM SUBTITLE ----
+                                var subtitleSent = false
                                 if (uploadedUrl.startsWith("http")) {
-                                    // ✅ GUNAKAN newSubtitleFile DENGAN URUTAN (lang, url)
-                                    subtitleCallback.invoke(newSubtitleFile("en", uploadedUrl))
+                                    try {
+                                        subtitleCallback.invoke(newSubtitleFile("en", uploadedUrl))
+                                        subtitleSent = true
+                                        println("[VidBasic] Subtitle sent via Catbox: $uploadedUrl")
+                                    } catch (e: Exception) {
+                                        println("[VidBasic] Failed to send Catbox subtitle: ${e.message}")
+                                    }
+                                }
+
+                                if (!subtitleSent && localFileUri.isNotBlank()) {
+                                    try {
+                                        subtitleCallback.invoke(newSubtitleFile("en", localFileUri))
+                                        subtitleSent = true
+                                        println("[VidBasic] Subtitle sent via local file: $localFileUri")
+                                    } catch (e: Exception) {
+                                        println("[VidBasic] Failed to send local file subtitle: ${e.message}")
+                                    }
+                                }
+
+                                // ---- STRATEGI 3: DATA URI FALLBACK ----
+                                if (!subtitleSent) {
+                                    try {
+                                        val vttBase64 = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                        val dataUri = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                                        subtitleCallback.invoke(newSubtitleFile("en", dataUri))
+                                        println("[VidBasic] Subtitle sent via data URI (fallback)")
+                                    } catch (e: Exception) {
+                                        println("[VidBasic] Failed to send data URI subtitle: ${e.message}")
+                                    }
                                 }
                             }
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        println("[VidBasic] Subtitle processing error: ${e.message}")
                     }
                 }
 
@@ -274,12 +318,12 @@ class Dramacool : MainAPI() {
                             anySuccess = true
                         }
                     } catch (e: Exception) {
-                        e.printStackTrace()
+                        println("[VidBasic] Video decryption error: ${e.message}")
                     }
                 }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            println("[VidBasic] Main process error: ${e.message}")
         }
 
         // ---- JSON API FALLBACK ----
@@ -301,7 +345,9 @@ class Dramacool : MainAPI() {
                     }
                 }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            println("[VidBasic] JSON API error: ${e.message}")
+        }
 
         return anySuccess
     }
@@ -342,7 +388,7 @@ class Dramacool : MainAPI() {
         }.sortedByDescending { it.episode ?: 0 }
 
         // ==========================================
-        // BLOK DEBUGGING: INJEKSI LOG KE PLOT (OPSIONAL)
+        // BLOK DEBUGGING: LOG KE PLOT
         // ==========================================
         try {
             val testEp = episodes.lastOrNull()?.data
@@ -398,7 +444,6 @@ class Dramacool : MainAPI() {
         } catch (e: Exception) {
             description += "\n\n[!] Debug error: ${e.message}"
         }
-        // ==========================================
 
         if (episodes.isEmpty()) {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
