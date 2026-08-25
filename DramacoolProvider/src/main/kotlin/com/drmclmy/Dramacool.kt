@@ -204,8 +204,7 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 // Simpan ke file sementara dan gunakan file URI
                                 try {
-                                    val context = app.context
-                                    val subtitleFile = File(context.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
+                                    val subtitleFile = File(app.cacheDir, "subtitle_${System.currentTimeMillis()}.vtt")
                                     subtitleFile.writeText(finalVtt)
                                     val fileUri = Uri.fromFile(subtitleFile).toString()
                                     subtitleCallback.invoke(
@@ -215,7 +214,7 @@ class Dramacool : MainAPI() {
                                         )
                                     )
                                 } catch (e: Exception) {
-                                    // Fallback ke data URI jika penyimpanan gagal
+                                    // Fallback ke data URI
                                     val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                     val dataUri = "data:text/vtt;base64,$base64Data"
                                     subtitleCallback.invoke(
