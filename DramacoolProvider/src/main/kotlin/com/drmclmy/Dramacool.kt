@@ -103,6 +103,7 @@ class Dramacool : MainAPI() {
         return urls.distinct()
     }
 
+    // ===== FUNGSI BASE64 LENIENT =====
     private fun decodeBase64Lenient(input: String): ByteArray {
         var base64 = input.trim().replace(Regex("\\s+"), "")
         while (base64.length % 4 != 0) {
@@ -111,6 +112,7 @@ class Dramacool : MainAPI() {
         return Base64.getMimeDecoder().decode(base64)
     }
 
+    // AES Decrypt untuk VidBasic
     private fun decryptVidBasic(encrypted: String): String {
         println("[VidBasic] decryptVidBasic input length: ${encrypted.length}")
         val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
@@ -139,6 +141,7 @@ class Dramacool : MainAPI() {
         return result
     }
 
+    // Dekripsi subtitle baris per baris
     private fun decryptVidBasicSubtitle(vttContent: String): String {
         println("[VidBasic] decryptVidBasicSubtitle input lines: ${vttContent.lines().size}")
         val patterns = listOf(
@@ -163,21 +166,16 @@ class Dramacool : MainAPI() {
         return result
     }
 
-    // Variabel untuk menyimpan subtitle 5 baris pertama (untuk ditampilkan di plot)
-    private var subtitlePreview = ""
-
+    // ===== PROSES VIDBASIC =====
     private suspend fun processVidBasic(
         embedUrl: String,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val log = StringBuilder()
-        log.append("WEBVTT\n\n")
         log.append("=== VidBasic Debug Log ===\n")
-        log.append("Timestamp: ${System.currentTimeMillis()}\n")
-        log.append("Embed URL: $embedUrl\n\n")
+        log.append("Embed URL: $embedUrl\n")
         var anySuccess = false
-        subtitlePreview = ""
 
         try {
             val host = java.net.URL(embedUrl).host
@@ -187,13 +185,12 @@ class Dramacool : MainAPI() {
                 "Origin" to "https://$host"
             )
             log.append("Host: $host\n")
-            log.append("Headers: $headersMap\n\n")
 
             val response = app.get(embedUrl, headers = headersMap)
             val html = response.text
             log.append("Fetched embed page, length: ${html.length}\n")
-            log.append("First 500 chars of HTML:\n${html.take(500)}\n\n")
 
+            // Cari data-video
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
             var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
             log.append("dataVideo from regex: $dataVideo\n")
@@ -211,11 +208,10 @@ class Dramacool : MainAPI() {
                     dataVideo.startsWith("//") -> "https:$dataVideo"
                     else -> "https://$host$dataVideo"
                 }
-                log.append("Full video URL: $fullUrl\n\n")
+                log.append("Full video URL: $fullUrl\n")
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
                 log.append("Video page length: ${html2.length}\n")
-                log.append("First 500 chars of video page:\n${html2.take(500)}\n\n")
 
                 // ---- SUBTITLE ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
@@ -227,8 +223,10 @@ class Dramacool : MainAPI() {
                     try {
                         val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
                         log.append("Decoded subParam: $decodedSubParam\n")
+                        
                         val decryptedSubUrl = decryptVidBasic(decodedSubParam)
                         log.append("Decrypted sub URL: $decryptedSubUrl\n")
+                        
                         if (decryptedSubUrl.startsWith("http")) {
                             log.append("Fetching encrypted VTT from: $decryptedSubUrl\n")
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
@@ -237,30 +235,28 @@ class Dramacool : MainAPI() {
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
                             log.append("Decrypted VTT length: ${decryptedVtt.length}\n")
 
-                            // Normalisasi
+                            // Normalisasi VTT
                             val normalizedVtt = decryptedVtt
                                 .replace("\r\n", "\n")
                                 .replace("\r", "\n")
                                 .trim()
-                            log.append("Normalized VTT (first 500 chars):\n${normalizedVtt.take(500)}\n")
-
-                            // Simpan 5 baris pertama subtitle untuk ditampilkan di plot
-                            val lines = normalizedVtt.lines()
-                            subtitlePreview = lines.take(5).joinToString("\n")
-                            log.append("Subtitle preview (5 lines):\n$subtitlePreview\n")
+                            log.append("Normalized VTT (first 200 chars):\n${normalizedVtt.take(200)}\n")
 
                             if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
-                                // Simpan ke file sementara
-                                val subFile = File.createTempFile("sub_vidbasic", ".vtt")
-                                subFile.writeText(normalizedVtt)
-                                val fileUri = "file://${subFile.absolutePath}"
-                                log.append("Subtitle saved to: $fileUri\n")
-                                log.append("File size: ${subFile.length()} bytes\n")
-
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
-                                log.append("✅ Subtitle callback invoked\n")
+                                // ==== KIRIM SUBTITLE VIA DATA URI ====
+                                val vttBase64 = Base64.getEncoder().encodeToString(normalizedVtt.toByteArray(Charsets.UTF_8))
+                                val dataUri = "data:text/vtt;charset=utf-8;base64,$vttBase64"
+                                
+                                subtitleCallback.invoke(
+                                    newSubtitleFile(
+                                        name = "English (VidBasic)",
+                                        url = dataUri,
+                                        mimeType = "text/vtt"
+                                    )
+                                )
+                                log.append("✅ Subtitle sent via data URI\n")
                             } else {
-                                log.append("❌ Decrypted VTT does not start with WEBVTT\n")
+                                log.append("❌ VTT does not start with WEBVTT\n")
                             }
                         } else {
                             log.append("❌ Decrypted sub URL is not HTTP: $decryptedSubUrl\n")
@@ -304,7 +300,6 @@ class Dramacool : MainAPI() {
                         }
                     } catch (e: Exception) {
                         log.append("❌ Video decryption error: ${e.message}\n")
-                        log.append("Stack trace:\n${e.stackTraceToString()}\n")
                     }
                 } else {
                     log.append("ℹ️ No crypto data found\n")
@@ -348,18 +343,32 @@ class Dramacool : MainAPI() {
         log.append("\n=== Final result: $anySuccess ===\n")
         log.append("=== End of debug log ===\n")
 
-        // Kirim subtitle debug
+        // ==== KIRIM SUBTITLE DEBUG ====
         val finalLog = log.toString()
         try {
-            val debugFile = File.createTempFile("sub_debug", ".vtt")
+            // Simpan log ke file sementara (fallback)
+            val debugFile = File.createTempFile("sub_debug_", ".vtt")
             debugFile.writeText(finalLog)
+            debugFile.setReadable(true, false)
             val debugUri = "file://${debugFile.absolutePath}"
-            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", debugUri))
+            subtitleCallback.invoke(
+                newSubtitleFile(
+                    name = "VidBasic Debug",
+                    url = debugUri,
+                    mimeType = "text/vtt"
+                )
+            )
         } catch (e: Exception) {
             // Fallback ke data URI
             val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
             val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
-            subtitleCallback.invoke(SubtitleFile("VidBasic Debug", dataUri))
+            subtitleCallback.invoke(
+                newSubtitleFile(
+                    name = "VidBasic Debug",
+                    url = dataUri,
+                    mimeType = "text/vtt"
+                )
+            )
         }
 
         return anySuccess
@@ -376,17 +385,12 @@ class Dramacool : MainAPI() {
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
-        var description = document.select(".details .info p").mapNotNull { p ->
+        val description = document.select(".details .info p").mapNotNull { p ->
             if (p.select("span").isEmpty() && p.text().length > 50) {
                 p.text().trim()
             } else null
         }.joinToString("\n\n").ifEmpty {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
-        }
-
-        // Tambahkan preview subtitle ke description jika ada
-        if (subtitlePreview.isNotBlank()) {
-            description = (description ?: "") + "\n\n--- Subtitle Preview (5 lines) ---\n$subtitlePreview"
         }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
@@ -400,8 +404,6 @@ class Dramacool : MainAPI() {
             val epMatch = episodeRegex.find(titleText)
             val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
 
-            Triple(titleText, link, epNum)
-        }.sortedByDescending { it.third ?: 0 }.map { (titleText, link, epNum) ->
             newEpisode(titleText) {
                 this.data = link
                 this.episode = epNum
@@ -484,17 +486,20 @@ class Dramacool : MainAPI() {
             val cleanUrl = fixUrlScheme(rawUrl)
             if (!cleanUrl.startsWith("http")) continue
 
+            // Proses VidBasic
             if (cleanUrl.contains("vidbasic.top") || cleanUrl.contains("vidb.top")) {
                 val result = processVidBasic(cleanUrl, subtitleCallback, callback)
                 if (result) linkFound = true
                 continue
             }
 
+            // Coba extractor lain
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
             }
 
+            // Direct link
             if (cleanUrl.contains(".m3u8") || cleanUrl.endsWith(".mp4")) {
                 val isM3 = cleanUrl.contains(".m3u8")
                 callback.invoke(
