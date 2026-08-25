@@ -112,7 +112,6 @@ class Dramacool : MainAPI() {
     }
 
     private fun decryptVidBasic(encrypted: String): String {
-        println("[VidBasic] decryptVidBasic input length: ${encrypted.length}")
         val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
         val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
 
@@ -123,30 +122,24 @@ class Dramacool : MainAPI() {
         cipher.init(Cipher.DECRYPT_MODE, keySpec, ivSpec)
 
         val cleanEncrypted = encrypted.trim().replace(Regex("\\s+"), "")
-        println("[VidBasic] cleanEncrypted length: ${cleanEncrypted.length}")
 
         val decoded = try {
             Base64.getMimeDecoder().decode(cleanEncrypted)
         } catch (e: IllegalArgumentException) {
-            println("[VidBasic] MimeDecoder failed, using lenient fallback...")
             decodeBase64Lenient(cleanEncrypted)
         }
-        println("[VidBasic] Base64 decoded length: ${decoded.size} bytes")
 
         val decrypted = cipher.doFinal(decoded)
-        val result = String(decrypted, Charsets.UTF_8)
-        println("[VidBasic] Decrypted result: ${result.take(100)}...")
-        return result
+        return String(decrypted, Charsets.UTF_8)
     }
 
     private fun decryptVidBasicSubtitle(vttContent: String): String {
-        println("[VidBasic] decryptVidBasicSubtitle input lines: ${vttContent.lines().size}")
         val patterns = listOf(
             Regex("""^WEBVTT"""),
             Regex("""^\d+$"""),
             Regex("""^\d{2}:\d{2}:\d{2}""")
         )
-        val result = vttContent.lines().mapIndexed { index, line ->
+        return vttContent.lines().mapIndexed { index, line ->
             val trimmed = line.trim()
             if (trimmed.isEmpty() || patterns.any { it.containsMatchIn(trimmed) }) {
                 line
@@ -154,13 +147,10 @@ class Dramacool : MainAPI() {
                 try {
                     decryptVidBasic(trimmed)
                 } catch (e: Exception) {
-                    println("[VidBasic] Failed to decrypt line $index: ${e.message}")
                     line
                 }
             }
         }.joinToString("\n")
-        println("[VidBasic] Subtitle final length: ${result.length}")
-        return result
     }
 
     private suspend fun processVidBasic(
@@ -188,13 +178,11 @@ class Dramacool : MainAPI() {
 
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
             var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
-            log.append("dataVideo from regex: $dataVideo\n")
             
             if (dataVideo.isNullOrEmpty()) {
                 val doc = org.jsoup.Jsoup.parse(html)
                 dataVideo = doc.selectFirst("li[data-video]:contains(Standard)")?.attr("data-video")
                     ?: doc.selectFirst("[data-video]")?.attr("data-video")
-                log.append("dataVideo from JSoup: $dataVideo\n")
             }
 
             if (!dataVideo.isNullOrEmpty()) {
@@ -206,71 +194,49 @@ class Dramacool : MainAPI() {
                 log.append("Full video URL: $fullUrl\n")
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
-                log.append("Video page length: ${html2.length}\n")
 
                 // ---- SUBTITLE ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
-                log.append("subParam found: $subParam\n")
 
                 if (!subParam.isNullOrEmpty()) {
                     try {
                         val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
-                        log.append("Decoded subParam: $decodedSubParam\n")
                         
                         val decryptedSubUrl = decryptVidBasic(decodedSubParam)
-                        log.append("Decrypted sub URL: $decryptedSubUrl\n")
                         
                         if (decryptedSubUrl.startsWith("http")) {
-                            log.append("Fetching encrypted VTT from: $decryptedSubUrl\n")
                             val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-                            log.append("Encrypted VTT length: ${encryptedVtt.length}\n")
                             
                             val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
-                            log.append("Decrypted VTT length: ${decryptedVtt.length}\n")
 
                             val normalizedVtt = decryptedVtt
                                 .replace("\r\n", "\n")
                                 .replace("\r", "\n")
                                 .trim()
-                            log.append("Normalized VTT (first 200 chars):\n${normalizedVtt.take(200)}\n")
 
                             if (normalizedVtt.isNotBlank() && normalizedVtt.startsWith("WEBVTT")) {
-                                // Simpan subtitle ke file sementara
                                 val subFile = File.createTempFile("sub_", ".vtt")
                                 subFile.writeText(normalizedVtt)
-                                subFile.setReadable(true, false) // izinkan akses baca untuk semua
+                                subFile.setReadable(true, false)
                                 val fileUri = "file://${subFile.absolutePath}"
-                                log.append("Subtitle saved to: $fileUri\n")
-                                log.append("File size: ${subFile.length()} bytes\n")
                                 
-                                // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
-                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))[span_1](start_span)[span_1](end_span)
-                                log.append("✅ Subtitle sent via file URI\n")
-                            } else {
-                                log.append("❌ VTT does not start with WEBVTT\n")
+                                subtitleCallback.invoke(SubtitleFile("English (VidBasic)", fileUri))
                             }
-                        } else {
-                            log.append("❌ Decrypted sub URL is not HTTP: $decryptedSubUrl\n")
                         }
                     } catch (e: Exception) {
                         log.append("❌ Subtitle processing error: ${e.message}\n")
-                        log.append("Stack trace:\n${e.stackTraceToString()}\n")
                     }
-                } else {
-                    log.append("ℹ️ No sub parameter found\n")
                 }
 
                 // ---- VIDEO ----
                 val cryptoRegex = Regex("""data-name="crypto"\s*data-value="([^"]+)"""")
                 val encrypted = cryptoRegex.find(html2)?.groupValues?.get(1)
-                log.append("Encrypted video data: ${encrypted?.take(50)}...\n")
 
                 if (!encrypted.isNullOrEmpty()) {
                     try {
                         val decrypted = decryptVidBasic(encrypted)
-                        log.append("Decrypted video URL: $decrypted\n")
 
                         if (decrypted.startsWith("http")) {
                             val isM3u8 = decrypted.contains(".m3u8")
@@ -287,54 +253,38 @@ class Dramacool : MainAPI() {
                                 }
                             )
                             anySuccess = true
-                            log.append("✅ Video link added successfully\n")
-                        } else {
-                            log.append("❌ Decrypted video is not HTTP: $decrypted\n")
                         }
                     } catch (e: Exception) {
                         log.append("❌ Video decryption error: ${e.message}\n")
                     }
-                } else {
-                    log.append("ℹ️ No crypto data found\n")
                 }
-            } else {
-                log.append("❌ dataVideo not found\n")
             }
         } catch (e: Exception) {
             log.append("❌ Exception in main process: ${e.message}\n")
-            log.append("Stack trace:\n${e.stackTraceToString()}\n")
         }
 
         // ---- JSON API FALLBACK ----
         try {
             val apiUrl = if (embedUrl.contains("?")) "$embedUrl&json=" else "$embedUrl?json="
-            log.append("\nTrying JSON API: $apiUrl\n")
             val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
             val jsonText = response.text
-            log.append("JSON response length: ${jsonText.length}\n")
             
             val json = JSONObject(jsonText)
             val keys = json.keys().asSequence().toList()
-            log.append("JSON keys: $keys\n")
             
             for (key in keys) {
                 val value = json.optString(key, null)
                 if (!value.isNullOrEmpty() && (value.startsWith("http") || value.startsWith("//"))) {
                     val fixedLink = fixUrlScheme(value)
-                    log.append("Loading extractor for: $fixedLink\n")
                     val result = loadExtractor(fixedLink, subtitleCallback, callback)
                     if (result) {
                         anySuccess = true
-                        log.append("✅ JSON extractor succeeded for $fixedLink\n")
                     }
                 }
             }
         } catch (e: Exception) {
             log.append("❌ JSON API error: ${e.message}\n")
         }
-
-        log.append("\n=== Final result: $anySuccess ===\n")
-        log.append("=== End of debug log ===\n")
 
         // ---- SUBTITLE DEBUG ----
         val finalLog = log.toString()
@@ -343,14 +293,13 @@ class Dramacool : MainAPI() {
             debugFile.writeText(finalLog)
             debugFile.setReadable(true, false)
             val debugUri = "file://${debugFile.absolutePath}"
-            // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
-            subtitleCallback.invoke(SubtitleFile("Debug VTT", debugUri))[span_2](start_span)[span_2](end_span)
+            
+            subtitleCallback.invoke(SubtitleFile("Debug VTT", debugUri))
         } catch (e: Exception) {
-            // Fallback: kirim sebagai data URI jika file gagal
             val logBase64 = Base64.getEncoder().encodeToString(finalLog.toByteArray(Charsets.UTF_8))
             val dataUri = "data:text/vtt;charset=utf-8;base64,$logBase64"
-            // PERBAIKAN URUTAN PARAMETER: Nama Bahasa, lalu URL
-            subtitleCallback.invoke(SubtitleFile("Debug Base64", dataUri))[span_3](start_span)[span_3](end_span)
+            
+            subtitleCallback.invoke(SubtitleFile("Debug Base64", dataUri))
         }
 
         return anySuccess
