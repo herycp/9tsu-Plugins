@@ -192,7 +192,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (Upload ke Catbox via MultipartBody) ----
+                // ---- SUBTITLE (Upload ke Catbox / Server Cadangan) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -214,18 +214,30 @@ class Dramacool : MainAPI() {
 
                             if (finalVtt.isNotBlank()) {
                                 var uploadedUrl = ""
+                                
+                                // Server 1: Catbox API Utama
                                 try {
-                                    // Menggunakan OkHttp MultipartBody standard (Terbukti lebih solid & anti-gagal)
                                     val reqBody = MultipartBody.Builder()
                                         .setType(MultipartBody.FORM)
                                         .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("time", "1h")
                                         .addFormDataPart("fileToUpload", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
                                         .build()
                                     
-                                    uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = reqBody).text.trim()
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
+                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody).text.trim()
+                                    if (res.startsWith("http")) uploadedUrl = res
+                                } catch (e: Exception) { }
+
+                                // Server 2: 0x0.st Backup
+                                if (uploadedUrl.isBlank()) {
+                                    try {
+                                        val reqBody2 = MultipartBody.Builder()
+                                            .setType(MultipartBody.FORM)
+                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
+                                            .build()
+                                        
+                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2).text.trim()
+                                        if (res2.startsWith("http")) uploadedUrl = res2
+                                    } catch (e: Exception) {}
                                 }
 
                                 if (uploadedUrl.startsWith("http")) {
@@ -375,17 +387,15 @@ class Dramacool : MainAPI() {
                         }
 
                         if (!subParam.isNullOrEmpty()) {
-                            debugLog += "[+] 4. Sub Param (Encoded): Ditemukan!\n"
+                            debugLog += "[+] 4. Sub Param: Ditemukan!\n"
                             val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
                             val decryptedSubUrl = decryptVidBasic(decodedSubParam)
                             debugLog += "[+] 5. URL Subtitle (Decoded): $decryptedSubUrl\n"
 
                             if (decryptedSubUrl.startsWith("http")) {
-                                debugLog += "[*] 6. Mengunduh Raw VTT dari server...\n"
                                 val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-                                debugLog += "[+] 7. Raw VTT Length: ${encryptedVtt.length} karakter\n"
-                                
                                 val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
+
                                 var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
                                 if (cleanVtt.startsWith("WEBVTT")) {
                                     cleanVtt = cleanVtt.substring(6).trim()
@@ -393,21 +403,41 @@ class Dramacool : MainAPI() {
                                 val finalVtt = "WEBVTT\n\n$cleanVtt"
                                 debugLog += "[+] 8. Berhasil Decrypt VTT (Size: ${finalVtt.length})\n"
 
+                                var catboxSuccessUrl = ""
                                 try {
-                                    debugLog += "[*] 9. Mengupload ke API Catbox...\n"
-                                    
+                                    debugLog += "[*] 9a. Mencoba upload ke API Utama Catbox...\n"
                                     val reqBody = MultipartBody.Builder()
                                         .setType(MultipartBody.FORM)
                                         .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("time", "1h")
                                         .addFormDataPart("fileToUpload", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
                                         .build()
                                     
-                                    val catboxRes = app.post("https://litterbox.catbox.moe/api", requestBody = reqBody).text.trim()
-                                    debugLog += "[+] 10. Catbox Result (FINAL URL): $catboxRes\n"
+                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody).text.trim()
+                                    if (res.startsWith("http")) {
+                                        catboxSuccessUrl = res
+                                        debugLog += "[+] 10. BERHASIL (Catbox): $catboxSuccessUrl\n"
+                                    } else {
+                                        debugLog += "[-] Server menolak: $res\n"
+                                    }
                                 } catch (e: Exception) {
-                                    debugLog += "[-] ERROR 10. Catbox Gagal: ${e.message}\n"
+                                    debugLog += "[-] ERROR API Utama: ${e.message}\n"
                                 }
+
+                                if (catboxSuccessUrl.isBlank()) {
+                                    try {
+                                        debugLog += "[*] 9b. Mencoba server cadangan 0x0.st...\n"
+                                        val reqBody2 = MultipartBody.Builder()
+                                            .setType(MultipartBody.FORM)
+                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
+                                            .build()
+                                        
+                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2).text.trim()
+                                        if (res2.startsWith("http")) {
+                                            debugLog += "[+] 10. BERHASIL (0x0.st): $res2\n"
+                                        }
+                                    } catch (e: Exception) {}
+                                }
+
                             } else {
                                 debugLog += "[-] ERROR: Decrypted URL tidak valid HTTP.\n"
                             }
