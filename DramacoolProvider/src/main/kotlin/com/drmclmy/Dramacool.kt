@@ -6,8 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.net.URLDecoder
@@ -216,7 +214,9 @@ class Dramacool : MainAPI() {
                                 try {
                                     val boundary = "---CloudstreamBoundary"
                                     val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
-                                    val req = bodyString.toRequestBody("multipart/form-data; boundary=$boundary".toMediaTypeOrNull())
+                                    
+                                    val mediaType = okhttp3.MediaType.parse("multipart/form-data; boundary=$boundary")
+                                    val req = okhttp3.RequestBody.create(mediaType, bodyString)
                                     
                                     uploadedUrl = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
                                 } catch (e: Exception) {
@@ -392,7 +392,9 @@ class Dramacool : MainAPI() {
                                     debugLog += "[*] Memulai upload ke Catbox...\n"
                                     val boundary = "---CloudstreamBoundary"
                                     val bodyString = "--$boundary\r\nContent-Disposition: form-data; name=\"reqtype\"\r\n\r\nfileupload\r\n--$boundary\r\nContent-Disposition: form-data; name=\"time\"\r\n\r\n1h\r\n--$boundary\r\nContent-Disposition: form-data; name=\"fileToUpload\"; filename=\"sub.vtt\"\r\nContent-Type: text/vtt\r\n\r\n$finalVtt\r\n--$boundary--\r\n"
-                                    val req = okhttp3.RequestBody.Companion.toRequestBody(bodyString, okhttp3.MediaType.Companion.toMediaTypeOrNull("multipart/form-data; boundary=$boundary"))
+                                    
+                                    val mediaType = okhttp3.MediaType.parse("multipart/form-data; boundary=$boundary")
+                                    val req = okhttp3.RequestBody.create(mediaType, bodyString)
                                     
                                     val catboxRes = app.post("https://litterbox.catbox.moe/api", requestBody = req).text.trim()
                                     debugLog += "[+] Catbox Result: $catboxRes\n"
