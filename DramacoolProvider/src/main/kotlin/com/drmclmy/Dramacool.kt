@@ -13,7 +13,6 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import java.io.File
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -190,7 +189,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (PUBLIC 2-PARAM CONSTRUCTOR) ----
+                // ---- SUBTITLE (DATA URI BASE64 MURNI TANPA OKHTTP FETCH) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -211,15 +210,14 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
-                                subFile.writeText(finalVtt)
-                                subFile.setReadable(true, false)
-                                subFile.deleteOnExit()
+                                // Encode langsung ke Base64 Data URI agar dibaca langsung oleh ExoPlayer sebagai string stream
+                                val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                val dataUri = "data:text/vtt;base64,$base64Data"
 
                                 subtitleCallback.invoke(
                                     SubtitleFile(
                                         "English (VidBasic)",
-                                        "file://${subFile.absolutePath}"
+                                        dataUri
                                     )
                                 )
                             }
