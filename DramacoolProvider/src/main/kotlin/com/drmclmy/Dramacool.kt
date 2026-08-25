@@ -190,7 +190,7 @@ class Dramacool : MainAPI() {
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
 
-                // ---- SUBTITLE (FIXED CACHE & MIMETYPE) ----
+                // ---- SUBTITLE (FIXED TEMP FILE & HEADERS PARAM) ----
                 val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                     it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
                 }
@@ -211,19 +211,16 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Buat file cache dengan ekstensi .vtt yang jelas
-                                val cacheDir = app.context.cacheDir
-                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt", cacheDir)
+                                val subFile = File.createTempFile("sub_vidbasic_", ".vtt")
                                 subFile.writeText(finalVtt)
                                 subFile.setReadable(true, false)
                                 subFile.deleteOnExit()
 
-                                // Kirim subtitle dengan memaksa MimeType text/vtt agar ExoPlayer tidak salah parsing
                                 subtitleCallback.invoke(
                                     SubtitleFile(
-                                        lang = "English (VidBasic)",
-                                        url = "file://${subFile.absolutePath}",
-                                        mimeType = "text/vtt"
+                                        "English (VidBasic)",
+                                        "file://${subFile.absolutePath}",
+                                        null
                                     )
                                 )
                             }
