@@ -5,7 +5,6 @@ import android.net.Uri
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.SubtitleOrigin
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
@@ -221,7 +220,7 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Simpan ke file sementara dan gunakan file URI dengan origin LOCAL
+                                // Simpan ke file sementara dan gunakan file URI
                                 try {
                                     val context = getContext()
                                     if (context != null) {
@@ -232,19 +231,18 @@ class Dramacool : MainAPI() {
                                             SubtitleFile(
                                                 "English (VidBasic)",
                                                 fileUri,
-                                                origin = SubtitleOrigin.LOCAL,
-                                                mimeType = "text/vtt",
-                                                languageCode = "en"
+                                                headers = emptyMap()
                                             )
                                         )
                                     } else {
-                                        // Fallback ke data URI (kemungkinan gagal, tapi coba)
+                                        // Fallback ke data URI
                                         val base64Data = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
                                         val dataUri = "data:text/vtt;base64,$base64Data"
                                         subtitleCallback.invoke(
                                             SubtitleFile(
                                                 "English (VidBasic)",
-                                                dataUri
+                                                dataUri,
+                                                headers = emptyMap()
                                             )
                                         )
                                     }
@@ -255,7 +253,8 @@ class Dramacool : MainAPI() {
                                     subtitleCallback.invoke(
                                         SubtitleFile(
                                             "English (VidBasic)",
-                                            dataUri
+                                            dataUri,
+                                            headers = emptyMap()
                                         )
                                     )
                                 }
