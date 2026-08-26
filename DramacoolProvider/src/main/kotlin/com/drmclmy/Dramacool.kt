@@ -358,7 +358,9 @@ class Dramacool : MainAPI() {
                     if (mainRoleArr != null) {
                         for (i in 0 until mainRoleArr.length()) {
                             val actorName = mainRoleArr.optString(i)
-                            if (actorName.isNotBlank()) actors.add(ActorData(actorName))
+                            if (actorName.isNotBlank()) {
+                                actors.add(ActorData(Actor(actorName)))
+                            }
                         }
                     }
                     val supportRoleArr = castObj.optJSONArray("Support Role")
@@ -366,7 +368,7 @@ class Dramacool : MainAPI() {
                         for (i in 0 until supportRoleArr.length()) {
                             val actorName = supportRoleArr.optString(i)
                             if (actorName.isNotBlank() && actors.size < 10) {
-                                actors.add(ActorData(actorName))
+                                actors.add(ActorData(Actor(actorName)))
                             }
                         }
                     }
