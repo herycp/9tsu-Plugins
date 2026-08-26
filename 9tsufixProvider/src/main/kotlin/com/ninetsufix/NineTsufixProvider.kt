@@ -7,7 +7,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.Preference
+import com.lagradost.cloudstream3.Preference
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -41,7 +41,7 @@ class NineTsuFixProvider : MainAPI() {
         )
     }
 
-    private fun getDomain(): String = getPreference("domain", "in")
+    private fun getDomain(): String = (settings.get("domain") as? String) ?: "in"
 
     // Category pages untuk masing-masing domain
     private val categoryPagesIn = setOf(
