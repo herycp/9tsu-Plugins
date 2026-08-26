@@ -12,10 +12,12 @@ import okhttp3.MultipartBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import java.net.URLDecoder
+import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.runBlocking
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -66,6 +68,7 @@ class Dramacool : MainAPI() {
         }
     }
 
+    // True Paging Search: Halaman 1 tanpa &page=, Halaman 2+ dengan &page=N
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim().replace(" ", "+")
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -317,6 +320,30 @@ class Dramacool : MainAPI() {
         return anySuccess
     }
 
+    private data class EpisodeExtras(val description: String?, val posterUrl: String?, val airDate: String?, val rating: String?)
+
+    private suspend fun fetchEpisodeExtras(dramaTitle: String, episodeNum: Int): EpisodeExtras {
+        return try {
+            val formattedTitle = URLEncoder.encode(dramaTitle, "UTF-8")
+            val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$formattedTitle/episodes/$episodeNum"
+            
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+            if (response.code == 200) {
+                val json = JSONObject(response.text)
+                EpisodeExtras(
+                    description = json.optString("description", "").takeIf { it.isNotBlank() },
+                    posterUrl = json.optString("image", "").takeIf { it.isNotBlank() },
+                    airDate = json.optString("air_date", "").takeIf { it.isNotBlank() },
+                    rating = json.optString("rating", "").takeIf { it.isNotBlank() }
+                )
+            } else {
+                EpisodeExtras(null, null, null, null)
+            }
+        } catch (e: Exception) {
+            EpisodeExtras(null, null, null, null)
+        }
+    }
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -343,15 +370,36 @@ class Dramacool : MainAPI() {
             val link = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
             
             val epMatch = episodeRegex.find(titleText)
-            val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull()
+            val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
+
+            // Ambil data tambahan dari API MyDramaList
+            val extras = runCatching { runBlocking { fetchEpisodeExtras(title, epNum) } }.getOrNull()
+
+            val descBuilder = StringBuilder()
+            if (!extras?.airDate.isNullOrBlank()) {
+                descBuilder.append("📅 **Air Date:** ${extras?.airDate}\n")
+            }
+            if (!extras?.rating.isNullOrBlank()) {
+                descBuilder.append("⭐ **Rating:** ${extras?.rating}\n")
+            }
+            if (!descBuilder.isEmpty() && !extras?.description.isNullOrBlank()) {
+                descBuilder.append("\n")
+            }
+            if (!extras?.description.isNullOrBlank()) {
+                descBuilder.append(extras?.description)
+            } else {
+                descBuilder.append("Nantikan kisah seru dan menegangkan di episode ini!")
+            }
 
             newEpisode(titleText) {
                 this.data = link
                 this.episode = epNum
+                this.posterUrl = extras?.posterUrl
+                this.description = descBuilder.toString()
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // Mengambil rekomendasi dari tag dengan batas maksimal 15 judul
+        // Rekomendasi dari tags (maksimal 15 judul unik)
         val recommendations = mutableListOf<SearchResponse>()
         val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
         val maxRecommendations = 15
