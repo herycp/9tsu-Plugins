@@ -22,24 +22,40 @@ class NineTsuFixProvider : MainAPI() {
         get() = if (NineTsuPrefs.getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
         set(value) { /* ignored */ }
 
-    // Category pages untuk masing-masing domain
+    // Category pages untuk 9tsu.in
     private val categoryPagesIn = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
         "/premium", "/housou-shuuryou", "/dramaend", "/youtube-baraeti"
     )
 
+    // Category pages untuk 9tsu.vip (berdasarkan screenshot)
     private val categoryPagesVip = setOf(
-        "/daily", "/drama-monday1", "/drama-tuesday1", "/drama-wednesdaydouga",
-        "/drama-thursdaydouga", "/drama-fridaydouga", "/drama-saturdaydouga",
-        "/drama-sundaydouga", "/dramaend", "/premium"
+        "/spmovies",
+        "/kinro-ntv",
+        "/spdrama",
+        "/youtube-baraeti",
+        "/drama",
+        "/drama-monday1",
+        "/drama-tuesday1",
+        "/drama-wednesdaydouga",
+        "/drama-thursdaydouga",
+        "/drama-fridaydouga",
+        "/drama-saturdaydouga",
+        "/drama-sundaydouga",
+        "/daily",
+        "/dramaend",
+        "/premium"
     )
 
     // Halaman utama dinamis
     override val mainPage get() = if (NineTsuPrefs.getDomain() == "vip") {
         mainPageOf(
-            "$mainUrl/" to "Terbaru",
-            "$mainUrl/daily" to "Harian (Daily)",
+            "$mainUrl/spmovies" to "SP Movies",
+            "$mainUrl/kinro-ntv" to "Kinro NTV",
+            "$mainUrl/spdrama" to "SP Drama",
+            "$mainUrl/youtube-baraeti" to "YouTube Baraeti",
+            "$mainUrl/drama" to "Drama",
             "$mainUrl/drama-monday1" to "Drama Senin",
             "$mainUrl/drama-tuesday1" to "Drama Selasa",
             "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
@@ -47,8 +63,9 @@ class NineTsuFixProvider : MainAPI() {
             "$mainUrl/drama-fridaydouga" to "Drama Jumat",
             "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
             "$mainUrl/drama-sundaydouga" to "Drama Minggu",
+            "$mainUrl/daily" to "Daily",
             "$mainUrl/dramaend" to "Drama Tamat (End)",
-            "$mainUrl/premium" to "Kategori Premium"
+            "$mainUrl/premium" to "Premium"
         )
     } else {
         mainPageOf(
@@ -84,7 +101,7 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    // Helper functions (sama seperti sebelumnya)
+    // Helper functions
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -262,7 +279,7 @@ class NineTsuFixProvider : MainAPI() {
 
     private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
         val selector = if (NineTsuPrefs.getDomain() == "vip") {
-            "a[href$='.html']"
+            "article.cactus-post-item a[href$='.html'], .post a[href$='.html'], .entry a[href$='.html'], .cactus-post-item a[href$='.html']"
         } else {
             "a[href*='/douga/']"
         }
@@ -294,7 +311,8 @@ class NineTsuFixProvider : MainAPI() {
             for (i in links.size - 1 downTo 0) {
                 val link = links[i]
                 val href = link.attr("href")
-                if (href.isNotBlank() && !href.equals(mainUrl) && !href.contains("/douga/") && !isCategoryPage(href)) {
+                if (href.isNotBlank() && !href.equals(mainUrl) && !isCategoryPage(href)) {
+                    if (NineTsuPrefs.getDomain() == "vip" && href.endsWith(".html")) continue
                     return href
                 }
             }
@@ -499,10 +517,12 @@ class NineTsuFixProvider : MainAPI() {
 
         val relatedItems = fetchRelatedItems(doc, url)
 
+        // 1. Jika halaman kategori
         if (isCategoryPage(url)) {
             return loadSinglePage(doc, url, relatedItems)
         }
 
+        // 2. Jika halaman episode individual
         if (isEpisodePage(url)) {
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
             if (seriesUrl != null) {
@@ -523,6 +543,7 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
+            // Jika gagal, coba cari link kategori lain
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -546,6 +567,28 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url, relatedItems)
         }
 
+        // 3. Jika bukan kategori dan bukan episode, coba deteksi apakah ini halaman series (daftar episode)
+        if (NineTsuPrefs.getDomain() == "vip") {
+            val episodeLinks = doc.select("a[href$='.html']")
+            if (episodeLinks.size > 1) {
+                val seriesUrl = url
+                try {
+                    val allEpisodes = loadAllEpisodes(seriesUrl)
+                    if (allEpisodes.isNotEmpty()) {
+                        return buildSeriesResponse(doc, seriesUrl, allEpisodes, relatedItems)
+                    } else {
+                        val fallbackEpisodes = extractEpisodeInfo(doc)
+                        if (fallbackEpisodes.isNotEmpty()) {
+                            return buildSeriesResponse(doc, seriesUrl, fallbackEpisodes, relatedItems)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+
+        // 4. Fallback: single page (movie)
         return loadSinglePage(doc, url, relatedItems)
     }
 
