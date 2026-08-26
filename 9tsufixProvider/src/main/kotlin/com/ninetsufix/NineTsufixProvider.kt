@@ -1,12 +1,7 @@
 package com.ninetsufix
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.*
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -22,24 +17,9 @@ class NineTsuFixProvider : MainAPI() {
     override var lang = "ja"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Preferensi untuk pilihan domain
-    override fun getPreferences(): List<Preference> {
-        return listOf(
-            Preference.List<String>(
-                "domain",
-                "Pilih Domain",
-                listOf("in", "vip"),
-                listOf("9tsu.in", "9tsu.vip"),
-                "in"
-            )
-        )
-    }
-
-    private fun getDomain(): String = getPreference("domain", "in")
-
-    // Domain getter
+    // Domain getter berdasarkan preferensi
     override var mainUrl: String
-        get() = if (getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
+        get() = if (NineTsuPrefs.getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
         set(value) { /* ignored */ }
 
     // Category pages untuk masing-masing domain
@@ -56,7 +36,7 @@ class NineTsuFixProvider : MainAPI() {
     )
 
     // Halaman utama dinamis
-    override val mainPage get() = if (getDomain() == "vip") {
+    override val mainPage get() = if (NineTsuPrefs.getDomain() == "vip") {
         mainPageOf(
             "$mainUrl/" to "Terbaru",
             "$mainUrl/daily" to "Harian (Daily)",
@@ -88,7 +68,7 @@ class NineTsuFixProvider : MainAPI() {
 
     private fun isCategoryPage(url: String): Boolean {
         val path = url.replace(mainUrl, "").split("?")[0]
-        return if (getDomain() == "vip") {
+        return if (NineTsuPrefs.getDomain() == "vip") {
             categoryPagesVip.any { path == it || path.startsWith("$it/") }
         } else {
             categoryPagesIn.any { path == it || path.startsWith("$it/") }
@@ -97,14 +77,14 @@ class NineTsuFixProvider : MainAPI() {
 
     private fun isEpisodePage(url: String): Boolean {
         if (isCategoryPage(url)) return false
-        return if (getDomain() == "vip") {
+        return if (NineTsuPrefs.getDomain() == "vip") {
             url.startsWith(mainUrl) && url.endsWith(".html")
         } else {
             url.contains("/douga/") && url.endsWith(".html")
         }
     }
 
-    // Helper functions
+    // Helper functions (sama seperti sebelumnya)
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -281,7 +261,7 @@ class NineTsuFixProvider : MainAPI() {
     }
 
     private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
-        val selector = if (getDomain() == "vip") {
+        val selector = if (NineTsuPrefs.getDomain() == "vip") {
             "a[href$='.html']"
         } else {
             "a[href*='/douga/']"
@@ -295,7 +275,7 @@ class NineTsuFixProvider : MainAPI() {
                     else -> null
                 } ?: return@mapNotNull null
 
-                if (getDomain() == "vip") {
+                if (NineTsuPrefs.getDomain() == "vip") {
                     if (isCategoryPage(link) || link == mainUrl || link == "$mainUrl/") return@mapNotNull null
                 }
 
