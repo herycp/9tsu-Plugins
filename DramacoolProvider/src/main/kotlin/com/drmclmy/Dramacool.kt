@@ -18,6 +18,9 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -326,7 +329,7 @@ class Dramacool : MainAPI() {
             val formattedTitle = URLEncoder.encode(dramaTitle, "UTF-8")
             val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$formattedTitle/episodes/$episodeNum"
             
-            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent), timeout = 3)
             if (response.code == 200) {
                 val json = JSONObject(response.text)
                 EpisodeExtras(
@@ -349,7 +352,7 @@ class Dramacool : MainAPI() {
             val formattedTitle = URLEncoder.encode(dramaTitle, "UTF-8")
             val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$formattedTitle/cast"
             
-            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent), timeout = 3)
             if (response.code == 200) {
                 val json = JSONObject(response.text)
                 val castObj = json.optJSONObject("cast")
@@ -391,18 +394,16 @@ class Dramacool : MainAPI() {
                     processArray(supportRoleArr)
                 }
             }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
+        } catch (e: Exception) {}
         return actors.take(10)
     }
 
-    override suspend fun load(url: String): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse? = coroutineScope {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
         val title = document.selectFirst(".details .info h1")?.text()?.trim()
             ?: document.selectFirst("h1")?.text()?.trim()
-            ?: return null
+            ?: return@coroutineScope null
 
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
@@ -415,92 +416,103 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        val actorsList = runCatching { fetchDramaCast(title) }.getOrNull() ?: emptyList()
+        // 1. Fetch Cast secara Paralel
+        val actorsDeferred = async { fetchDramaCast(title) }
 
+        // 2. Fetch Episode Extras secara Paralel untuk semua episode
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
 
-        val episodes = episodeItems.mapNotNull { el ->
-            val titleText = el.selectFirst("h3.title")?.text()?.trim() ?: return@mapNotNull null
-            val link = fixUrlNull(el.attr("href")) ?: return@mapNotNull null
-            
-            val epMatch = episodeRegex.find(titleText)
-            val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
+        val episodesDeferred = episodeItems.map { el ->
+            async {
+                val titleText = el.selectFirst("h3.title")?.text()?.trim() ?: return@async null
+                val link = fixUrlNull(el.attr("href")) ?: return@async null
+                
+                val epMatch = episodeRegex.find(titleText)
+                val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-            val extras = runCatching { fetchEpisodeExtras(title, epNum) }.getOrNull()
+                val extras = fetchEpisodeExtras(title, epNum)
 
-            val descBuilder = StringBuilder()
-            val metaHeader = mutableListOf<String>()
+                val descBuilder = StringBuilder()
+                val metaHeader = mutableListOf<String>()
 
-            if (!extras?.airDate.isNullOrBlank()) {
-                metaHeader.add("📅 ${extras?.airDate}")
-            }
-            if (!extras?.rating.isNullOrBlank() && extras?.rating != "-/10") {
-                metaHeader.add("⭐ ${extras?.rating}")
-            }
+                if (!extras.airDate.isNullOrBlank()) {
+                    metaHeader.add("📅 ${extras.airDate}")
+                }
+                if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") {
+                    metaHeader.add("⭐ ${extras.rating}")
+                }
 
-            // Memisahkan Air Date / Rating di atas dan Deskripsi di bawahnya menggunakan Enter (\n\n)
-            if (metaHeader.isNotEmpty()) {
-                descBuilder.append(metaHeader.joinToString("   ")).append("\n\n")
-            }
+                if (metaHeader.isNotEmpty()) {
+                    descBuilder.append(metaHeader.joinToString("   ")).append("\n\n")
+                }
 
-            if (!extras?.description.isNullOrBlank()) {
-                descBuilder.append(extras?.description)
-            } else {
-                descBuilder.append("Nantikan kisah seru dan menegangkan di episode ini!")
-            }
+                if (!extras.description.isNullOrBlank()) {
+                    descBuilder.append(extras.description)
+                } else {
+                    descBuilder.append("Nantikan kisah seru dan menegangkan di episode ini!")
+                }
 
-            newEpisode(titleText) {
-                this.data = link
-                this.episode = epNum
-                this.posterUrl = extras?.posterUrl
-                this.description = descBuilder.toString()
-            }
-        }.sortedByDescending { it.episode ?: 0 }
-
-        val recommendations = mutableListOf<SearchResponse>()
-        val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
-        val maxRecommendations = 15
-        
-        for (tagUrl in tags) {
-            if (recommendations.size >= maxRecommendations) break
-            
-            val cleanTag = tagUrl.substringAfterLast("/tags/").substringAfterLast("/")
-            val tagLower = cleanTag.lowercase()
-            
-            if (tagLower.isNotBlank() && tagLower != "drama" && tagLower != "kdrama") {
-                try {
-                    val tagPageUrl = "$mainUrl/tags/$cleanTag?page=1"
-                    val tagDoc = app.get(tagPageUrl, headers = mapOf("User-Agent" to userAgent)).document
-                    val items = tagDoc.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
-                    
-                    for (item in items) {
-                        if (item.url != url && recommendations.none { it.url == item.url }) {
-                            recommendations.add(item)
-                            if (recommendations.size >= maxRecommendations) break
-                        }
-                    }
-                } catch (e: Exception) {}
+                newEpisode(titleText) {
+                    this.data = link
+                    this.episode = epNum
+                    this.posterUrl = extras.posterUrl
+                    this.description = descBuilder.toString()
+                }
             }
         }
-        val finalRecommendations = recommendations.distinctBy { it.url }
+
+        // 3. Fetch Rekomendasi secara Paralel (Maksimal 15 Judul lintas tag)
+        val recommendationsDeferred = async {
+            val recommendations = mutableListOf<SearchResponse>()
+            val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
+            val maxRecommendations = 15
+            
+            for (tagUrl in tags) {
+                if (recommendations.size >= maxRecommendations) break
+                
+                val cleanTag = tagUrl.substringAfterLast("/tags/").substringAfterLast("/")
+                val tagLower = cleanTag.lowercase()
+                
+                if (tagLower.isNotBlank() && tagLower != "drama" && tagLower != "kdrama") {
+                    try {
+                        val tagPageUrl = "$mainUrl/tags/$cleanTag?page=1"
+                        val tagDoc = app.get(tagPageUrl, headers = mapOf("User-Agent" to userAgent), timeout = 3).document
+                        val items = tagDoc.select("ul.list-episode-item li a").mapNotNull { it.toSearchResult() }
+                        
+                        for (item in items) {
+                            if (item.url != url && recommendations.none { it.url == item.url }) {
+                                recommendations.add(item)
+                                if (recommendations.size >= maxRecommendations) break
+                            }
+                        }
+                    } catch (e: Exception) {}
+                }
+            }
+            recommendations.distinctBy { it.url }
+        }
+
+        // Menunggu semua proses asinkron selesai secara bersamaan
+        val actorsList = actorsDeferred.await()
+        val episodes = episodesDeferred.awaitAll().filterNotNull().sortedByDescending { it.episode ?: 0 }
+        val finalRecommendations = recommendationsDeferred.await()
 
         if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else if (episodes.size == 1) {
-            return newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else {
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
