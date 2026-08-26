@@ -15,7 +15,7 @@ import org.json.JSONArray
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
-import java.util.UUID // Wajib ditambahkan untuk Filebin
+import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -175,11 +175,31 @@ class Dramacool : MainAPI() {
         }.joinToString("\n")
     }
 
-    // Hydra Upload Strategy V2: Hanya menggunakan provider 100% Direct Raw Link
+    // Hydra Upload Strategy V3: Memastikan URL berformat Direct Raw Link (Tanpa halaman web perantara)
     private suspend fun uploadSubtitleResilient(finalVtt: String): String {
         val reqBody = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
 
-        // 1. Filebin.net (Paling aman untuk VPN, link otomatis raw format)
+        // 1. Tmpfiles.org (Dipaksa menggunakan jalur /dl/ agar langsung berupa file murni)
+        try {
+            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("file", "sub.vtt", reqBody).build()
+            val res = app.post("https://tmpfiles.org/api/v1/upload", requestBody = multiBody, timeout = 4).text
+            val jsonUrl = JSONObject(res).getJSONObject("data").optString("url")
+            val directUrl = jsonUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            if (directUrl.isNotBlank() && directUrl.contains("/dl/")) return directUrl
+        } catch (e: Exception) {}
+
+        // 2. Litterbox (Catbox Temporary) - 100% Direct Raw Link dengan ekstensi .vtt
+        try {
+            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("reqtype", "fileupload")
+                .addFormDataPart("time", "1h")
+                .addFormDataPart("fileToUpload", "sub.vtt", reqBody).build()
+            val res = app.post("https://litterbox.catbox.moe/api.php", requestBody = multiBody, timeout = 4).text.trim()
+            if (res.startsWith("http") && res.endsWith(".vtt")) return res
+        } catch (e: Exception) {}
+
+        // 3. Filebin.net (Struktur Direct Bin Stream)
         try {
             val binId = UUID.randomUUID().toString().replace("-", "").take(16)
             val fileUrl = "https://filebin.net/$binId/sub.vtt"
@@ -189,7 +209,7 @@ class Dramacool : MainAPI() {
             }
         } catch (e: Exception) {}
 
-        // 2. Pixeldrain (Link direct via API)
+        // 4. Pixeldrain API (Direct File ID)
         try {
             val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("file", "sub.vtt", reqBody).build()
@@ -198,32 +218,7 @@ class Dramacool : MainAPI() {
             if (id.isNotBlank()) return "https://pixeldrain.com/api/file/$id"
         } catch (e: Exception) {}
 
-        // 3. Litterbox (Catbox versi temporary 1 jam, rules lebih longgar)
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("reqtype", "fileupload")
-                .addFormDataPart("time", "1h")
-                .addFormDataPart("fileToUpload", "sub.vtt", reqBody).build()
-            val res = app.post("https://litterbox.catbox.moe/api.php", requestBody = multiBody, timeout = 4).text.trim()
-            if (res.startsWith("http")) return res
-        } catch (e: Exception) {}
-
-        // 4. Uguu.se (Fallback aman)
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("files[]", "sub.vtt", reqBody).build()
-            val res = app.post("https://uguu.se/upload.php", requestBody = multiBody, timeout = 4).text
-            val url = JSONObject(res).getJSONArray("files").getJSONObject(0).optString("url")
-            if (url.isNotBlank()) return url
-        } catch (e: Exception) {}
-
-        // 5. Transfer.sh (Fallback terakhir)
-        try {
-            val res = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody, timeout = 5).text.trim()
-            if (res.startsWith("http")) return res
-        } catch (e: Exception) {}
-
-        return "" // Jika apes semua gagal
+        return ""
     }
 
     private suspend fun processVidBasic(
@@ -282,7 +277,6 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                // Eksekusi Hydra Upload V2
                                 val uploadedUrl = uploadSubtitleResilient(finalVtt)
                                 
                                 if (uploadedUrl.isNotBlank()) {
