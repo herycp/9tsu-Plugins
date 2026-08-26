@@ -419,7 +419,7 @@ class Dramacool : MainAPI() {
         // 1. Fetch Cast secara Paralel
         val actorsDeferred = async { fetchDramaCast(title) }
 
-        // 2. Fetch Episode Extras secara Paralel untuk semua episode
+        // 2. Fetch Episode Extras secara Paralel
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
 
@@ -434,20 +434,21 @@ class Dramacool : MainAPI() {
                 val extras = fetchEpisodeExtras(title, epNum)
 
                 val descBuilder = StringBuilder()
-                val metaHeader = mutableListOf<String>()
+                val airDateStr = if (!extras.airDate.isNullOrBlank()) "**📅 ${extras.airDate}**" else ""
+                val ratingStr = if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") "**⭐ ${extras.rating}**" else ""
 
-                if (!extras.airDate.isNullOrBlank()) {
-                    metaHeader.add("📅 ${extras.airDate}")
-                }
-                if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") {
-                    metaHeader.add("⭐ ${extras.rating}")
+                // Memposisikan Air Date di kiri & Rating di kanan dalam 1 baris (tebal)
+                if (airDateStr.isNotBlank() || ratingStr.isNotBlank()) {
+                    if (airDateStr.isNotBlank() && ratingStr.isNotBlank()) {
+                        descBuilder.append("$airDateStr                                  $ratingStr\n\n")
+                    } else if (airDateStr.isNotBlank()) {
+                        descBuilder.append("$airDateStr\n\n")
+                    } else {
+                        descBuilder.append("$ratingStr\n\n")
+                    }
                 }
 
-                // Air Date dan Rating digabung dalam 1 baris, dipisah spasi
-                if (metaHeader.isNotEmpty()) {
-                    descBuilder.append(metaHeader.joinToString("   ")).append("\n\n")
-                }
-
+                // Baris baru untuk deskripsi/plot episode
                 if (!extras.description.isNullOrBlank()) {
                     descBuilder.append(extras.description)
                 } else {
@@ -463,7 +464,7 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // 3. Fetch Rekomendasi secara Paralel (Maksimal 15 Judul lintas tag)
+        // 3. Fetch Rekomendasi secara Paralel (Maksimal 15 Judul)
         val recommendationsDeferred = async {
             val recommendations = mutableListOf<SearchResponse>()
             val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
@@ -493,7 +494,6 @@ class Dramacool : MainAPI() {
             recommendations.distinctBy { it.url }
         }
 
-        // Menunggu semua proses asinkron selesai secara bersamaan
         val actorsList = actorsDeferred.await()
         val episodes = episodesDeferred.awaitAll().filterNotNull().sortedByDescending { it.episode ?: 0 }
         val finalRecommendations = recommendationsDeferred.await()
