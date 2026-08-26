@@ -25,7 +25,7 @@ class NineTsuFixProvider : MainAPI() {
     // Preferensi untuk pilihan domain
     override fun getPreferences(): List<Preference> {
         return listOf(
-            Preference.List(
+            Preference.List<String>(
                 "domain",
                 "Pilih Domain",
                 listOf("in", "vip"),
