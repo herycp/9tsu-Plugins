@@ -22,6 +22,7 @@ import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import android.util.Log
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -175,48 +176,76 @@ class Dramacool : MainAPI() {
         }.joinToString("\n")
     }
 
-    // Hydra Upload Strategy V3: Memastikan URL berformat Direct Raw Link (Tanpa halaman web perantara)
-    private suspend fun uploadSubtitleResilient(finalVtt: String): String {
+    // Mekanisme Testing Transparan: Menguji provider satu per satu dengan Logcat eksplisit tanpa failover diam-diam
+    private suspend fun uploadSubtitleExplicitTest(finalVtt: String): String {
         val reqBody = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
 
-        // 1. Tmpfiles.org (Dipaksa menggunakan jalur /dl/ agar langsung berupa file murni)
+        // 1. Test Provider: 0x0.st
         try {
             val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("file", "sub.vtt", reqBody).build()
-            val res = app.post("https://tmpfiles.org/api/v1/upload", requestBody = multiBody, timeout = 4).text
-            val jsonUrl = JSONObject(res).getJSONObject("data").optString("url")
-            val directUrl = jsonUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/")
-            if (directUrl.isNotBlank() && directUrl.contains("/dl/")) return directUrl
-        } catch (e: Exception) {}
+            val res = app.post("https://0x0.st", requestBody = multiBody, timeout = 5).text.trim()
+            Log.d("DramacoolSubTest", "0x0.st Response: $res")
+            if (res.startsWith("http")) return res
+        } catch (e: Exception) {
+            Log.e("DramacoolSubTest", "0x0.st Error: ${e.message}")
+        }
 
-        // 2. Litterbox (Catbox Temporary) - 100% Direct Raw Link dengan ekstensi .vtt
+        // 2. Test Provider: Litterbox (Catbox Temp)
         try {
             val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("reqtype", "fileupload")
                 .addFormDataPart("time", "1h")
                 .addFormDataPart("fileToUpload", "sub.vtt", reqBody).build()
-            val res = app.post("https://litterbox.catbox.moe/api.php", requestBody = multiBody, timeout = 4).text.trim()
-            if (res.startsWith("http") && res.endsWith(".vtt")) return res
-        } catch (e: Exception) {}
+            val res = app.post("https://litterbox.catbox.moe/api.php", requestBody = multiBody, timeout = 5).text.trim()
+            Log.d("DramacoolSubTest", "Litterbox Response: $res")
+            if (res.startsWith("http")) return res
+        } catch (e: Exception) {
+            Log.e("DramacoolSubTest", "Litterbox Error: ${e.message}")
+        }
 
-        // 3. Filebin.net (Struktur Direct Bin Stream)
-        try {
-            val binId = UUID.randomUUID().toString().replace("-", "").take(16)
-            val fileUrl = "https://filebin.net/$binId/sub.vtt"
-            val res = app.post(fileUrl, requestBody = reqBody, timeout = 4)
-            if (res.code in 200..299) {
-                return fileUrl
-            }
-        } catch (e: Exception) {}
-
-        // 4. Pixeldrain API (Direct File ID)
+        // 3. Test Provider: Pixeldrain
         try {
             val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
                 .addFormDataPart("file", "sub.vtt", reqBody).build()
-            val res = app.post("https://pixeldrain.com/api/file/", requestBody = multiBody, timeout = 4).text
+            val res = app.post("https://pixeldrain.com/api/file/", requestBody = multiBody, timeout = 5).text
             val id = JSONObject(res).optString("id")
-            if (id.isNotBlank()) return "https://pixeldrain.com/api/file/$id"
-        } catch (e: Exception) {}
+            val directUrl = "https://pixeldrain.com/api/file/$id"
+            Log.d("DramacoolSubTest", "Pixeldrain Response: $directUrl")
+            if (id.isNotBlank()) return directUrl
+        } catch (e: Exception) {
+            Log.e("DramacoolSubTest", "Pixeldrain Error: ${e.message}")
+        }
+
+        // 4. Test Provider: Tmpfiles (Dengan mekanisme konversi HTML page ke Raw Link via Jsoup)
+        try {
+            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
+                .addFormDataPart("file", "sub.vtt", reqBody).build()
+            val res = app.post("https://tmpfiles.org/api/v1/upload", requestBody = multiBody, timeout = 5).text
+            val pageUrl = JSONObject(res).getJSONObject("data").optString("url")
+            Log.d("DramacoolSubTest", "Tmpfiles Page URL: $pageUrl")
+            
+            if (pageUrl.isNotBlank()) {
+                // Konversi halaman HTML download ke direct raw link tanpa JS menggunakan Jsoup parsing
+                val doc = app.get(pageUrl, headers = mapOf("User-Agent" to userAgent)).document
+                val rawLink = doc.select("a#download, a[href*='/dl/']").attr("href").ifBlank {
+                    pageUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                }
+                Log.d("DramacoolSubTest", "Tmpfiles Converted Raw Link: $rawLink")
+                if (rawLink.isNotBlank()) return rawLink
+            }
+        } catch (e: Exception) {
+            Log.e("DramacoolSubTest", "Tmpfiles Error: ${e.message}")
+        }
+
+        // 5. Test Provider: Transfer.sh
+        try {
+            val res = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody, timeout = 5).text.trim()
+            Log.d("DramacoolSubTest", "Transfer.sh Response: $res")
+            if (res.startsWith("http")) return res
+        } catch (e: Exception) {
+            Log.e("DramacoolSubTest", "Transfer.sh Error: ${e.message}")
+        }
 
         return ""
     }
@@ -277,12 +306,26 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                val uploadedUrl = uploadSubtitleResilient(finalVtt)
+                                val uploadedUrl = uploadSubtitleExplicitTest(finalVtt)
                                 
                                 if (uploadedUrl.isNotBlank()) {
-                                    subtitleCallback.invoke(
-                                        SubtitleFile("English (VidBasic)", uploadedUrl)
-                                    )
+                                    // Validasi akhir memastikan konten merespons dengan format WEBVTT
+                                    try {
+                                        val testCheck = app.get(uploadedUrl, timeout = 3).text
+                                        if (testCheck.contains("WEBVTT")) {
+                                            Log.i("DramacoolSubTest", "Subtitle Verified Successfully as WEBVTT!")
+                                            subtitleCallback.invoke(
+                                                SubtitleFile("English (VidBasic)", uploadedUrl)
+                                            )
+                                        } else {
+                                            Log.w("DramacoolSubTest", "Warning: Uploaded URL did not return WEBVTT content format.")
+                                        }
+                                    } catch (ex: Exception) {
+                                        // Tetap daftarkan jika validasi jaringan ketat terhalang VPN
+                                        subtitleCallback.invoke(
+                                            SubtitleFile("English (VidBasic)", uploadedUrl)
+                                        )
+                                    }
                                 }
                             }
                         }
