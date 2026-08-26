@@ -434,13 +434,15 @@ class Dramacool : MainAPI() {
                 val extras = fetchEpisodeExtras(title, epNum)
 
                 val descBuilder = StringBuilder()
-                val airDateStr = if (!extras.airDate.isNullOrBlank()) "**📅 ${extras.airDate}**" else ""
-                val ratingStr = if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") "**⭐ ${extras.rating}**" else ""
+                val airDateStr = if (!extras.airDate.isNullOrBlank()) "📅 ${extras.airDate}" else ""
+                val ratingStr = if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") "⭐ ${extras.rating}" else ""
 
-                // Memposisikan Air Date di kiri & Rating di kanan dalam 1 baris (tebal)
                 if (airDateStr.isNotBlank() || ratingStr.isNotBlank()) {
                     if (airDateStr.isNotBlank() && ratingStr.isNotBlank()) {
-                        descBuilder.append("$airDateStr                                  $ratingStr\n\n")
+                        // Menggunakan karakter Unicode 'Em Space' (\u2003) untuk memberi jarak lebar
+                        // agar rating benar-benar terdorong ke sisi kanan, 
+                        // lalu dipisah dengan \n\n agar deskripsi berada bersih di bawahnya.
+                        descBuilder.append("$airDateStr \u2003\u2003\u2003\u2003\u2003\u2003\u2003 $ratingStr\n\n")
                     } else if (airDateStr.isNotBlank()) {
                         descBuilder.append("$airDateStr\n\n")
                     } else {
@@ -448,7 +450,6 @@ class Dramacool : MainAPI() {
                     }
                 }
 
-                // Baris baru untuk deskripsi/plot episode
                 if (!extras.description.isNullOrBlank()) {
                     descBuilder.append(extras.description)
                 } else {
