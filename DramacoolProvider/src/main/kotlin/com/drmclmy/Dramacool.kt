@@ -355,26 +355,45 @@ class Dramacool : MainAPI() {
                 val castObj = json.optJSONObject("cast")
                 if (castObj != null) {
                     val mainRoleArr = castObj.optJSONArray("Main Role")
-                    if (mainRoleArr != null) {
-                        for (i in 0 until mainRoleArr.length()) {
-                            val actorName = mainRoleArr.optString(i)
-                            if (actorName.isNotBlank()) {
-                                actors.add(ActorData(Actor(actorName)))
-                            }
-                        }
-                    }
                     val supportRoleArr = castObj.optJSONArray("Support Role")
-                    if (supportRoleArr != null) {
-                        for (i in 0 until supportRoleArr.length()) {
-                            val actorName = supportRoleArr.optString(i)
-                            if (actorName.isNotBlank() && actors.size < 10) {
-                                actors.add(ActorData(Actor(actorName)))
+                    
+                    fun processArray(arr: JSONArray?) {
+                        if (arr == null) return
+                        for (i in 0 until arr.length()) {
+                            if (actors.size >= 10) break
+                            when (val item = arr.get(i)) {
+                                is JSONObject -> {
+                                    val name = item.optString("name", "").takeIf { it.isNotBlank() } ?: continue
+                                    val character = item.optString("character", "").ifBlank { item.optString("role", "") }.takeIf { it.isNotBlank() }
+                                    val image = item.optString("image", "").takeIf { it.isNotBlank() }
+                                    actors.add(ActorData(Actor(name, image), roleString = character))
+                                }
+                                is String -> {
+                                    if (item.trim().startsWith("{")) {
+                                        try {
+                                            val obj = JSONObject(item)
+                                            val name = obj.optString("name", "").takeIf { it.isNotBlank() } ?: continue
+                                            val character = obj.optString("character", "").ifBlank { obj.optString("role", "") }.takeIf { it.isNotBlank() }
+                                            val image = obj.optString("image", "").takeIf { it.isNotBlank() }
+                                            actors.add(ActorData(Actor(name, image), roleString = character))
+                                        } catch (e: Exception) {
+                                            actors.add(ActorData(Actor(item.trim())))
+                                        }
+                                    } else if (item.isNotBlank()) {
+                                        actors.add(ActorData(Actor(item.trim())))
+                                    }
+                                }
                             }
                         }
                     }
+
+                    processArray(mainRoleArr)
+                    processArray(supportRoleArr)
                 }
             }
-        } catch (e: Exception) {}
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         return actors.take(10)
     }
 
@@ -411,15 +430,20 @@ class Dramacool : MainAPI() {
             val extras = runCatching { fetchEpisodeExtras(title, epNum) }.getOrNull()
 
             val descBuilder = StringBuilder()
+            val metaHeader = mutableListOf<String>()
+
             if (!extras?.airDate.isNullOrBlank()) {
-                descBuilder.append("📅 ${extras?.airDate}  ")
+                metaHeader.add("📅 ${extras?.airDate}")
             }
-            if (!extras?.rating.isNullOrBlank()) {
-                descBuilder.append("⭐ ${extras?.rating}/10")
+            if (!extras?.rating.isNullOrBlank() && extras?.rating != "-/10") {
+                metaHeader.add("⭐ ${extras?.rating}")
             }
-            if (!descBuilder.isEmpty() && !extras?.description.isNullOrBlank()) {
-                descBuilder.append("\n\n")
+
+            // Memisahkan Air Date / Rating di atas dan Deskripsi di bawahnya menggunakan Enter (\n\n)
+            if (metaHeader.isNotEmpty()) {
+                descBuilder.append(metaHeader.joinToString("   ")).append("\n\n")
             }
+
             if (!extras?.description.isNullOrBlank()) {
                 descBuilder.append(extras?.description)
             } else {
