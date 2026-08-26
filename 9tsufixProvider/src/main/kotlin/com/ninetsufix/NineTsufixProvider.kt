@@ -7,7 +7,6 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.Preference
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -23,11 +22,6 @@ class NineTsuFixProvider : MainAPI() {
     override var lang = "ja"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    // Domain getter berdasarkan preferensi
-    override var mainUrl: String
-        get() = if (getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
-        set(value) { /* ignored */ }
-
     // Preferensi untuk pilihan domain
     override fun getPreferences(): List<Preference> {
         return listOf(
@@ -41,7 +35,12 @@ class NineTsuFixProvider : MainAPI() {
         )
     }
 
-    private fun getDomain(): String = (settings.get("domain") as? String) ?: "in"
+    private fun getDomain(): String = getPreference("domain", "in")
+
+    // Domain getter
+    override var mainUrl: String
+        get() = if (getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
+        set(value) { /* ignored */ }
 
     // Category pages untuk masing-masing domain
     private val categoryPagesIn = setOf(
@@ -296,7 +295,6 @@ class NineTsuFixProvider : MainAPI() {
                     else -> null
                 } ?: return@mapNotNull null
 
-                // Filter untuk domain .vip: pastikan link bukan category dan berada di domain utama
                 if (getDomain() == "vip") {
                     if (isCategoryPage(link) || link == mainUrl || link == "$mainUrl/") return@mapNotNull null
                 }
@@ -545,7 +543,6 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Jika tidak ada seriesUrl dari breadcrumb, coba cari link kategori lain
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -566,11 +563,9 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
-            // Jika masih gagal, perlakukan sebagai single page (movie)
             return loadSinglePage(doc, url, relatedItems)
         }
 
-        // Jika bukan category dan bukan episode, anggap single page
         return loadSinglePage(doc, url, relatedItems)
     }
 
@@ -589,14 +584,12 @@ class NineTsuFixProvider : MainAPI() {
 
         val allUrls = mutableSetOf<String>()
 
-        // 1. Proses semua iframe
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 if (src.startsWith("//")) src = "https:$src"
                 if (!src.startsWith("http")) return@forEach
 
-                // Pengecekan spesifik untuk nested embed blogspherenews.xyz
                 if (src.contains("blogspherenews.xyz/embed/")) {
                     try {
                         val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
@@ -648,13 +641,11 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
 
-        // 2. video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -687,16 +678,13 @@ class NineTsuFixProvider : MainAPI() {
             }
         }
 
-        // 4. data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Validasi URL Ekstraktor
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
