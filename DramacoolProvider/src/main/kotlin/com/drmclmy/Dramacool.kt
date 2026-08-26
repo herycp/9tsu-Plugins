@@ -6,9 +6,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MultipartBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import org.json.JSONArray
@@ -230,61 +227,14 @@ class Dramacool : MainAPI() {
                             val finalVtt = "WEBVTT\n\n$cleanVtt"
 
                             if (finalVtt.isNotBlank()) {
-                                var uploadedUrl = ""
+                                // MENGGUNAKAN DATA URI BASE64
+                                // Bypass total semua batasan VPN, Uploaders, dan Network Timeouts
+                                val base64Vtt = Base64.getEncoder().encodeToString(finalVtt.toByteArray(Charsets.UTF_8))
+                                val dataUri = "data:text/vtt;base64,$base64Vtt"
                                 
-                                // Provider 1: Catbox (dengan timeout ketat agar VPN tidak membuat hang)
-                                try {
-                                    val reqBody = MultipartBody.Builder()
-                                        .setType(MultipartBody.FORM)
-                                        .addFormDataPart("reqtype", "fileupload")
-                                        .addFormDataPart("fileToUpload", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
-                                        .build()
-                                    
-                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody, timeout = 3).text.trim()
-                                    if (res.startsWith("http")) uploadedUrl = res
-                                } catch (e: Exception) {}
-
-                                // Provider 2: 0x0.st
-                                if (uploadedUrl.isBlank()) {
-                                    try {
-                                        val reqBody2 = MultipartBody.Builder()
-                                            .setType(MultipartBody.FORM)
-                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
-                                            .build()
-                                        
-                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2, timeout = 3).text.trim()
-                                        if (res2.startsWith("http")) uploadedUrl = res2
-                                    } catch (e: Exception) {}
-                                }
-                                
-                                // Provider 3: Pixeldrain
-                                if (uploadedUrl.isBlank()) {
-                                    try {
-                                        val reqBody3 = MultipartBody.Builder()
-                                            .setType(MultipartBody.FORM)
-                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
-                                            .build()
-                                        
-                                        val res3 = app.post("https://pixeldrain.com/api/file/", requestBody = reqBody3, timeout = 3).text
-                                        val id = JSONObject(res3).optString("id")
-                                        if (id.isNotBlank()) uploadedUrl = "https://pixeldrain.com/api/file/$id"
-                                    } catch (e: Exception) {}
-                                }
-                                
-                                // Provider 4: Transfer.sh
-                                if (uploadedUrl.isBlank()) {
-                                    try {
-                                        val reqBody4 = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
-                                        val res4 = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody4, timeout = 4).text.trim()
-                                        if (res4.startsWith("http")) uploadedUrl = res4
-                                    } catch (e: Exception) {}
-                                }
-
-                                if (uploadedUrl.startsWith("http")) {
-                                    subtitleCallback.invoke(
-                                        SubtitleFile("English (VidBasic)", uploadedUrl)
-                                    )
-                                }
+                                subtitleCallback.invoke(
+                                    SubtitleFile("English (VidBasic)", dataUri)
+                                )
                             }
                         }
                     } catch (e: Exception) {
@@ -459,15 +409,21 @@ class Dramacool : MainAPI() {
                 val descBuilder = StringBuilder()
                 val metaData = mutableListOf<String>()
                 
+                // Menambahkan Non-Breaking Space (\u00A0) agar tidak diratakan oleh Cloudstream
                 if (!extras.airDate.isNullOrBlank()) {
-                    metaData.add("📅 ${extras.airDate}")
+                    metaData.add("📅\u00A0${extras.airDate}")
                 }
+                
+                // Rating hanya akan ditambahkan jika API memilikinya. 
+                // Jika tidak ada di screenshot, itu berarti API merespons null untuk episode ini.
                 if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") {
-                    metaData.add("⭐ ${extras.rating}")
+                    metaData.add("⭐\u00A0${extras.rating}")
                 }
 
                 if (metaData.isNotEmpty()) {
-                    descBuilder.append(metaData.joinToString(" • ")).append("\n\n")
+                    // Digabung menggunakan Bullet. Aman dari Regex \s+ milik Cloudstream.
+                    descBuilder.append(metaData.joinToString("\u00A0\u00A0•\u00A0\u00A0"))
+                    descBuilder.append("\u00A0\u00A0|\u00A0\u00A0")
                 }
 
                 if (!extras.description.isNullOrBlank()) {
