@@ -462,7 +462,6 @@ class Dramacool : MainAPI() {
 
                 if (airDateStr.isNotBlank() || ratingStr.isNotBlank()) {
                     if (airDateStr.isNotBlank() && ratingStr.isNotBlank()) {
-                        // Menggunakan jarak panjang dan karakter enter tunggal murni
                         descBuilder.append(airDateStr).append(" \u2003\u2003\u2003\u2003\u2003\u2003\u2003 ").append(ratingStr).append("\n")
                     } else if (airDateStr.isNotBlank()) {
                         descBuilder.append(airDateStr).append("\n")
@@ -520,21 +519,21 @@ class Dramacool : MainAPI() {
         val finalRecommendations = recommendationsDeferred.await()
 
         if (episodes.isEmpty()) {
-            return newMovieLoadResponse(title, url, TvType.Movie, url) {
+            newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else if (episodes.size == 1) {
-            return newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else {
-            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
