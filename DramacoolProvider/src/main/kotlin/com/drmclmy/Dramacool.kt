@@ -18,7 +18,6 @@ import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlinx.coroutines.runBlocking
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -355,7 +354,6 @@ class Dramacool : MainAPI() {
                 val json = JSONObject(response.text)
                 val castObj = json.optJSONObject("cast")
                 if (castObj != null) {
-                    // Ambil Main Role
                     val mainRoleArr = castObj.optJSONArray("Main Role")
                     if (mainRoleArr != null) {
                         for (i in 0 until mainRoleArr.length()) {
@@ -363,7 +361,6 @@ class Dramacool : MainAPI() {
                             if (actorName.isNotBlank()) actors.add(actorName)
                         }
                     }
-                    // Ambil Support Role jika belum cukup 10
                     val supportRoleArr = castObj.optJSONArray("Support Role")
                     if (supportRoleArr != null) {
                         for (i in 0 until supportRoleArr.length()) {
@@ -397,8 +394,8 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        // Ambil daftar aktor dari API cast (maksimal 10)
-        val actorsList = runCatching { runBlocking { fetchDramaCast(title) } }.getOrNull() ?: emptyList()
+        // Dipanggil secara langsung karena load adalah fungsi suspend
+        val actorsList = runCatching { fetchDramaCast(title) }.getOrNull() ?: emptyList()
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -410,10 +407,9 @@ class Dramacool : MainAPI() {
             val epMatch = episodeRegex.find(titleText)
             val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-            val extras = runCatching { runBlocking { fetchEpisodeExtras(title, epNum) } }.getOrNull()
+            val extras = runCatching { fetchEpisodeExtras(title, epNum) }.getOrNull()
 
             val descBuilder = StringBuilder()
-            // Air date dan rating hanya menggunakan icon tanpa teks keterangan
             if (!extras?.airDate.isNullOrBlank()) {
                 descBuilder.append("📅 ${extras?.airDate}  ")
             }
@@ -437,7 +433,6 @@ class Dramacool : MainAPI() {
             }
         }.sortedByDescending { it.episode ?: 0 }
 
-        // Rekomendasi dari tags (maksimal 15 judul unik)
         val recommendations = mutableListOf<SearchResponse>()
         val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
         val maxRecommendations = 15
