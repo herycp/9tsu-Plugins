@@ -628,15 +628,15 @@ class NineTsuFixProvider : MainAPI() {
                 }
 
                 when {
-                    src.contains("brinqeo.guru") -> {
-                        val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
+                    src.contains("zafliron.guru") -> {
+                        val idMatch = Regex("""zafliron\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "brinqeo",
+                                        name = "zafliron",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
