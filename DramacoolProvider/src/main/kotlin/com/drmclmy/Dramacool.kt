@@ -232,7 +232,7 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 var uploadedUrl = ""
                                 
-                                // Provider 1: Catbox
+                                // Provider 1: Catbox (dengan timeout ketat agar VPN tidak membuat hang)
                                 try {
                                     val reqBody = MultipartBody.Builder()
                                         .setType(MultipartBody.FORM)
@@ -240,7 +240,7 @@ class Dramacool : MainAPI() {
                                         .addFormDataPart("fileToUpload", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
                                         .build()
                                     
-                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody).text.trim()
+                                    val res = app.post("https://catbox.moe/user/api.php", requestBody = reqBody, timeout = 3).text.trim()
                                     if (res.startsWith("http")) uploadedUrl = res
                                 } catch (e: Exception) {}
 
@@ -252,7 +252,7 @@ class Dramacool : MainAPI() {
                                             .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
                                             .build()
                                         
-                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2).text.trim()
+                                        val res2 = app.post("https://0x0.st", requestBody = reqBody2, timeout = 3).text.trim()
                                         if (res2.startsWith("http")) uploadedUrl = res2
                                     } catch (e: Exception) {}
                                 }
@@ -265,7 +265,7 @@ class Dramacool : MainAPI() {
                                             .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
                                             .build()
                                         
-                                        val res3 = app.post("https://pixeldrain.com/api/file/", requestBody = reqBody3).text
+                                        val res3 = app.post("https://pixeldrain.com/api/file/", requestBody = reqBody3, timeout = 3).text
                                         val id = JSONObject(res3).optString("id")
                                         if (id.isNotBlank()) uploadedUrl = "https://pixeldrain.com/api/file/$id"
                                     } catch (e: Exception) {}
@@ -275,7 +275,7 @@ class Dramacool : MainAPI() {
                                 if (uploadedUrl.isBlank()) {
                                     try {
                                         val reqBody4 = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
-                                        val res4 = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody4).text.trim()
+                                        val res4 = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody4, timeout = 4).text.trim()
                                         if (res4.startsWith("http")) uploadedUrl = res4
                                     } catch (e: Exception) {}
                                 }
@@ -457,17 +457,17 @@ class Dramacool : MainAPI() {
                 val extras = fetchEpisodeExtras(title, epNum)
 
                 val descBuilder = StringBuilder()
-                val airDateStr = if (!extras.airDate.isNullOrBlank()) "📅 ${extras.airDate}" else ""
-                val ratingStr = if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") "⭐ ${extras.rating}" else ""
+                val metaData = mutableListOf<String>()
+                
+                if (!extras.airDate.isNullOrBlank()) {
+                    metaData.add("📅 ${extras.airDate}")
+                }
+                if (!extras.rating.isNullOrBlank() && extras.rating != "-/10") {
+                    metaData.add("⭐ ${extras.rating}")
+                }
 
-                if (airDateStr.isNotBlank() || ratingStr.isNotBlank()) {
-                    if (airDateStr.isNotBlank() && ratingStr.isNotBlank()) {
-                        descBuilder.append(airDateStr).append(" \u2003\u2003\u2003\u2003\u2003\u2003\u2003 ").append(ratingStr).append("\n")
-                    } else if (airDateStr.isNotBlank()) {
-                        descBuilder.append(airDateStr).append("\n")
-                    } else {
-                        descBuilder.append(ratingStr).append("\n")
-                    }
+                if (metaData.isNotEmpty()) {
+                    descBuilder.append(metaData.joinToString(" • ")).append("\n\n")
                 }
 
                 if (!extras.description.isNullOrBlank()) {
