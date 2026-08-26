@@ -7,6 +7,8 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
+import com.lagradost.cloudstream3.utils.PreferenceRow
+import com.lagradost.cloudstream3.utils.ListPreference
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -16,21 +18,101 @@ import java.util.Base64
 import java.net.URLEncoder
 
 class NineTsuFixProvider : MainAPI() {
-    override var mainUrl = "https://9tsu.in"
     override var name = "9tsu (Fix)"
     override val hasMainPage = true
     override var supportedTypes = setOf(TvType.TvSeries, TvType.Movie, TvType.Anime)
-    override var lang = "ja" 
+    override var lang = "ja"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
 
-    private val categoryPages = setOf(
+    // Domain getter berdasarkan preferensi
+    override var mainUrl: String
+        get() = if (getDomain() == "vip") "https://9tsu.vip" else "https://9tsu.in"
+        set(value) { /* ignored */ }
+
+    // Preferensi untuk pilihan domain
+    override fun getPreferences(): List<PreferenceRow> {
+        return listOf(
+            PreferenceRow(
+                "Sumber",
+                listOf(
+                    ListPreference(
+                        "domain",
+                        "Pilih Domain",
+                        listOf("in", "vip"),
+                        listOf("9tsu.in", "9tsu.vip"),
+                        "in"
+                    )
+                )
+            )
+        )
+    }
+
+    private fun getDomain(): String = getPreference("domain", "in")
+
+    // Category pages untuk masing-masing domain
+    private val categoryPagesIn = setOf(
         "/drama", "/monday", "/tuesday", "/wednesday", "/thursday",
         "/friday", "/saturday", "/sunday", "/daily", "/movie", "/spmovies",
         "/premium", "/housou-shuuryou", "/dramaend", "/youtube-baraeti"
     )
 
-    private data class EpisodeInfo(val link: String, val title: String)
+    private val categoryPagesVip = setOf(
+        "/daily", "/drama-monday1", "/drama-tuesday1", "/drama-wednesdaydouga",
+        "/drama-thursdaydouga", "/drama-fridaydouga", "/drama-saturdaydouga",
+        "/drama-sundaydouga", "/dramaend", "/premium"
+    )
 
+    private fun isCategoryPage(url: String): Boolean {
+        val path = url.replace(mainUrl, "").split("?")[0]
+        return if (getDomain() == "vip") {
+            categoryPagesVip.any { path == it || path.startsWith("$it/") }
+        } else {
+            categoryPagesIn.any { path == it || path.startsWith("$it/") }
+        }
+    }
+
+    private fun isEpisodePage(url: String): Boolean {
+        if (isCategoryPage(url)) return false
+        return if (getDomain() == "vip") {
+            url.startsWith(mainUrl) && url.endsWith(".html")
+        } else {
+            url.contains("/douga/") && url.endsWith(".html")
+        }
+    }
+
+    // Halaman utama dinamis
+    override val mainPage: MainPage
+        get() = if (getDomain() == "vip") {
+            mainPageOf(
+                "$mainUrl/" to "Terbaru",
+                "$mainUrl/daily" to "Harian (Daily)",
+                "$mainUrl/drama-monday1" to "Drama Senin",
+                "$mainUrl/drama-tuesday1" to "Drama Selasa",
+                "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
+                "$mainUrl/drama-thursdaydouga" to "Drama Kamis",
+                "$mainUrl/drama-fridaydouga" to "Drama Jumat",
+                "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
+                "$mainUrl/drama-sundaydouga" to "Drama Minggu",
+                "$mainUrl/dramaend" to "Drama Tamat (End)",
+                "$mainUrl/premium" to "Kategori Premium"
+            )
+        } else {
+            mainPageOf(
+                "$mainUrl/drama" to "Drama",
+                "$mainUrl/monday" to "Monday",
+                "$mainUrl/tuesday" to "Tuesday",
+                "$mainUrl/wednesday" to "Wednesday",
+                "$mainUrl/thursday" to "Thursday",
+                "$mainUrl/friday" to "Friday",
+                "$mainUrl/saturday" to "Saturday",
+                "$mainUrl/sunday" to "Sunday",
+                "$mainUrl/daily" to "Daily",
+                "$mainUrl/movie" to "Movie",
+                "$mainUrl/spmovies" to "SP Movies"
+            )
+        }
+
+    // Helper functions
     private fun getAttrOrNull(element: Element?, attr: String): String? {
         val value = element?.attr(attr)?.trim()
         return if (value.isNullOrEmpty()) null else value
@@ -104,24 +186,10 @@ class NineTsuFixProvider : MainAPI() {
         when (epStr) {
             "前編", "前篇" -> return 1
             "中編" -> return 2
-            "後編", "後篇" -> return 3 
+            "後編", "後篇" -> return 3
         }
         return Regex("""\d+""").find(epStr)?.value?.toIntOrNull()
     }
-
-    override val mainPage = mainPageOf(
-        "$mainUrl/drama" to "Drama",
-        "$mainUrl/monday" to "Monday",
-        "$mainUrl/tuesday" to "Tuesday",
-        "$mainUrl/wednesday" to "Wednesday",
-        "$mainUrl/thursday" to "Thursday",
-        "$mainUrl/friday" to "Friday",
-        "$mainUrl/saturday" to "Saturday",
-        "$mainUrl/sunday" to "Sunday",
-        "$mainUrl/daily" to "Daily",
-        "$mainUrl/movie" to "Movie",
-        "$mainUrl/spmovies" to "SP Movies"
-    )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val url = if (page > 1) {
@@ -159,7 +227,7 @@ class NineTsuFixProvider : MainAPI() {
 
         val ajaxPage = (page - 1).coerceAtLeast(0)
         val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
-        
+
         val params = mapOf(
             "action" to "load_more",
             "page" to ajaxPage.toString(),
@@ -220,25 +288,33 @@ class NineTsuFixProvider : MainAPI() {
         }
     }
 
-    private fun isCategoryPage(url: String): Boolean {
-        val path = url.replace(mainUrl, "").split("?")[0]
-        return categoryPages.any { path == it || path.startsWith("$it/") }
-    }
-
     private fun extractEpisodeInfo(doc: Document): List<EpisodeInfo> {
-        return doc.select("article.cactus-post-item a[href*='/douga/']")
+        val selector = if (getDomain() == "vip") {
+            "a[href$='.html']"
+        } else {
+            "a[href*='/douga/']"
+        }
+        return doc.select(selector)
             .mapNotNull { element ->
                 val href = element.attr("href")
                 val link = when {
                     href.startsWith("http") -> href
-                    href.startsWith("/") -> "https://9tsu.in$href"
+                    href.startsWith("/") -> mainUrl + href
                     else -> null
                 } ?: return@mapNotNull null
+
+                // Filter untuk domain .vip: pastikan link bukan category dan berada di domain utama
+                if (getDomain() == "vip") {
+                    if (isCategoryPage(link) || link == mainUrl || link == "$mainUrl/") return@mapNotNull null
+                }
+
                 val title = element.attr("title").takeIf { it.isNotBlank() } ?: element.text().trim()
                 if (title.isBlank()) return@mapNotNull null
                 EpisodeInfo(link, title)
             }.distinctBy { it.link }
     }
+
+    private data class EpisodeInfo(val link: String, val title: String)
 
     private fun getSeriesUrlFromBreadcrumb(doc: Document): String? {
         val breadcrumbNav = doc.selectFirst("nav.rank-math-breadcrumb, nav[aria-label='breadcrumbs'], .breadcrumb")
@@ -309,7 +385,7 @@ class NineTsuFixProvider : MainAPI() {
 
             while (hasMore) {
                 try {
-                    val ajaxUrl = "https://9tsu.in/wp-admin/admin-ajax.php"
+                    val ajaxUrl = "$mainUrl/wp-admin/admin-ajax.php"
                     val params = mutableMapOf<String, String>()
                     params["action"] = "load_more"
                     params["page"] = page.toString()
@@ -401,7 +477,7 @@ class NineTsuFixProvider : MainAPI() {
         val episodes = reversedEpisodes.map { episode ->
             val epNumStr = extractEpisodeNumber(episode.title)
             val parsedEpNum = parseEpisodeStringToInt(epNumStr)
-            
+
             var cleanTitle = episode.title
             if (cleanTitle.contains(seriesTitle, ignoreCase = true)) {
                 cleanTitle = cleanTitle.replace(seriesTitle, "", ignoreCase = true).trim()
@@ -412,7 +488,7 @@ class NineTsuFixProvider : MainAPI() {
             newEpisode(cleanTitle) {
                 this.name = cleanTitle
                 this.data = episode.link
-                this.episode = parsedEpNum 
+                this.episode = parsedEpNum
             }
         }
 
@@ -456,7 +532,7 @@ class NineTsuFixProvider : MainAPI() {
             return loadSinglePage(doc, url, relatedItems)
         }
 
-        if (url.contains("/douga/")) {
+        if (isEpisodePage(url)) {
             var seriesUrl = getSeriesUrlFromBreadcrumb(doc)
             if (seriesUrl != null) {
                 try {
@@ -476,6 +552,7 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
+            // Jika tidak ada seriesUrl dari breadcrumb, coba cari link kategori lain
             val seriesLink = doc.select("a[rel='category']").firstOrNull()
             if (seriesLink != null) {
                 val href = seriesLink.attr("href")
@@ -496,20 +573,11 @@ class NineTsuFixProvider : MainAPI() {
                 }
             }
 
+            // Jika masih gagal, perlakukan sebagai single page (movie)
             return loadSinglePage(doc, url, relatedItems)
         }
 
-        val episodeList = extractEpisodeInfo(doc)
-
-        if (episodeList.isNotEmpty()) {
-            val allEpisodes = loadAllEpisodes(url)
-            if (allEpisodes.isNotEmpty()) {
-                return buildSeriesResponse(doc, url, allEpisodes, relatedItems)
-            } else {
-                return buildSeriesResponse(doc, url, episodeList, relatedItems)
-            }
-        }
-
+        // Jika bukan category dan bukan episode, anggap single page
         return loadSinglePage(doc, url, relatedItems)
     }
 
@@ -534,8 +602,8 @@ class NineTsuFixProvider : MainAPI() {
             if (src.isNotBlank()) {
                 if (src.startsWith("//")) src = "https:$src"
                 if (!src.startsWith("http")) return@forEach
-                
-                // [BARU] Pengecekan spesifik untuk nested embed blogspherenews.xyz
+
+                // Pengecekan spesifik untuk nested embed blogspherenews.xyz
                 if (src.contains("blogspherenews.xyz/embed/")) {
                     try {
                         val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
@@ -543,13 +611,12 @@ class NineTsuFixProvider : MainAPI() {
                         var innerSrc = innerIframe?.attr("src")?.ifBlank { innerIframe.attr("data-src") }
                         if (!innerSrc.isNullOrBlank()) {
                             if (innerSrc.startsWith("//")) innerSrc = "https:$innerSrc"
-                            src = innerSrc // Ganti src dengan link aslinya agar diolah oleh tahapan 'when' di bawah
+                            src = innerSrc
                         }
                     } catch (e: Exception) { e.printStackTrace() }
                 }
 
                 when {
-                    // [UPDATE] muxalor.guru berubah menjadi brinqeo.guru
                     src.contains("brinqeo.guru") -> {
                         val idMatch = Regex("""brinqeo\.guru/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
@@ -570,11 +637,9 @@ class NineTsuFixProvider : MainAPI() {
                             } catch (e: Exception) { e.printStackTrace() }
                         }
                     }
-                    // Ok.ru ditambahkan langsung ke allUrls karena CloudStream punya okru extractor bawaan
                     src.contains("ok.ru") -> {
-                        allUrls.add(src) 
+                        allUrls.add(src)
                     }
-                    // Iframe biasa lainnya diekstrak manual menggunakan Regex
                     else -> {
                         allUrls.add(src)
                         try {
