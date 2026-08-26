@@ -31,10 +31,6 @@ class NineTsuFixProvider : MainAPI() {
 
     // Category pages untuk 9tsu.vip (berdasarkan screenshot)
     private val categoryPagesVip = setOf(
-        "/spmovies",
-        "/kinro-ntv",
-        "/spdrama",
-        "/youtube-baraeti",
         "/drama",
         "/drama-monday1",
         "/drama-tuesday1",
@@ -45,16 +41,17 @@ class NineTsuFixProvider : MainAPI() {
         "/drama-sundaydouga",
         "/daily",
         "/dramaend",
-        "/premium"
+        "/movies",
+        "/premium",
+        "/spmovies",
+        "/kinro-ntv",
+        "/spdrama",
+        "/youtube-baraeti"
     )
 
     // Halaman utama dinamis
     override val mainPage get() = if (NineTsuPrefs.getDomain() == "vip") {
         mainPageOf(
-            "$mainUrl/spmovies" to "SP Movies",
-            "$mainUrl/kinro-ntv" to "Kinro NTV",
-            "$mainUrl/spdrama" to "SP Drama",
-            "$mainUrl/youtube-baraeti" to "YouTube Baraeti",
             "$mainUrl/drama" to "Drama",
             "$mainUrl/drama-monday1" to "Drama Senin",
             "$mainUrl/drama-tuesday1" to "Drama Selasa",
@@ -64,6 +61,11 @@ class NineTsuFixProvider : MainAPI() {
             "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
             "$mainUrl/drama-sundaydouga" to "Drama Minggu",
             "$mainUrl/daily" to "Daily",
+            "$mainUrl/movies" to "Movies",
+            "$mainUrl/spmovies" to "SP Movies",
+            "$mainUrl/kinro-ntv" to "Kinro NTV",
+            "$mainUrl/spdrama" to "SP Drama",
+            "$mainUrl/youtube-baraeti" to "YouTube Baraeti",
             "$mainUrl/dramaend" to "Drama Tamat (End)",
             "$mainUrl/premium" to "Premium"
         )
