@@ -11,6 +11,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MultipartBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
+import org.json.JSONArray
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
@@ -68,7 +69,6 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // True Paging Search: Halaman 1 tanpa &page=, Halaman 2+ dengan &page=N
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val cleanQuery = query.trim().replace(" ", "+")
         if (cleanQuery.isBlank()) return newSearchResponseList(emptyList(), false)
@@ -344,6 +344,41 @@ class Dramacool : MainAPI() {
         }
     }
 
+    private suspend fun fetchDramaCast(dramaTitle: String): List<String> {
+        val actors = mutableListOf<String>()
+        try {
+            val formattedTitle = URLEncoder.encode(dramaTitle, "UTF-8")
+            val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$formattedTitle/cast"
+            
+            val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent))
+            if (response.code == 200) {
+                val json = JSONObject(response.text)
+                val castObj = json.optJSONObject("cast")
+                if (castObj != null) {
+                    // Ambil Main Role
+                    val mainRoleArr = castObj.optJSONArray("Main Role")
+                    if (mainRoleArr != null) {
+                        for (i in 0 until mainRoleArr.length()) {
+                            val actorName = mainRoleArr.optString(i)
+                            if (actorName.isNotBlank()) actors.add(actorName)
+                        }
+                    }
+                    // Ambil Support Role jika belum cukup 10
+                    val supportRoleArr = castObj.optJSONArray("Support Role")
+                    if (supportRoleArr != null) {
+                        for (i in 0 until supportRoleArr.length()) {
+                            val actorName = supportRoleArr.optString(i)
+                            if (actorName.isNotBlank() && actors.size < 10) {
+                                actors.add(actorName)
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {}
+        return actors.take(10)
+    }
+
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -362,6 +397,9 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
+        // Ambil daftar aktor dari API cast (maksimal 10)
+        val actorsList = runCatching { runBlocking { fetchDramaCast(title) } }.getOrNull() ?: emptyList()
+
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
 
@@ -372,18 +410,18 @@ class Dramacool : MainAPI() {
             val epMatch = episodeRegex.find(titleText)
             val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-            // Ambil data tambahan dari API MyDramaList
             val extras = runCatching { runBlocking { fetchEpisodeExtras(title, epNum) } }.getOrNull()
 
             val descBuilder = StringBuilder()
+            // Air date dan rating hanya menggunakan icon tanpa teks keterangan
             if (!extras?.airDate.isNullOrBlank()) {
-                descBuilder.append("📅 **Air Date:** ${extras?.airDate}\n")
+                descBuilder.append("📅 ${extras?.airDate}  ")
             }
             if (!extras?.rating.isNullOrBlank()) {
-                descBuilder.append("⭐ **Rating:** ${extras?.rating}\n")
+                descBuilder.append("⭐ ${extras?.rating}/10")
             }
             if (!descBuilder.isEmpty() && !extras?.description.isNullOrBlank()) {
-                descBuilder.append("\n")
+                descBuilder.append("\n\n")
             }
             if (!extras?.description.isNullOrBlank()) {
                 descBuilder.append(extras?.description)
@@ -431,18 +469,21 @@ class Dramacool : MainAPI() {
             return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
+                this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else if (episodes.size == 1) {
             return newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = description
+                this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else {
             return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = description
+                this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         }
