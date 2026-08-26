@@ -232,6 +232,7 @@ class Dramacool : MainAPI() {
                             if (finalVtt.isNotBlank()) {
                                 var uploadedUrl = ""
                                 
+                                // Provider 1: Catbox
                                 try {
                                     val reqBody = MultipartBody.Builder()
                                         .setType(MultipartBody.FORM)
@@ -243,6 +244,7 @@ class Dramacool : MainAPI() {
                                     if (res.startsWith("http")) uploadedUrl = res
                                 } catch (e: Exception) {}
 
+                                // Provider 2: 0x0.st
                                 if (uploadedUrl.isBlank()) {
                                     try {
                                         val reqBody2 = MultipartBody.Builder()
@@ -252,6 +254,29 @@ class Dramacool : MainAPI() {
                                         
                                         val res2 = app.post("https://0x0.st", requestBody = reqBody2).text.trim()
                                         if (res2.startsWith("http")) uploadedUrl = res2
+                                    } catch (e: Exception) {}
+                                }
+                                
+                                // Provider 3: Pixeldrain
+                                if (uploadedUrl.isBlank()) {
+                                    try {
+                                        val reqBody3 = MultipartBody.Builder()
+                                            .setType(MultipartBody.FORM)
+                                            .addFormDataPart("file", "sub.vtt", finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull()))
+                                            .build()
+                                        
+                                        val res3 = app.post("https://pixeldrain.com/api/file/", requestBody = reqBody3).text
+                                        val id = JSONObject(res3).optString("id")
+                                        if (id.isNotBlank()) uploadedUrl = "https://pixeldrain.com/api/file/$id"
+                                    } catch (e: Exception) {}
+                                }
+                                
+                                // Provider 4: Transfer.sh
+                                if (uploadedUrl.isBlank()) {
+                                    try {
+                                        val reqBody4 = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
+                                        val res4 = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody4).text.trim()
+                                        if (res4.startsWith("http")) uploadedUrl = res4
                                     } catch (e: Exception) {}
                                 }
 
@@ -416,10 +441,8 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        // 1. Fetch Cast secara Paralel
         val actorsDeferred = async { fetchDramaCast(title) }
 
-        // 2. Fetch Episode Extras secara Paralel
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
 
@@ -439,14 +462,12 @@ class Dramacool : MainAPI() {
 
                 if (airDateStr.isNotBlank() || ratingStr.isNotBlank()) {
                     if (airDateStr.isNotBlank() && ratingStr.isNotBlank()) {
-                        // Menggunakan karakter Unicode 'Em Space' (\u2003) untuk memberi jarak lebar
-                        // agar rating benar-benar terdorong ke sisi kanan, 
-                        // lalu dipisah dengan \n\n agar deskripsi berada bersih di bawahnya.
-                        descBuilder.append("$airDateStr \u2003\u2003\u2003\u2003\u2003\u2003\u2003 $ratingStr\n\n")
+                        // Menggunakan jarak panjang dan karakter enter tunggal murni
+                        descBuilder.append(airDateStr).append(" \u2003\u2003\u2003\u2003\u2003\u2003\u2003 ").append(ratingStr).append("\n")
                     } else if (airDateStr.isNotBlank()) {
-                        descBuilder.append("$airDateStr\n\n")
+                        descBuilder.append(airDateStr).append("\n")
                     } else {
-                        descBuilder.append("$ratingStr\n\n")
+                        descBuilder.append(ratingStr).append("\n")
                     }
                 }
 
@@ -465,7 +486,6 @@ class Dramacool : MainAPI() {
             }
         }
 
-        // 3. Fetch Rekomendasi secara Paralel (Maksimal 15 Judul)
         val recommendationsDeferred = async {
             val recommendations = mutableListOf<SearchResponse>()
             val tags = document.select("div.tags a").mapNotNull { it.attr("href") }
@@ -500,21 +520,21 @@ class Dramacool : MainAPI() {
         val finalRecommendations = recommendationsDeferred.await()
 
         if (episodes.isEmpty()) {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
+            return newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else if (episodes.size == 1) {
-            newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
+            return newMovieLoadResponse(title, url, TvType.Movie, episodes.first().data) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
                 this.recommendations = finalRecommendations
             }
         } else {
-            newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
+            return newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = posterUrl
                 this.plot = description
                 this.actors = actorsList
