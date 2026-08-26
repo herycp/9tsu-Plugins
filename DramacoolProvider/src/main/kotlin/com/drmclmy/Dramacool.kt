@@ -343,8 +343,8 @@ class Dramacool : MainAPI() {
         }
     }
 
-    private suspend fun fetchDramaCast(dramaTitle: String): List<String> {
-        val actors = mutableListOf<String>()
+    private suspend fun fetchDramaCast(dramaTitle: String): List<ActorData> {
+        val actors = mutableListOf<ActorData>()
         try {
             val formattedTitle = URLEncoder.encode(dramaTitle, "UTF-8")
             val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$formattedTitle/cast"
@@ -358,7 +358,7 @@ class Dramacool : MainAPI() {
                     if (mainRoleArr != null) {
                         for (i in 0 until mainRoleArr.length()) {
                             val actorName = mainRoleArr.optString(i)
-                            if (actorName.isNotBlank()) actors.add(actorName)
+                            if (actorName.isNotBlank()) actors.add(ActorData(actorName))
                         }
                     }
                     val supportRoleArr = castObj.optJSONArray("Support Role")
@@ -366,7 +366,7 @@ class Dramacool : MainAPI() {
                         for (i in 0 until supportRoleArr.length()) {
                             val actorName = supportRoleArr.optString(i)
                             if (actorName.isNotBlank() && actors.size < 10) {
-                                actors.add(actorName)
+                                actors.add(ActorData(actorName))
                             }
                         }
                     }
@@ -394,7 +394,6 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        // Dipanggil secara langsung karena load adalah fungsi suspend
         val actorsList = runCatching { fetchDramaCast(title) }.getOrNull() ?: emptyList()
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
