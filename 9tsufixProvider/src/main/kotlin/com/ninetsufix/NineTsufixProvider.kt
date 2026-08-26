@@ -7,8 +7,7 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.PreferenceRow
-import com.lagradost.cloudstream3.utils.ListPreference
+import com.lagradost.cloudstream3.utils.Preference
 import org.json.JSONArray
 import org.json.JSONObject
 import org.jsoup.Jsoup
@@ -30,19 +29,14 @@ class NineTsuFixProvider : MainAPI() {
         set(value) { /* ignored */ }
 
     // Preferensi untuk pilihan domain
-    override fun getPreferences(): List<PreferenceRow> {
+    override fun getPreferences(): List<Preference> {
         return listOf(
-            PreferenceRow(
-                "Sumber",
-                listOf(
-                    ListPreference(
-                        "domain",
-                        "Pilih Domain",
-                        listOf("in", "vip"),
-                        listOf("9tsu.in", "9tsu.vip"),
-                        "in"
-                    )
-                )
+            Preference.List(
+                "domain",
+                "Pilih Domain",
+                listOf("in", "vip"),
+                listOf("9tsu.in", "9tsu.vip"),
+                "in"
             )
         )
     }
@@ -62,6 +56,37 @@ class NineTsuFixProvider : MainAPI() {
         "/drama-sundaydouga", "/dramaend", "/premium"
     )
 
+    // Halaman utama dinamis
+    override val mainPage get() = if (getDomain() == "vip") {
+        mainPageOf(
+            "$mainUrl/" to "Terbaru",
+            "$mainUrl/daily" to "Harian (Daily)",
+            "$mainUrl/drama-monday1" to "Drama Senin",
+            "$mainUrl/drama-tuesday1" to "Drama Selasa",
+            "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
+            "$mainUrl/drama-thursdaydouga" to "Drama Kamis",
+            "$mainUrl/drama-fridaydouga" to "Drama Jumat",
+            "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
+            "$mainUrl/drama-sundaydouga" to "Drama Minggu",
+            "$mainUrl/dramaend" to "Drama Tamat (End)",
+            "$mainUrl/premium" to "Kategori Premium"
+        )
+    } else {
+        mainPageOf(
+            "$mainUrl/drama" to "Drama",
+            "$mainUrl/monday" to "Monday",
+            "$mainUrl/tuesday" to "Tuesday",
+            "$mainUrl/wednesday" to "Wednesday",
+            "$mainUrl/thursday" to "Thursday",
+            "$mainUrl/friday" to "Friday",
+            "$mainUrl/saturday" to "Saturday",
+            "$mainUrl/sunday" to "Sunday",
+            "$mainUrl/daily" to "Daily",
+            "$mainUrl/movie" to "Movie",
+            "$mainUrl/spmovies" to "SP Movies"
+        )
+    }
+
     private fun isCategoryPage(url: String): Boolean {
         val path = url.replace(mainUrl, "").split("?")[0]
         return if (getDomain() == "vip") {
@@ -79,38 +104,6 @@ class NineTsuFixProvider : MainAPI() {
             url.contains("/douga/") && url.endsWith(".html")
         }
     }
-
-    // Halaman utama dinamis
-    override val mainPage: MainPage
-        get() = if (getDomain() == "vip") {
-            mainPageOf(
-                "$mainUrl/" to "Terbaru",
-                "$mainUrl/daily" to "Harian (Daily)",
-                "$mainUrl/drama-monday1" to "Drama Senin",
-                "$mainUrl/drama-tuesday1" to "Drama Selasa",
-                "$mainUrl/drama-wednesdaydouga" to "Drama Rabu",
-                "$mainUrl/drama-thursdaydouga" to "Drama Kamis",
-                "$mainUrl/drama-fridaydouga" to "Drama Jumat",
-                "$mainUrl/drama-saturdaydouga" to "Drama Sabtu",
-                "$mainUrl/drama-sundaydouga" to "Drama Minggu",
-                "$mainUrl/dramaend" to "Drama Tamat (End)",
-                "$mainUrl/premium" to "Kategori Premium"
-            )
-        } else {
-            mainPageOf(
-                "$mainUrl/drama" to "Drama",
-                "$mainUrl/monday" to "Monday",
-                "$mainUrl/tuesday" to "Tuesday",
-                "$mainUrl/wednesday" to "Wednesday",
-                "$mainUrl/thursday" to "Thursday",
-                "$mainUrl/friday" to "Friday",
-                "$mainUrl/saturday" to "Saturday",
-                "$mainUrl/sunday" to "Sunday",
-                "$mainUrl/daily" to "Daily",
-                "$mainUrl/movie" to "Movie",
-                "$mainUrl/spmovies" to "SP Movies"
-            )
-        }
 
     // Helper functions
     private fun getAttrOrNull(element: Element?, attr: String): String? {
