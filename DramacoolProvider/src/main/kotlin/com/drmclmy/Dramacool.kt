@@ -443,6 +443,7 @@ class Dramacool : MainAPI() {
                     metaHeader.add("⭐ ${extras.rating}")
                 }
 
+                // Air Date dan Rating digabung dalam 1 baris, dipisah spasi
                 if (metaHeader.isNotEmpty()) {
                     descBuilder.append(metaHeader.joinToString("   ")).append("\n\n")
                 }
