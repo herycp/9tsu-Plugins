@@ -10,6 +10,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.newSubtitleFile
 
 class VidupExtractor : ExtractorApi() {
     override val name = "Vidup"
@@ -20,7 +21,6 @@ class VidupExtractor : ExtractorApi() {
         Log.d("VidupDebug", "Target URL: $url")
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         
-        // Memastikan referer original
         val baseHeaders = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/", "Origin" to mainUrl)
         
         val pageRes = app.get(url, headers = baseHeaders).text
@@ -78,13 +78,14 @@ class VidupExtractor : ExtractorApi() {
                     val subUrl = sub.file ?: sub.url ?: return@forEach
                     val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
                     if (subUrl.startsWith("http") && !isInvalid) {
-                        // Penyertaan headers agar ExoPlayer berhasil mengunduh subtitle dengan referer vidup.to
+                        // Menggunakan DSL newSubtitleFile terbaru
                         subtitleCallback.invoke(
-                            SubtitleFile(
+                            newSubtitleFile(
                                 lang = sub.label ?: sub.lang ?: sub.language ?: "Auto",
-                                url = subUrl,
-                                headers = baseHeaders
-                            )
+                                url = subUrl
+                            ) {
+                                this.headers = baseHeaders
+                            }
                         )
                     }
                 }
