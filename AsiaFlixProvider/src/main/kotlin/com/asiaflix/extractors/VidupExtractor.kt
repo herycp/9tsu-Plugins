@@ -4,13 +4,13 @@ import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.newSubtitleFile
 
 class VidupExtractor : ExtractorApi() {
     override val name = "Vidup"
@@ -49,8 +49,8 @@ class VidupExtractor : ExtractorApi() {
             return
         }
 
-        decServersRes.result.forEach { srv ->
-            val srvData = srv.data ?: return@forEach
+        for (srv in decServersRes.result) {
+            val srvData = srv.data ?: continue
             Log.d("VidupDebug", "Processing Server: ${srv.name}")
             
             val streamEncrypted = app.post("${encRes.result.stream}/$srvData", headers = headers).text
@@ -74,11 +74,11 @@ class VidupExtractor : ExtractorApi() {
                     } else m3u8Url = streamStr.result
                 }
 
-                subtitlesList?.forEach { sub ->
-                    val subUrl = sub.file ?: sub.url ?: return@forEach
+                // Menggunakan for-loop biasa karena newSubtitleFile adalah suspend fun
+                for (sub in subtitlesList ?: emptyList()) {
+                    val subUrl = sub.file ?: sub.url ?: continue
                     val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
                     if (subUrl.startsWith("http") && !isInvalid) {
-                        // Menggunakan DSL newSubtitleFile terbaru
                         subtitleCallback.invoke(
                             newSubtitleFile(
                                 lang = sub.label ?: sub.lang ?: sub.language ?: "Auto",
