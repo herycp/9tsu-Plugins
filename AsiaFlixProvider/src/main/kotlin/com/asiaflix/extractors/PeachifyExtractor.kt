@@ -1,9 +1,10 @@
 package com.asiaflix.extractors
 
-import android.util.Base64
 import android.util.Log
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -13,51 +14,81 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import javax.crypto.Cipher
-import javax.crypto.spec.GCMParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
 class PeachifyExtractor : ExtractorApi() {
     override val name = "Peachify"
     override val mainUrl = "https://peachify.top"
     override val requiresReferer = true
 
-    // Hanya menggunakan server yang aktif (menghapus domain .sbs yang sudah kedaluwarsa/NXDOMAIN)
+    // Server aktif menggunakan host none.eat-peach.sbs
     private val peachifyServers = listOf(
-        "https://peachify.top"
+        Pair("Air", "https://none.eat-peach.sbs/air"),
+        Pair("Multi", "https://none.eat-peach.sbs/multi"),
+        Pair("MovieBox", "https://none.eat-peach.sbs/moviebox"),
+        Pair("Holly", "https://none.eat-peach.sbs/holly"),
+        Pair("Net", "https://none.eat-peach.sbs/net"),
+        Pair("Bmb", "https://none.eat-peach.sbs/bmb")
     )
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        val path = url.removePrefix(mainUrl).removePrefix("https://peachify.top").substringBefore("?")
-        val headers = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer" to "$mainUrl/", "Origin" to mainUrl)
+        Log.d("PeachifyDebug", "Target Input URL: $url")
+        var mediaType = "movie"; var tmdbId = ""; var season = "1"; var episode = "1"
+
+        if (url.contains("/tv/")) {
+            mediaType = "tv"
+            val parts = url.substringAfter("/tv/").substringBefore("?").split("/")
+            tmdbId = parts.getOrNull(0) ?: ""; season = parts.getOrNull(1) ?: "1"; episode = parts.getOrNull(2) ?: "1"
+        } else if (url.contains("/movie/")) {
+            tmdbId = url.substringAfter("/movie/").substringBefore("?").substringBefore("/")
+        }
+
+        if (tmdbId.isEmpty()) return
+
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer" to "$mainUrl/",
+            "Origin" to mainUrl
+        )
+
+        val endpointPath = if (mediaType == "tv") "tv/$tmdbId/$season/$episode" else "movie/$tmdbId"
 
         coroutineScope {
-            peachifyServers.map { serverUrl ->
+            peachifyServers.map { (srvLabel, srvBaseUrl) ->
                 async {
                     try {
-                        val responseText = app.get("$serverUrl$path", headers = headers, timeout = 8).text
-                        var apiRes = tryParseJson<PeachifyApiResponse>(responseText)
+                        val targetApiUrl = "$srvBaseUrl/$endpointPath"
+                        Log.d("PeachifyDebug", "Fetching from API: $targetApiUrl")
 
-                        if (apiRes?.isEncrypted == true && !apiRes.data.isNullOrEmpty()) {
-                            val decJson = PeachifyDecryptor.decrypt(apiRes.data)
-                            if (decJson != null) apiRes = tryParseJson<PeachifyApiResponse>(decJson)
-                        }
+                        val responseText = app.get(targetApiUrl, headers = headers, timeout = 10).text
+                        val apiRes = tryParseJson<PeachifyApiResponse>(responseText)
 
-                        apiRes?.subtitles?.forEach { sub ->
-                            val subUrl = pickString(sub, listOf("url", "file", "src"))
+                        // Parse Subtitles
+                        for (sub in apiRes?.subtitles ?: emptyList()) {
+                            val subUrl = sub.url ?: sub.file ?: sub.src ?: continue
                             val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
                             if (subUrl.startsWith("http") && !isInvalid) {
-                                subtitleCallback.invoke(SubtitleFile(pickString(sub, listOf("label", "name")).ifEmpty { "Auto" }, subUrl))
+                                subtitleCallback.invoke(
+                                    newSubtitleFile(
+                                        lang = sub.label ?: sub.name ?: sub.lang ?: "Auto",
+                                        url = subUrl
+                                    ) {
+                                        this.headers = headers
+                                    }
+                                )
                             }
                         }
 
+                        // Parse Sources
                         apiRes?.sources?.forEach { src ->
-                            val streamUrl = pickString(src, listOf("url", "src", "file", "stream"))
-                            if (streamUrl.isNotEmpty()) {
-                                val isM3u8 = pickString(src, listOf("type", "format")).lowercase().contains("hls") || streamUrl.lowercase().contains(".m3u8")
+                            val streamUrl = src.url ?: src.src ?: src.file ?: return@forEach
+                            if (streamUrl.startsWith("http")) {
+                                Log.d("PeachifyDebug", "Found Stream ($srvLabel): $streamUrl")
+                                val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
+                                val dubLabel = if (src.dub.isNullOrBlank()) "Original" else src.dub
+
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "$name (Stream)",
+                                        name = "$name - $srvLabel ($dubLabel)",
                                         source = this@PeachifyExtractor.name,
                                         url = streamUrl,
                                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
@@ -70,29 +101,33 @@ class PeachifyExtractor : ExtractorApi() {
                             }
                         }
                     } catch (e: Exception) {
-                        Log.e("PeachifyDebug", "Error on server: ${e.message}")
+                        Log.e("PeachifyDebug", "Error fetching $srvLabel: ${e.message}")
                     }
                 }
             }.awaitAll()
         }
     }
 
-    private fun pickString(map: Map<String, Any?>, keys: List<String>): String = keys.firstNotNullOfOrNull { map[it] as? String }?.trim() ?: ""
+    data class PeachifyApiResponse(
+        @JsonProperty("providerName") val providerName: String? = null,
+        @JsonProperty("sources") val sources: List<PeachifySource>? = null,
+        @JsonProperty("subtitles") val subtitles: List<PeachifySubtitle>? = null
+    )
 
-    data class PeachifyApiResponse(val isEncrypted: Boolean? = null, val data: String? = null, val sources: List<Map<String, Any?>>? = null, val subtitles: List<Map<String, Any?>>? = null)
+    data class PeachifySource(
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("src") val src: String? = null,
+        @JsonProperty("file") val file: String? = null,
+        @JsonProperty("dub") val dub: String? = null,
+        @JsonProperty("type") val type: String? = null
+    )
 
-    private object PeachifyDecryptor {
-        private const val KEY = "YThmMmExYjVlOWM0NzA4MTRmNmIyYzNhNWQ4ZTdmOWMxYTJiM3M0ZDVlM2Y3YThiOGNhZDFlMmQwYTRkNWM1Yg=="
-        fun decrypt(payload: String): String? = try {
-            val parts = payload.split("."); if (parts.size != 3) null else {
-                val iv = Base64.decode(parts[0].replace('-', '+').replace('_', '/').padEnd(parts[0].length + (4 - parts[0].length % 4) % 4, '='), Base64.DEFAULT)
-                val ct = Base64.decode(parts[1].replace('-', '+').replace('_', '/').padEnd(parts[1].length + (4 - parts[1].length % 4) % 4, '='), Base64.DEFAULT)
-                val at = Base64.decode(parts[2].replace('-', '+').replace('_', '/').padEnd(parts[2].length + (4 - parts[2].length % 4) % 4, '='), Base64.DEFAULT)
-                val keyBytes = String(Base64.decode(KEY, Base64.DEFAULT)).chunked(2).map { it.toInt(16).toByte() }.toByteArray()
-                val encData = ByteArray(ct.size + at.size).apply { System.arraycopy(ct, 0, this, 0, ct.size); System.arraycopy(at, 0, this, ct.size, at.size) }
-                val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.DECRYPT_MODE, SecretKeySpec(keyBytes, "AES"), GCMParameterSpec(128, iv)) }
-                String(cipher.doFinal(encData), Charsets.UTF_8)
-            }
-        } catch (_: Exception) { null }
-    }
+    data class PeachifySubtitle(
+        @JsonProperty("url") val url: String? = null,
+        @JsonProperty("file") val file: String? = null,
+        @JsonProperty("src") val src: String? = null,
+        @JsonProperty("label") val label: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("lang") val lang: String? = null
+    )
 }
