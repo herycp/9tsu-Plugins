@@ -20,7 +20,6 @@ class PeachifyExtractor : ExtractorApi() {
     override val mainUrl = "https://peachify.top"
     override val requiresReferer = true
 
-    // Server aktif menggunakan host none.eat-peach.sbs
     private val peachifyServers = listOf(
         Pair("Air", "https://none.eat-peach.sbs/air"),
         Pair("Multi", "https://none.eat-peach.sbs/multi"),
@@ -44,8 +43,9 @@ class PeachifyExtractor : ExtractorApi() {
 
         if (tmdbId.isEmpty()) return
 
-        val headers = mapOf(
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        val defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        val requestHeaders = mapOf(
+            "User-Agent" to defaultUserAgent,
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl
         )
@@ -59,7 +59,7 @@ class PeachifyExtractor : ExtractorApi() {
                         val targetApiUrl = "$srvBaseUrl/$endpointPath"
                         Log.d("PeachifyDebug", "Fetching from API: $targetApiUrl")
 
-                        val responseText = app.get(targetApiUrl, headers = headers, timeout = 10).text
+                        val responseText = app.get(targetApiUrl, headers = requestHeaders, timeout = 10).text
                         val apiRes = tryParseJson<PeachifyApiResponse>(responseText)
 
                         // Parse Subtitles
@@ -72,19 +72,30 @@ class PeachifyExtractor : ExtractorApi() {
                                         lang = sub.label ?: sub.name ?: sub.lang ?: "Auto",
                                         url = subUrl
                                     ) {
-                                        this.headers = headers
+                                        this.headers = requestHeaders
                                     }
                                 )
                             }
                         }
 
-                        // Parse Sources
+                        // Parse Sources dengan Header Dinamis dari JSON API
                         apiRes?.sources?.forEach { src ->
                             val streamUrl = src.url ?: src.src ?: src.file ?: return@forEach
                             if (streamUrl.startsWith("http")) {
-                                Log.d("PeachifyDebug", "Found Stream ($srvLabel): $streamUrl")
                                 val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
                                 val dubLabel = if (src.dub.isNullOrBlank()) "Original" else src.dub
+
+                                // Ekstraksi header dinamis dari JSON (seperti origin & referer ke nextgencloudfabric.com)
+                                val playHeaders = mutableMapOf("User-Agent" to defaultUserAgent)
+                                src.headers?.forEach { (key, value) ->
+                                    playHeaders[key] = value
+                                }
+
+                                val streamReferer = src.headers?.get("referer") 
+                                    ?: src.headers?.get("Referer") 
+                                    ?: "$mainUrl/"
+
+                                Log.d("PeachifyDebug", "Found Stream ($srvLabel): $streamUrl | Referer: $streamReferer")
 
                                 callback.invoke(
                                     newExtractorLink(
@@ -93,8 +104,8 @@ class PeachifyExtractor : ExtractorApi() {
                                         url = streamUrl,
                                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                     ) {
-                                        this.referer = "$mainUrl/"
-                                        this.headers = headers
+                                        this.referer = streamReferer
+                                        this.headers = playHeaders
                                         this.quality = Qualities.Unknown.value
                                     }
                                 )
@@ -119,7 +130,8 @@ class PeachifyExtractor : ExtractorApi() {
         @JsonProperty("src") val src: String? = null,
         @JsonProperty("file") val file: String? = null,
         @JsonProperty("dub") val dub: String? = null,
-        @JsonProperty("type") val type: String? = null
+        @JsonProperty("type") val type: String? = null,
+        @JsonProperty("headers") val headers: Map<String, String>? = null
     )
 
     data class PeachifySubtitle(
