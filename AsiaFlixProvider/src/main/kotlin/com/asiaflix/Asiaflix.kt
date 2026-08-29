@@ -129,7 +129,7 @@ class Asiaflix : MainAPI() {
             )
 
             newEpisode(ep.title ?: "Episode ${ep.number}") {
-                this.data = toJson(linkData)
+                this.data = linkData.toJson()
                 this.episode = ep.number
             }
         } ?: emptyList()
@@ -161,7 +161,6 @@ class Asiaflix : MainAPI() {
         val linkData = tryParseJson<EpisodeLinkData>(data) ?: return false
         var anySuccess = false
 
-        // 1. Ekstraksi dari stream bawaan (VidBasic, VidMoly, dll)
         linkData.streamUrls?.forEach { stream ->
             var streamUrl = stream.url ?: return@forEach
             if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
@@ -179,7 +178,6 @@ class Asiaflix : MainAPI() {
             }
         }
 
-        // 2. Ekstraksi otomatis dari Server Eksternal TMDB (Peachify, Vidup, Videasy, Cinezo)
         val tmdbId = linkData.tmdbId
         if (tmdbId != null && tmdbId > 0) {
             val isTv = linkData.showType == "TVSeries"

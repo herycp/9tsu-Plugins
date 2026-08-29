@@ -4,7 +4,6 @@ plugins {
     id("com.lagradost.cloudstream3.gradle")
 }
 
-// Gunakan integer untuk versi di luar blok cloudstream
 version = 1
 
 cloudstream {
@@ -35,5 +34,5 @@ kotlin {
 
 dependencies {
     implementation("org.jsoup:jsoup:1.15.3")
-    // Tambahkan dependensi lain di sini jika dibutuhkan
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
