@@ -23,7 +23,12 @@ class Asiaflix : MainAPI() {
     override val hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    private val headers = mapOf("User-Agent" to userAgent)
+    
+    // PENAMBAHAN HEADER x-access-control
+    private val headers = mapOf(
+        "User-Agent" to userAgent,
+        "x-access-control" to "web"
+    )
 
     override val mainPage = mainPageOf(
         "latest" to "Latest Updates",
@@ -44,7 +49,6 @@ class Asiaflix : MainAPI() {
             "$mainUrl/drama/list?limit=$limit&country=$country&page=$page"
         }
 
-        // Ambil raw text JSON terlebih dahulu agar kebal terhadap silent error
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
@@ -55,7 +59,6 @@ class Asiaflix : MainAPI() {
             val title = item.name ?: "Unknown"
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
 
-            // Sesuaikan badge berdasarkan kategori halaman
             val badgeText = if (request.data == "latest") {
                 item.recentEp?.toString()?.let { "EP $it" } ?: item.status ?: ""
             } else {
@@ -133,7 +136,6 @@ class Asiaflix : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // Karena url sudah dikirim dalam bentuk endpoint lengkap dari halaman depan, bisa langsung di-fetch
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
@@ -232,7 +234,7 @@ class Asiaflix : MainAPI() {
 
     private suspend fun extractVidMoly(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
-            val doc = app.get(url, headers = headers).document
+            val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
             var videoUrl: String? = null
 
             for (script in doc.select("script")) {
