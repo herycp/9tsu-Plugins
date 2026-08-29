@@ -1,19 +1,21 @@
-import com.lagradost.cloudstream3.plugins.CloudstreamPluginConfiguration
+import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 
-buildscript {
-    repositories {
-        google()
-        mavenCentral()
-        maven("https://jitpack.io")
-    }
-    dependencies {
-        classpath("com.android.tools.build:gradle:7.4.2")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.20")
-    }
+plugins {
+    id("com.android.library")
+    kotlin("android")
+    id("com.lagradost.cloudstream3.gradle")
 }
 
-apply(plugin = "com.android.library")
-apply(plugin = "kotlin-android")
+cloudstream {
+    setPluginConfig(
+        CloudstreamExtension.PluginConfiguration(
+            name = "Asiaflix",
+            pluginClassName = "com.asiaflix.AsiaflixPlugin",
+            authors = listOf("You"),
+            version = 1
+        )
+    )
+}
 
 android {
     compileSdk = 33
@@ -31,17 +33,9 @@ android {
 }
 
 dependencies {
-    implementation("com.github.recloudstream:cloudstream:pre-release")
+    // Dependensi Cloudstream API (com.github.recloudstream:cloudstream) 
+    // tidak perlu ditulis lagi karena otomatis disuntikkan oleh root build.gradle repositori Anda.
+    
+    // Tambahkan library ekstra yang dibutuhkan oleh Asiaflix
     implementation("org.jsoup:jsoup:1.15.3")
-}
-
-cloudstream {
-    setPluginConfig(
-        CloudstreamPluginConfiguration(
-            name = "Asiaflix",
-            pluginClassName = "com.asiaflix.AsiaflixPlugin",
-            authors = listOf("You"),
-            version = 1
-        )
-    )
 }
