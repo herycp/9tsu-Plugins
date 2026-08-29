@@ -78,7 +78,14 @@ class VidupExtractor : ExtractorApi() {
                     val subUrl = sub.file ?: sub.url ?: return@forEach
                     val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
                     if (subUrl.startsWith("http") && !isInvalid) {
-                        subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: sub.language ?: "Auto", subUrl))
+                        // Penyertaan headers agar ExoPlayer berhasil mengunduh subtitle dengan referer vidup.to
+                        subtitleCallback.invoke(
+                            SubtitleFile(
+                                lang = sub.label ?: sub.lang ?: sub.language ?: "Auto",
+                                url = subUrl,
+                                headers = baseHeaders
+                            )
+                        )
                     }
                 }
 
@@ -87,12 +94,12 @@ class VidupExtractor : ExtractorApi() {
                     callback.invoke(
                         newExtractorLink(
                             name = "$name - ${srv.name ?: name}",
-                            source = this@VidupExtractor.name, // Bukan Asiaflix
+                            source = this@VidupExtractor.name,
                             url = m3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            this.referer = "$mainUrl/" // Memastikan play berhasil
-                            this.headers = headers
+                            this.referer = "$mainUrl/"
+                            this.headers = baseHeaders
                             this.quality = Qualities.Unknown.value
                         }
                     )
