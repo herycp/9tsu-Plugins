@@ -7,7 +7,7 @@ plugins {
 cloudstream {
     // Definisi plugin sekarang menggunakan assignment langsung
     name = "Asiaflix"
-    pluginClassName = "com.asiaflix.AsiaflixPlugin"
+  //  pluginClassName = "com.asiaflix.AsiaflixPlugin"
     authors = listOf("You")
     version = 1
 }
