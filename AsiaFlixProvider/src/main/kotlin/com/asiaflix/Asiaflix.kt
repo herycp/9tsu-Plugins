@@ -9,6 +9,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
@@ -34,33 +35,42 @@ class Asiaflix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val items = mutableListOf<SearchResponse>()
+        val limit = 24 
 
-        if (request.data == "latest") {
-            val url = "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
-            val response = app.get(url, headers = headers).parsedSafe<AsiaflixListResponse>()
-            response?.body?.forEach { item ->
-                val epText = item.recentEp?.toString()?.let { "EP $it" } ?: ""
-                val itemId = item.id ?: return@forEach
-                items.add(newAnimeSearchResponse(item.name ?: "Unknown", itemId, TvType.AsianDrama) {
-                    this.posterUrl = item.image
-                    if (epText.isNotBlank()) this.otherName = epText
-                })
-            }
+        val url = if (request.data == "latest") {
+            "$mainUrl/drama/dynamic-fetch?limit=$limit&page=$page&type=Latest%20Updates"
         } else {
-            val country = java.net.URLEncoder.encode(request.data, "UTF-8")
-            val url = "$mainUrl/drama/list?limit=24&country=$country&page=$page"
-            val response = app.get(url, headers = headers).parsedSafe<AsiaflixListResponse>()
-            response?.body?.forEach { item ->
-                val statusText = item.status ?: "Unknown"
-                val itemId = item.id ?: return@forEach
-                items.add(newAnimeSearchResponse(item.name ?: "Unknown", itemId, TvType.AsianDrama) {
-                    this.posterUrl = item.image
-                    this.otherName = statusText
-                })
-            }
+            val country = URLEncoder.encode(request.data, "UTF-8")
+            "$mainUrl/drama/list?limit=$limit&country=$country&page=$page"
         }
 
-        return newHomePageResponse(request.name, items)
+        // Ambil raw text JSON terlebih dahulu agar kebal terhadap silent error
+        val responseText = app.get(url, headers = headers).text
+        val response = tryParseJson<AsiaflixListResponse>(responseText)
+        
+        val hasNext = response?.hasNext ?: false
+
+        response?.body?.forEach { item ->
+            val itemId = item.id ?: return@forEach
+            val title = item.name ?: "Unknown"
+            val detailUrl = "$mainUrl/drama/detail?id=$itemId"
+
+            // Sesuaikan badge berdasarkan kategori halaman
+            val badgeText = if (request.data == "latest") {
+                item.recentEp?.toString()?.let { "EP $it" } ?: item.status ?: ""
+            } else {
+                val status = item.status ?: ""
+                val year = item.releaseYear?.toString() ?: ""
+                listOf(status, year).filter { it.isNotBlank() }.joinToString(" • ")
+            }
+
+            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
+                this.posterUrl = item.image
+                if (badgeText.isNotBlank()) this.otherName = badgeText
+            })
+        }
+
+        return newHomePageResponse(request.name, items, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -80,12 +90,14 @@ class Asiaflix : MainAPI() {
             }
         }
 
-        val encodedQuery = java.net.URLEncoder.encode(searchQuery, "UTF-8")
-        val projections = java.net.URLEncoder.encode("""["releaseYear","status","casts","episodes","genres","country","showType","description"]""", "UTF-8")
+        val encodedQuery = URLEncoder.encode(searchQuery, "UTF-8")
+        val projections = URLEncoder.encode("""["releaseYear","status","casts","episodes","genres","country","showType","description"]""", "UTF-8")
         val url = "$mainUrl/drama/search?q=$encodedQuery&page=1&projections=$projections&limit=50"
 
-        val response = app.get(url, headers = headers).parsedSafe<AsiaflixListResponse>() ?: return emptyList()
-        var results = response.body ?: emptyList()
+        val responseText = app.get(url, headers = headers).text
+        val response = tryParseJson<AsiaflixListResponse>(responseText)
+        
+        var results = response?.body ?: emptyList()
 
         if (tagFilters.isNotEmpty()) {
             results = results.filter { item ->
@@ -109,10 +121,11 @@ class Asiaflix : MainAPI() {
 
         return results.mapNotNull { item ->
             val itemId = item.id ?: return@mapNotNull null
+            val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val epCount = item.recentEp?.toString()?.toIntOrNull() ?: item.episodes?.size ?: 0
             val badgeText = "${if (epCount > 0) "$epCount Ep | " else ""}${item.status ?: ""}"
 
-            newAnimeSearchResponse(item.name ?: "Unknown", itemId, TvType.AsianDrama) {
+            newAnimeSearchResponse(item.name ?: "Unknown", detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 this.otherName = badgeText
             }
@@ -120,10 +133,9 @@ class Asiaflix : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val dramaId = url.substringAfterLast("/")
-        val detailUrl = "$mainUrl/drama/detail?id=$dramaId"
-
-        val response = app.get(detailUrl, headers = headers).parsedSafe<AsiaflixDetail>() ?: return null
+        // Karena url sudah dikirim dalam bentuk endpoint lengkap dari halaman depan, bisa langsung di-fetch
+        val responseText = app.get(url, headers = headers).text
+        val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
 
@@ -275,9 +287,9 @@ class Asiaflix : MainAPI() {
         return String(cipher.doFinal(Base64.getMimeDecoder().decode(encrypted.trim().replace(Regex("\\s+"), ""))), Charsets.UTF_8)
     }
 
-    // Model Data Jackson dengan Penanganan Toleran untuk JSON Asiaflix
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixListResponse(
+        @JsonProperty("hasNext") val hasNext: Boolean? = null,
         @JsonProperty("body") val body: List<AsiaflixItem>? = null
     )
 
