@@ -4,12 +4,15 @@ plugins {
     id("com.lagradost.cloudstream3.gradle")
 }
 
+// Gunakan integer untuk versi di luar blok cloudstream
+version = 1
+
 cloudstream {
-    // Definisi plugin sekarang menggunakan assignment langsung
-    name = "Asiaflix"
-  //  pluginClassName = "com.asiaflix.AsiaflixPlugin"
-    authors = listOf("You")
-    version = 1
+    description = "asiaflix.net provider"
+    authors = listOf("Herycp")
+    status = 1
+    tvTypes = listOf("Movie", "TvSeries", "AsianDrama")
+    language = "en"
 }
 
 android {
@@ -24,7 +27,6 @@ android {
     }
 }
 
-// Format baru untuk JVM Target (kompatibel dengan Kotlin 2.0+)
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
@@ -33,5 +35,5 @@ kotlin {
 
 dependencies {
     implementation("org.jsoup:jsoup:1.15.3")
-    // Dependensi Cloudstream API otomatis disuntikkan oleh plugin Cloudstream.
+    // Tambahkan dependensi lain di sini jika dibutuhkan
 }
