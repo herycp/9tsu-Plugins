@@ -20,7 +20,6 @@ class VideasyExtractor : ExtractorApi() {
     override val requiresReferer = true
 
     private val videasyServers = listOf(
-        Pair("cuevana", "https://api2.videasy.net/cuevana/sources-with-title"),
         Pair("mb-flix", "https://api.videasy.net/mb-flix/sources-with-title"),
         Pair("1movies", "https://api.videasy.net/1movies/sources-with-title"),
         Pair("cdn", "https://api.videasy.net/cdn/sources-with-title"),
@@ -39,57 +38,55 @@ class VideasyExtractor : ExtractorApi() {
         } else if (url.contains("/movie/")) {
             tmdbId = url.substringAfter("/movie/").substringBefore("?").substringBefore("/")
         }
-        if (tmdbId.isEmpty()) {
-            Log.e("VideasyDebug", "TMDB ID Empty!")
-            return
-        }
+        if (tmdbId.isEmpty()) return
 
-        // Header wajib referer & origin penyedia
         val headers = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer" to "$mainUrl/", "Origin" to mainUrl)
 
         coroutineScope {
             videasyServers.map { (srvName, srvUrl) ->
                 async {
+                    // Gunakan try-catch di dalam async agar pembatalan satu server tidak mematikan server lain
                     try {
                         val qParams = "title=&mediaType=$mediaType&tmdbId=$tmdbId&imdbId=&episodeId=${if(mediaType=="tv") episode else "1"}&seasonId=${if(mediaType=="tv") season else "1"}&language=english"
                         val targetServer = "$srvUrl?$qParams"
-                        Log.d("VideasyDebug", "Fetching from: $targetServer")
                         
-                        val blobText = app.get(targetServer, headers = headers, timeout = 10).text
-
-                        if (blobText.length >= 10) {
-                            val decRes = tryParseJson<DecResponse>(app.post("https://enc-dec.app/api/dec-videasy", json = mapOf("text" to blobText, "id" to tmdbId)).text)
-                            
-                            if (decRes?.status == 200 && decRes.result != null) {
-                                decRes.result.subtitles?.forEach { sub ->
-                                    val subUrl = sub.url ?: return@forEach
-                                    val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
-                                    if (subUrl.startsWith("http") && !isInvalid) {
-                                        subtitleCallback.invoke(SubtitleFile(sub.lang ?: sub.language ?: "Unknown", subUrl))
+                        val res = app.get(targetServer, headers = headers, timeout = 8)
+                        if (res.code == 200) {
+                            val blobText = res.text
+                            if (blobText.length >= 10) {
+                                val decRes = tryParseJson<DecResponse>(app.post("https://enc-dec.app/api/dec-videasy", json = mapOf("text" to blobText, "id" to tmdbId)).text)
+                                
+                                if (decRes?.status == 200 && decRes.result != null) {
+                                    decRes.result.subtitles?.forEach { sub ->
+                                        val subUrl = sub.url ?: return@forEach
+                                        val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
+                                        if (subUrl.startsWith("http") && !isInvalid) {
+                                            subtitleCallback.invoke(SubtitleFile(sub.lang ?: sub.language ?: "Auto", subUrl))
+                                        }
                                     }
-                                }
-                                decRes.result.sources?.forEach { src ->
-                                    src.url?.let { streamUrl ->
-                                        Log.d("VideasyDebug", "Found Stream: $streamUrl")
-                                        val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
-                                        
-                                        callback.invoke(
-                                            newExtractorLink(
-                                                name = "$name - $srvName",
-                                                source = this@VideasyExtractor.name, // Bukan Asiaflix
-                                                url = streamUrl,
-                                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
-                                            ) {
-                                                this.referer = "$mainUrl/" // Memastikan player memuat referer akurat
-                                                this.headers = headers
-                                                this.quality = Qualities.Unknown.value
-                                            }
-                                        )
+                                    decRes.result.sources?.forEach { src ->
+                                        src.url?.let { streamUrl ->
+                                            val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
+                                            callback.invoke(
+                                                newExtractorLink(
+                                                    name = "$name - $srvName",
+                                                    source = this@VideasyExtractor.name,
+                                                    url = streamUrl,
+                                                    type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                                ) {
+                                                    this.referer = "$mainUrl/"
+                                                    this.headers = headers
+                                                    this.quality = Qualities.Unknown.value
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    } catch (e: Exception) { Log.e("VideasyDebug", "Error on $srvName: ${e.message}") }
+                    } catch (e: Exception) {
+                        Log.e("VideasyDebug", "Skipped server $srvName due to error: ${e.message}")
+                    }
                 }
             }.awaitAll()
         }

@@ -22,28 +22,20 @@ class PeachifyExtractor : ExtractorApi() {
     override val mainUrl = "https://peachify.top"
     override val requiresReferer = true
 
+    // Hanya menggunakan server yang aktif (menghapus domain .sbs yang sudah kedaluwarsa/NXDOMAIN)
     private val peachifyServers = listOf(
-        "https://uwu.eat-peach.sbs/moviebox",
-        "https://usa.eat-peach.sbs/holly",
-        "https://usa.eat-peach.sbs/air",
-        "https://usa.eat-peach.sbs/multi",
-        "https://uwu.eat-peach.sbs/net",
-        "https://uwu.eat-peach.sbs/bmb"
+        "https://peachify.top"
     )
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
-        Log.d("PeachifyDebug", "Target URL: $url")
         val path = url.removePrefix(mainUrl).removePrefix("https://peachify.top").substringBefore("?")
-        
-        // Memastikan referer dan origin mengarah persis ke mainUrl dari Extractor ini
         val headers = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer" to "$mainUrl/", "Origin" to mainUrl)
 
         coroutineScope {
             peachifyServers.map { serverUrl ->
                 async {
                     try {
-                        Log.d("PeachifyDebug", "Querying server: $serverUrl$path")
-                        val responseText = app.get("$serverUrl$path", headers = headers, timeout = 10).text
+                        val responseText = app.get("$serverUrl$path", headers = headers, timeout = 8).text
                         var apiRes = tryParseJson<PeachifyApiResponse>(responseText)
 
                         if (apiRes?.isEncrypted == true && !apiRes.data.isNullOrEmpty()) {
@@ -62,33 +54,30 @@ class PeachifyExtractor : ExtractorApi() {
                         apiRes?.sources?.forEach { src ->
                             val streamUrl = pickString(src, listOf("url", "src", "file", "stream"))
                             if (streamUrl.isNotEmpty()) {
-                                Log.d("PeachifyDebug", "Found Stream: $streamUrl")
                                 val isM3u8 = pickString(src, listOf("type", "format")).lowercase().contains("hls") || streamUrl.lowercase().contains(".m3u8")
-                                val dubLabel = normalizeDub(pickString(src, listOf("dub", "audio", "lang", "language", "label")))
-                                val serverName = java.net.URI(serverUrl).path.removePrefix("/")
-                                
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "$name - $serverName ($dubLabel)",
-                                        source = this@PeachifyExtractor.name, // Jangan jadi Asiaflix
+                                        name = "$name (Stream)",
+                                        source = this@PeachifyExtractor.name,
                                         url = streamUrl,
                                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                     ) {
-                                        this.referer = "$mainUrl/" // Memastikan referer player tepat
+                                        this.referer = "$mainUrl/"
                                         this.headers = headers
                                         this.quality = Qualities.Unknown.value
                                     }
                                 )
                             }
                         }
-                    } catch (e: Exception) { Log.e("PeachifyDebug", "Error on $serverUrl: ${e.message}") }
+                    } catch (e: Exception) {
+                        Log.e("PeachifyDebug", "Error on server: ${e.message}")
+                    }
                 }
             }.awaitAll()
         }
     }
 
     private fun pickString(map: Map<String, Any?>, keys: List<String>): String = keys.firstNotNullOfOrNull { map[it] as? String }?.trim() ?: ""
-    private fun normalizeDub(raw: String): String = if (raw.isBlank()) "Original" else when (raw.trim().lowercase()) { "dubbed" -> "Dub"; "subbed" -> "Sub"; else -> raw.trim() }
 
     data class PeachifyApiResponse(val isEncrypted: Boolean? = null, val data: String? = null, val sources: List<Map<String, Any?>>? = null, val subtitles: List<Map<String, Any?>>? = null)
 
