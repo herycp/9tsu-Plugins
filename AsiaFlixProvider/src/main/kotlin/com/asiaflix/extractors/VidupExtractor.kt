@@ -1,5 +1,6 @@
 package com.asiaflix.extractors
 
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -16,25 +17,42 @@ class VidupExtractor : ExtractorApi() {
     override val requiresReferer = true
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        Log.d("VidupDebug", "Target URL: $url")
         val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        val pageRes = app.get(url, headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/")).text
         
+        // Memastikan referer original
+        val baseHeaders = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/", "Origin" to mainUrl)
+        
+        val pageRes = app.get(url, headers = baseHeaders).text
         val tokenRegex = """\\"(?:en|token)\\":\\"(.*?)\\"""".toRegex()
         val tokenMatch = tokenRegex.find(pageRes) ?: """["'](?:en|token)["']\s*:\s*["']([^"']+)["']""".toRegex().find(pageRes)
-        val tokenText = tokenMatch?.groupValues?.get(1) ?: return
+        val tokenText = tokenMatch?.groupValues?.get(1)
+        
+        if (tokenText == null) {
+            Log.e("VidupDebug", "Token 'en' tidak ditemukan di HTML")
+            return
+        }
 
-        val encRes = app.get("https://enc-dec.app/api/enc-vidup?text=$tokenText").parsedSafe<EncResponse>() ?: return
-        if (encRes.status != 200 || encRes.result == null) return
+        val encRes = app.get("https://enc-dec.app/api/enc-vidup?text=$tokenText").parsedSafe<EncResponse>()
+        if (encRes?.status != 200 || encRes.result == null) {
+            Log.e("VidupDebug", "API Enc-Dec App Gagal (Enc)")
+            return
+        }
         
         val headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/", "Origin" to mainUrl, "X-Requested-With" to "XMLHttpRequest", "X-CSRF-Token" to (encRes.result.token ?: ""))
         val serversEncrypted = app.post(encRes.result.servers ?: return, headers = headers).text
 
         val decApiUrl = "https://enc-dec.app/api/dec-vidup"
-        val decServersRes = app.post(decApiUrl, json = mapOf("text" to serversEncrypted)).parsedSafe<DecServersResponse>() ?: return
-        if (decServersRes.status != 200 || decServersRes.result == null) return
+        val decServersRes = app.post(decApiUrl, json = mapOf("text" to serversEncrypted)).parsedSafe<DecServersResponse>()
+        if (decServersRes?.status != 200 || decServersRes.result == null) {
+            Log.e("VidupDebug", "API Enc-Dec App Gagal (Dec Servers)")
+            return
+        }
 
         decServersRes.result.forEach { srv ->
             val srvData = srv.data ?: return@forEach
+            Log.d("VidupDebug", "Processing Server: ${srv.name}")
+            
             val streamEncrypted = app.post("${encRes.result.stream}/$srvData", headers = headers).text
             val decStreamRes = app.post(decApiUrl, json = mapOf("text" to streamEncrypted))
 
@@ -58,18 +76,23 @@ class VidupExtractor : ExtractorApi() {
 
                 subtitlesList?.forEach { sub ->
                     val subUrl = sub.file ?: sub.url ?: return@forEach
-                    subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: sub.language ?: "Auto", subUrl))
+                    val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
+                    if (subUrl.startsWith("http") && !isInvalid) {
+                        subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: sub.language ?: "Auto", subUrl))
+                    }
                 }
 
                 if (!m3u8Url.isNullOrEmpty()) {
+                    Log.d("VidupDebug", "Found Stream: $m3u8Url")
                     callback.invoke(
                         newExtractorLink(
                             name = "$name - ${srv.name ?: name}",
-                            source = name,
+                            source = this@VidupExtractor.name, // Bukan Asiaflix
                             url = m3u8Url,
                             type = ExtractorLinkType.M3U8
                         ) {
-                            this.referer = "$mainUrl/"
+                            this.referer = "$mainUrl/" // Memastikan play berhasil
+                            this.headers = headers
                             this.quality = Qualities.Unknown.value
                         }
                     )

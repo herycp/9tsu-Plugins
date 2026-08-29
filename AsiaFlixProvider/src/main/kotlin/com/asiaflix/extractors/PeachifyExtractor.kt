@@ -1,6 +1,7 @@
 package com.asiaflix.extractors
 
 import android.util.Base64
+import android.util.Log
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
@@ -31,13 +32,17 @@ class PeachifyExtractor : ExtractorApi() {
     )
 
     override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        Log.d("PeachifyDebug", "Target URL: $url")
         val path = url.removePrefix(mainUrl).removePrefix("https://peachify.top").substringBefore("?")
+        
+        // Memastikan referer dan origin mengarah persis ke mainUrl dari Extractor ini
         val headers = mapOf("User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36", "Referer" to "$mainUrl/", "Origin" to mainUrl)
 
         coroutineScope {
             peachifyServers.map { serverUrl ->
                 async {
                     try {
+                        Log.d("PeachifyDebug", "Querying server: $serverUrl$path")
                         val responseText = app.get("$serverUrl$path", headers = headers, timeout = 10).text
                         var apiRes = tryParseJson<PeachifyApiResponse>(responseText)
 
@@ -48,12 +53,16 @@ class PeachifyExtractor : ExtractorApi() {
 
                         apiRes?.subtitles?.forEach { sub ->
                             val subUrl = pickString(sub, listOf("url", "file", "src"))
-                            if (subUrl.isNotEmpty()) subtitleCallback.invoke(SubtitleFile(pickString(sub, listOf("label", "name")).ifEmpty { "Auto" }, subUrl))
+                            val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
+                            if (subUrl.startsWith("http") && !isInvalid) {
+                                subtitleCallback.invoke(SubtitleFile(pickString(sub, listOf("label", "name")).ifEmpty { "Auto" }, subUrl))
+                            }
                         }
 
                         apiRes?.sources?.forEach { src ->
                             val streamUrl = pickString(src, listOf("url", "src", "file", "stream"))
                             if (streamUrl.isNotEmpty()) {
+                                Log.d("PeachifyDebug", "Found Stream: $streamUrl")
                                 val isM3u8 = pickString(src, listOf("type", "format")).lowercase().contains("hls") || streamUrl.lowercase().contains(".m3u8")
                                 val dubLabel = normalizeDub(pickString(src, listOf("dub", "audio", "lang", "language", "label")))
                                 val serverName = java.net.URI(serverUrl).path.removePrefix("/")
@@ -61,17 +70,18 @@ class PeachifyExtractor : ExtractorApi() {
                                 callback.invoke(
                                     newExtractorLink(
                                         name = "$name - $serverName ($dubLabel)",
-                                        source = name,
+                                        source = this@PeachifyExtractor.name, // Jangan jadi Asiaflix
                                         url = streamUrl,
                                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                     ) {
-                                        this.referer = "$mainUrl/"
+                                        this.referer = "$mainUrl/" // Memastikan referer player tepat
+                                        this.headers = headers
                                         this.quality = Qualities.Unknown.value
                                     }
                                 )
                             }
                         }
-                    } catch (_: Exception) {}
+                    } catch (e: Exception) { Log.e("PeachifyDebug", "Error on $serverUrl: ${e.message}") }
                 }
             }.awaitAll()
         }

@@ -1,5 +1,6 @@
 package com.asiaflix
 
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
@@ -23,12 +24,13 @@ class Asiaflix : MainAPI() {
     override val hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    
-    // PENAMBAHAN HEADER x-access-control
-    private val headers = mapOf(
-        "User-Agent" to userAgent,
-        "x-access-control" to "web"
-    )
+    private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
+
+    private fun isValidSubtitle(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        val lower = url.lowercase()
+        return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
+    }
 
     override val mainPage = mainPageOf(
         "latest" to "Latest Updates",
@@ -40,15 +42,14 @@ class Asiaflix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val items = mutableListOf<SearchResponse>()
-        val limit = 24 
-
         val url = if (request.data == "latest") {
-            "$mainUrl/drama/dynamic-fetch?limit=$limit&page=$page&type=Latest%20Updates"
+            "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
         } else {
             val country = URLEncoder.encode(request.data, "UTF-8")
-            "$mainUrl/drama/list?limit=$limit&country=$country&page=$page"
+            "$mainUrl/drama/list?country=$country&page=$page"
         }
 
+        Log.d("AsiaflixDebug", "Fetching MainPage URL: $url")
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
@@ -64,62 +65,82 @@ class Asiaflix : MainAPI() {
             } else {
                 val status = item.status ?: ""
                 val year = item.releaseYear?.toString() ?: ""
-                listOf(status, year).filter { it.isNotBlank() }.joinToString(" • ")
+                listOf(status, year).filter { it.isNotBlank() }.joinToString(" | ")
             }
 
-            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            // Menyematkan label langsung ke judul agar pasti terlihat di UI
+            val displayTitle = if (badgeText.isNotBlank()) "$title [$badgeText]" else title
+
+            items.add(newAnimeSearchResponse(displayTitle, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
-                if (badgeText.isNotBlank()) this.otherName = badgeText
             })
         }
-
         return newHomePageResponse(request.name, items, hasNext)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        var searchQuery = query.trim()
-        val tagFilters = mutableMapOf<String, String>()
+        val cleanQuery = query.trim()
+        Log.d("AsiaflixDebug", "Search Query: $cleanQuery")
+        var results = emptyList<AsiaflixItem>()
 
-        if (searchQuery.contains("#")) {
-            val parts = searchQuery.split("#", limit = 2)
-            searchQuery = parts[0].trim()
-            val tagString = parts.getOrNull(1)?.trim() ?: ""
-
+        // 1. Pencarian menggunakan API List jika hanya berisi format parameter (diawali # tanpa text sebelumnya)
+        if (cleanQuery.startsWith("#")) {
+            val tagString = cleanQuery.removePrefix("#").trim()
+            val queryParams = mutableListOf("limit=50")
+            
             tagString.split(",").forEach { tag ->
-                val keyValue = tag.split(":")
-                if (keyValue.size == 2) {
-                    tagFilters[keyValue[0].trim().lowercase()] = keyValue[1].trim().lowercase()
+                val kv = tag.split(":")
+                if (kv.size == 2) {
+                    val key = kv[0].trim()
+                    val value = URLEncoder.encode(kv[1].trim(), "UTF-8")
+                    queryParams.add("$key=$value")
                 }
             }
-        }
+            
+            val url = "$mainUrl/drama/list?${queryParams.joinToString("&")}"
+            Log.d("AsiaflixDebug", "Search Route -> API List: $url")
+            val responseText = app.get(url, headers = headers).text
+            results = tryParseJson<AsiaflixListResponse>(responseText)?.body ?: emptyList()
+        } 
+        // 2. Pencarian menggunakan API Search standar dengan filter
+        else {
+            var searchQuery = cleanQuery
+            val tagFilters = mutableMapOf<String, String>()
 
-        val encodedQuery = URLEncoder.encode(searchQuery, "UTF-8")
-        val projections = URLEncoder.encode("""["releaseYear","status","casts","episodes","genres","country","showType","description"]""", "UTF-8")
-        val url = "$mainUrl/drama/search?q=$encodedQuery&page=1&projections=$projections&limit=50"
+            if (searchQuery.contains("#")) {
+                val parts = searchQuery.split("#", limit = 2)
+                searchQuery = parts[0].trim()
+                parts.getOrNull(1)?.trim()?.split(",")?.forEach { tag ->
+                    val kv = tag.split(":")
+                    if (kv.size == 2) tagFilters[kv[0].trim().lowercase()] = kv[1].trim().lowercase()
+                }
+            }
 
-        val responseText = app.get(url, headers = headers).text
-        val response = tryParseJson<AsiaflixListResponse>(responseText)
-        
-        var results = response?.body ?: emptyList()
+            val encodedQuery = URLEncoder.encode(searchQuery, "UTF-8")
+            val projections = URLEncoder.encode("""["releaseYear","status","casts","episodes","genres","country","showType","description"]""", "UTF-8")
+            val url = "$mainUrl/drama/search?q=$encodedQuery&page=1&projections=$projections"
 
-        if (tagFilters.isNotEmpty()) {
-            results = results.filter { item ->
-                var matches = true
-                tagFilters.forEach { (key, value) ->
-                    when (key) {
-                        "country" -> if (item.country?.lowercase()?.contains(value) != true) matches = false
-                        "status" -> if (item.status?.lowercase() != value) matches = false
-                        "year" -> if (item.releaseYear?.toString()?.lowercase() != value) matches = false
-                        "genre", "genres" -> {
-                            val genreList = item.genres?.map { g ->
-                                if (g is Map<*, *>) g["name"]?.toString()?.lowercase() ?: "" else g.toString().lowercase()
-                            } ?: emptyList()
-                            if (genreList.none { it.contains(value) }) matches = false
+            Log.d("AsiaflixDebug", "Search Route -> API Search: $url")
+            val responseText = app.get(url, headers = headers).text
+            val baseResults = tryParseJson<AsiaflixListResponse>(responseText)?.body ?: emptyList()
+            
+            results = if (tagFilters.isNotEmpty()) {
+                baseResults.filter { item ->
+                    var matches = true
+                    tagFilters.forEach { (key, value) ->
+                        when (key) {
+                            "country" -> if (item.country?.lowercase()?.contains(value) != true) matches = false
+                            "status" -> if (item.status?.lowercase() != value) matches = false
+                            "year" -> if (item.releaseYear?.toString()?.lowercase() != value) matches = false
+                            "genre", "genres" -> {
+                                val genreList = item.genres?.map { g -> if (g is Map<*, *>) g["name"]?.toString()?.lowercase() ?: "" else g.toString().lowercase() } ?: emptyList()
+                                if (genreList.none { it.contains(value) }) matches = false
+                            }
                         }
                     }
+                    matches
                 }
-                matches
-            }
+            } else baseResults
         }
 
         return results.mapNotNull { item ->
@@ -127,15 +148,17 @@ class Asiaflix : MainAPI() {
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val epCount = item.recentEp?.toString()?.toIntOrNull() ?: item.episodes?.size ?: 0
             val badgeText = "${if (epCount > 0) "$epCount Ep | " else ""}${item.status ?: ""}"
+            
+            val displayTitle = if (badgeText.isNotBlank()) "${item.name} [$badgeText]" else item.name ?: "Unknown"
 
-            newAnimeSearchResponse(item.name ?: "Unknown", detailUrl, TvType.AsianDrama) {
+            newAnimeSearchResponse(displayTitle, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
-                this.otherName = badgeText
             }
         }
     }
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.d("AsiaflixDebug", "Loading detail: $url")
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
@@ -179,6 +202,7 @@ class Asiaflix : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d("AsiaflixDebug", "Loading Links from Data...")
         if (data.isBlank()) return false
         val linkData = tryParseJson<EpisodeLinkData>(data) ?: return false
         var anySuccess = false
@@ -186,10 +210,11 @@ class Asiaflix : MainAPI() {
         linkData.streamUrls?.forEach { stream ->
             var streamUrl = stream.url ?: return@forEach
             if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
+            Log.d("AsiaflixDebug", "Processing Direct Stream URL: $streamUrl")
 
             when {
                 streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top") -> {
-                    if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
+                    if (processVidBasic(streamUrl, callback)) anySuccess = true
                 }
                 streamUrl.contains("vidmoly", ignoreCase = true) -> {
                     if (extractVidMoly(streamUrl, callback)) anySuccess = true
@@ -202,6 +227,7 @@ class Asiaflix : MainAPI() {
 
         val tmdbId = linkData.tmdbId
         if (tmdbId != null && tmdbId > 0) {
+            Log.d("AsiaflixDebug", "TMDB ID found: $tmdbId. Generating Embed URLs...")
             val isTv = linkData.showType == "TVSeries"
             val season = linkData.seasonNumber ?: 1
             val ep = linkData.epNumber
@@ -223,6 +249,7 @@ class Asiaflix : MainAPI() {
             }
 
             generatedUrls.forEach { embedUrl ->
+                Log.d("AsiaflixDebug", "Invoking External Extractor: $embedUrl")
                 if (loadExtractor(embedUrl, subtitleCallback, callback)) {
                     anySuccess = true
                 }
@@ -247,13 +274,18 @@ class Asiaflix : MainAPI() {
                 }
             }
             if (videoUrl != null) {
-                callback(newExtractorLink("VidMoly", name, videoUrl, ExtractorLinkType.M3U8))
+                Log.d("AsiaflixDebug", "VidMoly link found: $videoUrl")
+                // Ganti source ke VidMoly
+                callback(newExtractorLink("VidMoly", "VidMoly", videoUrl, ExtractorLinkType.M3U8))
                 true
             } else false
-        } catch (_: Exception) { false }
+        } catch (e: Exception) { 
+            Log.e("AsiaflixDebug", "VidMoly Error: ${e.message}")
+            false 
+        }
     }
 
-    private suspend fun processVidBasic(embedUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun processVidBasic(embedUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val host = java.net.URL(embedUrl).host
             val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
@@ -268,17 +300,23 @@ class Asiaflix : MainAPI() {
                 if (!encrypted.isNullOrEmpty()) {
                     val decrypted = decryptVidBasic(encrypted)
                     if (decrypted.startsWith("http")) {
+                        Log.d("AsiaflixDebug", "VidBasic link decrypted: $decrypted")
+                        val isM3u8 = decrypted.contains(".m3u8")
+                        // Ganti source ke VidBasic
                         callback(newExtractorLink(
-                            if (decrypted.contains(".m3u8")) "VidBasic - HLS" else "VidBasic - Direct",
-                            name, decrypted,
-                            if (decrypted.contains(".m3u8")) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
+                            "VidBasic", decrypted,
+                            if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
                         return true
                     }
                 }
             }
             false
-        } catch (_: Exception) { false }
+        } catch (e: Exception) { 
+            Log.e("AsiaflixDebug", "VidBasic Error: ${e.message}")
+            false 
+        }
     }
 
     private fun decryptVidBasic(encrypted: String): String {
@@ -290,62 +328,16 @@ class Asiaflix : MainAPI() {
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixListResponse(
-        @JsonProperty("hasNext") val hasNext: Boolean? = null,
-        @JsonProperty("body") val body: List<AsiaflixItem>? = null
-    )
-
+    data class AsiaflixListResponse(@JsonProperty("hasNext") val hasNext: Boolean? = null, @JsonProperty("body") val body: List<AsiaflixItem>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixItem(
-        @JsonProperty("_id") val id: String? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("image") val image: String? = null,
-        @JsonProperty("status") val status: String? = null,
-        @JsonProperty("country") val country: String? = null,
-        @JsonProperty("recentEp") val recentEp: Any? = null,
-        @JsonProperty("releaseYear") val releaseYear: Any? = null,
-        @JsonProperty("genres") val genres: List<Any>? = null,
-        @JsonProperty("episodes") val episodes: List<Any>? = null
-    )
-
+    data class AsiaflixItem(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("recentEp") val recentEp: Any? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("genres") val genres: List<Any>? = null, @JsonProperty("episodes") val episodes: List<Any>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixDetail(
-        @JsonProperty("_id") val id: String? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("description") val description: String? = null,
-        @JsonProperty("image") val image: String? = null,
-        @JsonProperty("showType") val showType: String? = null,
-        @JsonProperty("status") val status: String? = null,
-        @JsonProperty("releaseYear") val releaseYear: Any? = null,
-        @JsonProperty("tmdbId") val tmdbId: Long? = null,
-        @JsonProperty("seasonNumber") val seasonNumber: Int? = null,
-        @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null,
-        @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null
-    )
-
+    data class AsiaflixDetail(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("description") val description: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("showType") val showType: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("tmdbId") val tmdbId: Long? = null, @JsonProperty("seasonNumber") val seasonNumber: Int? = null, @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null, @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixGenre(
-        @JsonProperty("name") val name: String? = null
-    )
-
+    data class AsiaflixGenre(@JsonProperty("name") val name: String? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixEpisode(
-        @JsonProperty("title") val title: String? = null,
-        @JsonProperty("number") val number: Int? = null,
-        @JsonProperty("streamUrls") val streamUrls: List<AsiaflixStream>? = null
-    )
-
+    data class AsiaflixEpisode(@JsonProperty("title") val title: String? = null, @JsonProperty("number") val number: Int? = null, @JsonProperty("streamUrls") val streamUrls: List<AsiaflixStream>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixStream(
-        @JsonProperty("source") val source: String? = null,
-        @JsonProperty("url") val url: String? = null
-    )
-
-    data class EpisodeLinkData(
-        val tmdbId: Long?,
-        val seasonNumber: Int?,
-        val epNumber: Int,
-        val showType: String?,
-        val streamUrls: List<AsiaflixStream>?
-    )
+    data class AsiaflixStream(@JsonProperty("source") val source: String? = null, @JsonProperty("url") val url: String? = null)
+    data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 }
