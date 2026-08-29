@@ -1,0 +1,77 @@
+package com.asiaflix.extractors
+
+import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.SubtitleFile
+import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
+import com.lagradost.cloudstream3.utils.ExtractorApi
+import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.Qualities
+
+class VidupExtractor : ExtractorApi() {
+    override val name = "Vidup"
+    override val mainUrl = "https://vidup.to"
+    override val requiresReferer = true
+
+    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+        val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        val pageRes = app.get(url, headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/")).text
+        
+        val tokenRegex = """\\"(?:en|token)\\":\\"(.*?)\\"""".toRegex()
+        val tokenMatch = tokenRegex.find(pageRes) ?: """["'](?:en|token)["']\s*:\s*["']([^"']+)["']""".toRegex().find(pageRes)
+        val tokenText = tokenMatch?.groupValues?.get(1) ?: return
+
+        val encRes = app.get("https://enc-dec.app/api/enc-vidup?text=$tokenText").parsedSafe<EncResponse>() ?: return
+        if (encRes.status != 200 || encRes.result == null) return
+        
+        val headers = mapOf("User-Agent" to userAgent, "Referer" to "$mainUrl/", "Origin" to mainUrl, "X-Requested-With" to "XMLHttpRequest", "X-CSRF-Token" to (encRes.result.token ?: ""))
+        val serversEncrypted = app.post(encRes.result.servers ?: return, headers = headers).text
+
+        val decApiUrl = "https://enc-dec.app/api/dec-vidup"
+        val decServersRes = app.post(decApiUrl, json = mapOf("text" to serversEncrypted)).parsedSafe<DecServersResponse>() ?: return
+        if (decServersRes.status != 200 || decServersRes.result == null) return
+
+        decServersRes.result.forEach { srv ->
+            val srvData = srv.data ?: return@forEach
+            val streamEncrypted = app.post("${encRes.result.stream}/$srvData", headers = headers).text
+            val decStreamRes = app.post(decApiUrl, json = mapOf("text" to streamEncrypted))
+
+            if (decStreamRes.code == 200) {
+                val streamObj = tryParseJson<DecStreamObjectResponse>(decStreamRes.text)
+                val streamStr = tryParseJson<DecStreamStringResponse>(decStreamRes.text)
+
+                var m3u8Url: String? = null
+                var subtitlesList: List<VidupSubtitle>? = null
+
+                if (streamObj?.status == 200 && streamObj.result != null) {
+                    m3u8Url = streamObj.result.url ?: streamObj.result.file ?: streamObj.result.stream
+                    subtitlesList = streamObj.result.subtitles ?: streamObj.result.tracks ?: streamObj.result.captions
+                } else if (streamStr?.status == 200 && streamStr.result != null) {
+                    if (streamStr.result.startsWith("{")) {
+                        val parsed = tryParseJson<VidupStreamData>(streamStr.result)
+                        m3u8Url = parsed?.url ?: parsed?.file ?: parsed?.stream
+                        subtitlesList = parsed?.subtitles ?: parsed?.tracks ?: parsed?.captions
+                    } else m3u8Url = streamStr.result
+                }
+
+                subtitlesList?.forEach { sub ->
+                    val subUrl = sub.file ?: sub.url ?: return@forEach
+                    subtitleCallback.invoke(SubtitleFile(sub.label ?: sub.lang ?: sub.language ?: "Auto", subUrl))
+                }
+
+                if (!m3u8Url.isNullOrEmpty()) {
+                    callback.invoke(ExtractorLink(source = name, name = "$name - ${srv.name ?: name}", url = m3u8Url, referer = "$mainUrl/", quality = Qualities.Unknown.value, isM3u8 = true))
+                }
+            }
+        }
+    }
+
+    data class EncResponse(@JsonProperty("status") val status: Int?, @JsonProperty("result") val result: EncResult?)
+    data class EncResult(@JsonProperty("servers") val servers: String?, @JsonProperty("stream") val stream: String?, @JsonProperty("token") val token: String?)
+    data class DecServersResponse(@JsonProperty("status") val status: Int?, @JsonProperty("result") val result: List<VidupServerItem>?)
+    data class VidupServerItem(@JsonProperty("name") val name: String?, @JsonProperty("data") val data: String?)
+    data class DecStreamStringResponse(@JsonProperty("status") val status: Int?, @JsonProperty("result") val result: String?)
+    data class DecStreamObjectResponse(@JsonProperty("status") val status: Int?, @JsonProperty("result") val result: VidupStreamData?)
+    data class VidupStreamData(@JsonProperty("url") val url: String?, @JsonProperty("file") val file: String?, @JsonProperty("stream") val stream: String?, @JsonProperty("subtitles") val subtitles: List<VidupSubtitle>?, @JsonProperty("tracks") val tracks: List<VidupSubtitle>?, @JsonProperty("captions") val captions: List<VidupSubtitle>?)
+    data class VidupSubtitle(@JsonProperty("file") val file: String?, @JsonProperty("url") val url: String?, @JsonProperty("label") val label: String?, @JsonProperty("lang") val lang: String?, @JsonProperty("language") val language: String?)
+}
