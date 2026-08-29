@@ -1,5 +1,3 @@
-import com.lagradost.cloudstream3.gradle.CloudstreamExtension
-
 plugins {
     id("com.android.library")
     kotlin("android")
@@ -7,14 +5,11 @@ plugins {
 }
 
 cloudstream {
-    setPluginConfig(
-        CloudstreamExtension.PluginConfiguration(
-            name = "Asiaflix",
-            pluginClassName = "com.asiaflix.AsiaflixPlugin",
-            authors = listOf("You"),
-            version = 1
-        )
-    )
+    // Definisi plugin sekarang menggunakan assignment langsung
+    name = "Asiaflix"
+    pluginClassName = "com.asiaflix.AsiaflixPlugin"
+    authors = listOf("You")
+    version = 1
 }
 
 android {
@@ -27,15 +22,16 @@ android {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
-    kotlinOptions {
-        jvmTarget = "1.8"
+}
+
+// Format baru untuk JVM Target (kompatibel dengan Kotlin 2.0+)
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_1_8)
     }
 }
 
 dependencies {
-    // Dependensi Cloudstream API (com.github.recloudstream:cloudstream) 
-    // tidak perlu ditulis lagi karena otomatis disuntikkan oleh root build.gradle repositori Anda.
-    
-    // Tambahkan library ekstra yang dibutuhkan oleh Asiaflix
     implementation("org.jsoup:jsoup:1.15.3")
+    // Dependensi Cloudstream API otomatis disuntikkan oleh plugin Cloudstream.
 }
