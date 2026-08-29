@@ -6,7 +6,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -52,8 +54,20 @@ class VideasyExtractor : ExtractorApi() {
                                     sub.url?.let { subtitleCallback.invoke(SubtitleFile(sub.lang ?: sub.language ?: "Unknown", it)) }
                                 }
                                 decRes.result.sources?.forEach { src ->
-                                    src.url?.let { 
-                                        callback.invoke(ExtractorLink(name, "$name - $srvName", it, "$mainUrl/", Qualities.Unknown.value, src.type?.lowercase()?.contains("hls") == true || it.lowercase().contains(".m3u8")))
+                                    src.url?.let { streamUrl ->
+                                        val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
+                                        
+                                        callback.invoke(
+                                            newExtractorLink(
+                                                name = "$name - $srvName",
+                                                source = name,
+                                                url = streamUrl,
+                                                type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                            ) {
+                                                this.referer = "$mainUrl/"
+                                                this.quality = Qualities.Unknown.value
+                                            }
+                                        )
                                     }
                                 }
                             }

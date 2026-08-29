@@ -6,7 +6,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -53,7 +55,20 @@ class PeachifyExtractor : ExtractorApi() {
                             val streamUrl = pickString(src, listOf("url", "src", "file", "stream"))
                             if (streamUrl.isNotEmpty()) {
                                 val isM3u8 = pickString(src, listOf("type", "format")).lowercase().contains("hls") || streamUrl.lowercase().contains(".m3u8")
-                                callback.invoke(ExtractorLink(name, "$name - ${java.net.URI(serverUrl).path.removePrefix("/")} (${normalizeDub(pickString(src, listOf("dub", "audio", "lang", "language", "label")))})", streamUrl, "$mainUrl/", Qualities.Unknown.value, isM3u8))
+                                val dubLabel = normalizeDub(pickString(src, listOf("dub", "audio", "lang", "language", "label")))
+                                val serverName = java.net.URI(serverUrl).path.removePrefix("/")
+                                
+                                callback.invoke(
+                                    newExtractorLink(
+                                        name = "$name - $serverName ($dubLabel)",
+                                        source = name,
+                                        url = streamUrl,
+                                        type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                                    ) {
+                                        this.referer = "$mainUrl/"
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
                             }
                         }
                     } catch (_: Exception) {}

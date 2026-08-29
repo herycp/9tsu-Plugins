@@ -6,7 +6,9 @@ import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class VidupExtractor : ExtractorApi() {
     override val name = "Vidup"
@@ -60,7 +62,17 @@ class VidupExtractor : ExtractorApi() {
                 }
 
                 if (!m3u8Url.isNullOrEmpty()) {
-                    callback.invoke(ExtractorLink(source = name, name = "$name - ${srv.name ?: name}", url = m3u8Url, referer = "$mainUrl/", quality = Qualities.Unknown.value, isM3u8 = true))
+                    callback.invoke(
+                        newExtractorLink(
+                            name = "$name - ${srv.name ?: name}",
+                            source = name,
+                            url = m3u8Url,
+                            type = ExtractorLinkType.M3U8
+                        ) {
+                            this.referer = "$mainUrl/"
+                            this.quality = Qualities.Unknown.value
+                        }
+                    )
                 }
             }
         }
