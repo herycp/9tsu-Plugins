@@ -33,7 +33,6 @@ class Asiaflix : MainAPI() {
         return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
     }
 
-    // Ekstraksi angka episode yang lebih fleksibel untuk membaca Tipe Int, String, maupun List dari JSON
     private fun extractEpNum(recentEp: Any?, episodes: Any?): Int? {
         recentEp?.toString()?.let { str ->
             Regex("""\d+""").find(str)?.value?.toIntOrNull()?.let { return it }
@@ -69,7 +68,8 @@ class Asiaflix : MainAPI() {
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
-        val hasNext = response?.hasNext ?: (!response?.body.isNullOrEmpty())
+        // Memaksa Cloudstream untuk selalu menambah halaman (page + 1)
+        val hasNext = true
 
         response?.body?.forEach { item ->
             val itemId = item.id ?: return@forEach
@@ -77,27 +77,11 @@ class Asiaflix : MainAPI() {
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val epNum = extractEpNum(item.recentEp, item.episodes)
 
-            items.add(newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
-                // Episode murni tanpa embel-embel "Sub"
-                this.episodes = epNum
-
-                // Menampilkan badge status di sisi kanan untuk selain Latest Updates
-                if (!isLatest) {
-                    val statusStr = item.status?.trim()
-                    if (!statusStr.isNullOrBlank()) {
-                        when {
-                            statusStr.contains("complete", ignoreCase = true) || statusStr.contains("finish", ignoreCase = true) -> {
-                                this.quality = SearchQuality.HD
-                            }
-                            statusStr.contains("ongoing", ignoreCase = true) || statusStr.contains("airing", ignoreCase = true) -> {
-                                this.quality = SearchQuality.WebRip
-                            }
-                            else -> {
-                                addQuality(statusStr)
-                            }
-                        }
-                    }
+                addSub(epNum)
+                if (!item.status.isNullOrBlank()) {
+                    addQuality(item.status)
                 }
             })
         }
@@ -172,23 +156,11 @@ class Asiaflix : MainAPI() {
             val title = item.name ?: "Unknown"
             val epNum = extractEpNum(item.recentEp, item.episodes)
 
-            newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
-                this.episodes = epNum
-                
-                val statusStr = item.status?.trim()
-                if (!statusStr.isNullOrBlank()) {
-                    when {
-                        statusStr.contains("complete", ignoreCase = true) || statusStr.contains("finish", ignoreCase = true) -> {
-                            this.quality = SearchQuality.HD
-                        }
-                        statusStr.contains("ongoing", ignoreCase = true) || statusStr.contains("airing", ignoreCase = true) -> {
-                            this.quality = SearchQuality.WebRip
-                        }
-                        else -> {
-                            addQuality(statusStr)
-                        }
-                    }
+                addSub(epNum)
+                if (!item.status.isNullOrBlank()) {
+                    addQuality(item.status)
                 }
             }
         }
@@ -216,10 +188,11 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
-        // Rekomendasi Dinamis berdasarkan Genre utama (menggunakan parameter genre=)
-        val genreName = response.genres?.firstOrNull()?.name
+        // Pengecualian Genre "Drama" agar rekomendasi lebih spesifik (Comedy, Fantasy, Romance, dll)
+        val genreName = response.genres?.mapNotNull { it.name }
+            ?.firstOrNull { !it.equals("drama", ignoreCase = true) }
         val countryName = response.country
-        
+
         val recommendations = try {
             var recText = ""
             if (!genreName.isNullOrBlank()) {
@@ -229,7 +202,7 @@ class Asiaflix : MainAPI() {
             
             var recResponse = tryParseJson<AsiaflixListResponse>(recText)
             
-            // Fallback jika rekomendasi genre kosong
+            // Fallback ke Country jika genre spesifik tidak menghasilkan apa-apa
             if (recResponse?.body.isNullOrEmpty() && !countryName.isNullOrBlank()) {
                 val recUrl = "$mainUrl/drama/list?country=${URLEncoder.encode(countryName, "UTF-8")}&limit=30"
                 recText = app.get(recUrl, headers = headers).text
@@ -244,22 +217,11 @@ class Asiaflix : MainAPI() {
                 val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
                 val epNum = extractEpNum(item.recentEp, item.episodes)
 
-                newTvSeriesSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
+                newAnimeSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
                     this.posterUrl = item.image
-                    this.episodes = epNum
-                    val statusStr = item.status?.trim()
-                    if (!statusStr.isNullOrBlank()) {
-                        when {
-                            statusStr.contains("complete", ignoreCase = true) || statusStr.contains("finish", ignoreCase = true) -> {
-                                this.quality = SearchQuality.HD
-                            }
-                            statusStr.contains("ongoing", ignoreCase = true) || statusStr.contains("airing", ignoreCase = true) -> {
-                                this.quality = SearchQuality.WebRip
-                            }
-                            else -> {
-                                addQuality(statusStr)
-                            }
-                        }
+                    addSub(epNum)
+                    if (!item.status.isNullOrBlank()) {
+                        addQuality(item.status)
                     }
                 }
             }
@@ -418,7 +380,6 @@ class Asiaflix : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixListResponse(@JsonProperty("hasNext") val hasNext: Boolean? = null, @JsonProperty("body") val body: List<AsiaflixItem>? = null)
     
-    // Properti episodes diubah menjadi Any? agar Jackson dapat membaca tipe data Int/List dari JSON
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixItem(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("recentEp") val recentEp: Any? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("genres") val genres: List<Any>? = null, @JsonProperty("episodes") val episodes: Any? = null)
     
