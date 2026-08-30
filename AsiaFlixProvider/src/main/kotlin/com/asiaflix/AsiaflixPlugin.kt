@@ -17,5 +17,6 @@ class AsiaflixPlugin : Plugin() {
         registerExtractorAPI(PeachifyExtractor())
         registerExtractorAPI(VideasyExtractor())
         registerExtractorAPI(VidupExtractor())
+        registerExtractorAPI(CinezoExtractor())
     }
 }

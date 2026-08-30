@@ -29,23 +29,34 @@ class PeachifyExtractor : ExtractorApi() {
         Pair("Bmb", "https://none.eat-peach.sbs/bmb")
     )
 
-    override suspend fun getUrl(url: String, referer: String?, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit) {
+    override suspend fun getUrl(
+        url: String, 
+        referer: String?, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ) {
         Log.d("PeachifyDebug", "Target Input URL: $url")
         var mediaType = "movie"; var tmdbId = ""; var season = "1"; var episode = "1"
 
-        if (url.contains("/tv/")) {
+        if (url.contains("id=")) {
+            tmdbId = url.substringAfter("id=").substringBefore("&")
+            if (url.contains("/tv") || url.contains("season=")) mediaType = "tv"
+            if (url.contains("season=")) season = url.substringAfter("season=").substringBefore("&")
+            if (url.contains("episode=")) episode = url.substringAfter("episode=").substringBefore("&")
+        } else if (url.contains("/tv/")) {
             mediaType = "tv"
             val parts = url.substringAfter("/tv/").substringBefore("?").split("/")
             tmdbId = parts.getOrNull(0) ?: ""; season = parts.getOrNull(1) ?: "1"; episode = parts.getOrNull(2) ?: "1"
         } else if (url.contains("/movie/")) {
             tmdbId = url.substringAfter("/movie/").substringBefore("?").substringBefore("/")
+        } else {
+            tmdbId = url.trim()
         }
 
         if (tmdbId.isEmpty()) return
 
-        val defaultUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        val requestHeaders = mapOf(
-            "User-Agent" to defaultUserAgent,
+        val headers = mapOf(
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer" to "$mainUrl/",
             "Origin" to mainUrl
         )
@@ -57,12 +68,9 @@ class PeachifyExtractor : ExtractorApi() {
                 async {
                     try {
                         val targetApiUrl = "$srvBaseUrl/$endpointPath"
-                        Log.d("PeachifyDebug", "Fetching from API: $targetApiUrl")
-
-                        val responseText = app.get(targetApiUrl, headers = requestHeaders, timeout = 10).text
+                        val responseText = app.get(targetApiUrl, headers = headers, timeout = 10).text
                         val apiRes = tryParseJson<PeachifyApiResponse>(responseText)
 
-                        // Parse Subtitles
                         for (sub in apiRes?.subtitles ?: emptyList()) {
                             val subUrl = sub.url ?: sub.file ?: sub.src ?: continue
                             val isInvalid = subUrl.endsWith(".jpg") || subUrl.endsWith(".png") || subUrl.endsWith(".m3u8") || subUrl.endsWith(".mp4")
@@ -71,31 +79,16 @@ class PeachifyExtractor : ExtractorApi() {
                                     newSubtitleFile(
                                         lang = sub.label ?: sub.name ?: sub.lang ?: "Auto",
                                         url = subUrl
-                                    ) {
-                                        this.headers = requestHeaders
-                                    }
+                                    )
                                 )
                             }
                         }
 
-                        // Parse Sources dengan Header Dinamis dari JSON API
                         apiRes?.sources?.forEach { src ->
                             val streamUrl = src.url ?: src.src ?: src.file ?: return@forEach
                             if (streamUrl.startsWith("http")) {
                                 val isM3u8 = src.type?.lowercase()?.contains("hls") == true || streamUrl.lowercase().contains(".m3u8")
                                 val dubLabel = if (src.dub.isNullOrBlank()) "Original" else src.dub
-
-                                // Ekstraksi header dinamis dari JSON (seperti origin & referer ke nextgencloudfabric.com)
-                                val playHeaders = mutableMapOf("User-Agent" to defaultUserAgent)
-                                src.headers?.forEach { (key, value) ->
-                                    playHeaders[key] = value
-                                }
-
-                                val streamReferer = src.headers?.get("referer") 
-                                    ?: src.headers?.get("Referer") 
-                                    ?: "$mainUrl/"
-
-                                Log.d("PeachifyDebug", "Found Stream ($srvLabel): $streamUrl | Referer: $streamReferer")
 
                                 callback.invoke(
                                     newExtractorLink(
@@ -104,8 +97,8 @@ class PeachifyExtractor : ExtractorApi() {
                                         url = streamUrl,
                                         type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                     ) {
-                                        this.referer = streamReferer
-                                        this.headers = playHeaders
+                                        this.referer = "$mainUrl/"
+                                        this.headers = headers
                                         this.quality = Qualities.Unknown.value
                                     }
                                 )
@@ -130,8 +123,7 @@ class PeachifyExtractor : ExtractorApi() {
         @JsonProperty("src") val src: String? = null,
         @JsonProperty("file") val file: String? = null,
         @JsonProperty("dub") val dub: String? = null,
-        @JsonProperty("type") val type: String? = null,
-        @JsonProperty("headers") val headers: Map<String, String>? = null
+        @JsonProperty("type") val type: String? = null
     )
 
     data class PeachifySubtitle(
