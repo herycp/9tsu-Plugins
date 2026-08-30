@@ -1,6 +1,7 @@
 package com.asiaflix.extractors
 
 import android.util.Log
+import androidx.annotation.Keep
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -9,6 +10,8 @@ import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
+// Import helper baru jika menggunakan versi CS3 terbaru (opsional tergantung versi)
+import com.lagradost.cloudstream3.newExtractorLink
 
 class VideasyExtractor : ExtractorApi() {
     override val name = "Videasy"
@@ -21,6 +24,8 @@ class VideasyExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
+        // Menggunakan println() sebagai backup karena Log.d terkadang difilter oleh CS3 Logcat
+        println("VideasyDebug: 1. Extractor MULAI terpanggil untuk URL: $url")
         Log.d("VideasyDebug", "1. Extractor MULAI terpanggil untuk URL: $url")
 
         // --- 0. PARSING PARAMETER DARI URL INPUT ---
@@ -37,85 +42,84 @@ class VideasyExtractor : ExtractorApi() {
         val season = matchResult.groupValues.getOrNull(3)?.toIntOrNull() ?: 1
         val episode = matchResult.groupValues.getOrNull(4)?.toIntOrNull() ?: 1
 
-        Log.d("VideasyDebug", "2. Data Regex didapat -> TMDB: $tmdbId, isTv: $isTv, S: $season, E: $episode")
+        println("VideasyDebug: 2. Data Regex -> TMDB: $tmdbId, isTv: $isTv")
 
-        // --- 1. AMBIL METADATA DARI SPEEDRACELIGHT ---
+        // --- 1. AMBIL METADATA API SPEEDRACELIGHT ---
         var apiUrl = if (isTv) {
             "https://db.speedracelight.com/3/tv/$tmdbId?append_to_response=external_ids&language=en"
         } else {
             "https://db.speedracelight.com/3/movie/$tmdbId?append_to_response=external_ids&language=en"
         }
 
-        Log.d("VideasyDebug", "3. Mengambil API: $apiUrl")
-
-        var apiText = try {
+        val apiText = try {
             app.get(apiUrl).text
         } catch (e: Exception) {
-            Log.e("VideasyDebug", "GAGAL: Jaringan Timeout/Ditolak: ${e.message}")
-            return
+            Log.e("VideasyDebug", "GAGAL API Tahap 1: ${e.message}")
+            ""
         }
 
         var apiJson = tryParseJson<TmdbMediaDetails>(apiText)
         var title = apiJson?.name ?: apiJson?.title
 
-        // Fallback Cross-Category jika kategori pertama gagal/kosong
+        // Fallback jika API mengembalikan data kosong (salah kategori)
         if (title.isNullOrBlank()) {
-            Log.w("VideasyDebug", "Peringatan: Judul kosong. Mencoba kategori alternatif...")
+            println("VideasyDebug: Peringatan: Judul kosong. Mencoba kategori alternatif...")
             apiUrl = if (!isTv) {
                 "https://db.speedracelight.com/3/tv/$tmdbId?append_to_response=external_ids&language=en"
             } else {
                 "https://db.speedracelight.com/3/movie/$tmdbId?append_to_response=external_ids&language=en"
             }
-
-            apiText = try {
-                app.get(apiUrl).text
-            } catch (e: Exception) {
-                ""
-            }
-            apiJson = tryParseJson<TmdbMediaDetails>(apiText)
+            
+            val apiTextAlt = try { app.get(apiUrl).text } catch (e: Exception) { "" }
+            apiJson = tryParseJson<TmdbMediaDetails>(apiTextAlt)
             title = apiJson?.name ?: apiJson?.title
         }
 
         if (title.isNullOrBlank()) {
-            Log.e("VideasyDebug", "GAGAL FATAL: Judul tetap kosong. ID $tmdbId tidak ditemukan di metadata.")
+            Log.e("VideasyDebug", "GAGAL FATAL: Judul tetap kosong. Script berhenti.")
             return
         }
 
         val year = (apiJson?.firstAirDate ?: apiJson?.releaseDate)?.take(4) ?: ""
         val imdbId = apiJson?.externalIds?.imdbId ?: ""
 
-        Log.d("VideasyDebug", "4. Meta Sukses -> Title: $title, Year: $year, IMDB: $imdbId")
+        println("VideasyDebug: 4. Meta Sukses -> Title: $title, Year: $year, IMDB: $imdbId")
 
-        // --- 2. PROSES EXTRACTION / STREAM SEARCHING ---
+        // --- 2. PROSES EXTRACTION / M3U8 GENERATION ---
         try {
+            // [GANTI URL INI DENGAN LOGIKA ENKRIPSI/API SERVER ANDA]
             val streamUrl = "https://example-stream-provider.com/hls/$tmdbId.m3u8"
 
-            if (streamUrl.endsWith(".m3u8")) {
+            if (streamUrl.contains(".m3u8")) {
+                // Cloudstream menyarankan M3u8Helper untuk semua file HLS
                 M3u8Helper.generateM3u8(
                     source = name,
                     streamUrl = streamUrl,
                     referer = mainUrl
                 ).forEach(callback)
             } else {
+                // Gunakan newExtractorLink untuk menghindari error "Deprecated" saat build di GitHub Actions
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = name,
                         url = streamUrl,
                         referer = mainUrl,
-                        quality = Qualities.Unknown.value
+                        quality = Qualities.Unknown.value,
+                        isM3u8 = false
                     )
                 )
             }
-
-            Log.d("VideasyDebug", "5. Berhasil mengirim ExtractorLink ke Cloudstream Player.")
+            println("VideasyDebug: 5. Berhasil mengirim ExtractorLink ke Cloudstream Player.")
         } catch (e: Exception) {
-            Log.e("VideasyDebug", "GAGAL Ekstraksi Stream Videasy: ${e.message}")
+            Log.e("VideasyDebug", "GAGAL Generate Stream: ${e.message}")
         }
     }
 }
 
 // --- DATA CLASSES ---
+// Anotasi @Keep WAJIB ADA agar R8/Proguard tidak merusak proses mapping JSON
+@Keep
 data class TmdbMediaDetails(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("title") val title: String? = null,
@@ -124,6 +128,7 @@ data class TmdbMediaDetails(
     @JsonProperty("external_ids") val externalIds: ExternalIds? = null
 )
 
+@Keep
 data class ExternalIds(
     @JsonProperty("imdb_id") val imdbId: String? = null
 )
