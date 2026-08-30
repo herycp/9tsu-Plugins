@@ -29,6 +29,7 @@ class CinezoExtractor : ExtractorApi() {
         var season = "1"
         var episode = "1"
 
+        // Evaluasi 1: Regex & Parsing yang lebih aman
         if (url.contains("id=")) {
             tmdbId = url.substringAfter("id=").substringBefore("&")
             if (url.contains("/tv") || url.contains("season=")) mediaType = "tv"
@@ -62,6 +63,7 @@ class CinezoExtractor : ExtractorApi() {
         }
 
         val responseText = try {
+            // Evaluasi 2: Timeout disesuaikan karena API merespons dengan pola Stream (SSE)
             app.get(apiUrl, headers = baseHeaders, timeout = 15).text
         } catch (e: Exception) {
             Log.e("CinezoDebug", "Error fetching API: ${e.message}")
@@ -76,12 +78,13 @@ class CinezoExtractor : ExtractorApi() {
             val jsonStr = trimmed.removePrefix("data:").trim()
             if (jsonStr.isEmpty()) continue
 
-            // 1. Parse Subtitle (Abaikan inline base64)
+            // Evaluasi 3: Filter Subtitle yang sangat selektif
             if (jsonStr.contains("\"type\":\"meta\"")) {
                 val metaData = tryParseJson<CinezoMetaEvent>(jsonStr)
                 for (sub in metaData?.subtitles ?: emptyList()) {
                     val subUrl = sub.file ?: continue
-                    if (subUrl.startsWith("http")) {
+                    // Memastikan hanya VTT/SRT HTTP yang lolos (mengabaikan base64 "Vylian")
+                    if (subUrl.startsWith("http") && (subUrl.contains(".vtt") || subUrl.contains(".srt"))) {
                         subtitleCallback.invoke(
                             newSubtitleFile(
                                 lang = sub.label ?: "Auto",
@@ -92,7 +95,7 @@ class CinezoExtractor : ExtractorApi() {
                 }
             }
 
-            // 2. Parse Video Stream
+            // Evaluasi 4: Deteksi Tipe Stream Hybrid (JSON Parameter + URL String)
             if (jsonStr.contains("\"type\":\"source\"")) {
                 val sourceData = tryParseJson<CinezoSourceEvent>(jsonStr)
                 val srcObj = sourceData?.source ?: continue
@@ -102,9 +105,8 @@ class CinezoExtractor : ExtractorApi() {
                     val rawType = srcObj.type?.lowercase() ?: ""
                     val lowerUrl = streamUrl.lowercase()
 
-                    // Deteksi presisi format DASH (.mpd), HLS (.m3u8), dan MP4/MKV
-                    val isDash = rawType == "dash" || lowerUrl.contains(".mpd") || lowerUrl.contains("manifest.mpd")[cite: 4]
-                    val isM3u8 = rawType == "hls" || rawType == "m3u8" || lowerUrl.contains(".m3u8") || lowerUrl.contains("master.m3u8") || lowerUrl.contains("%2fmaster.m3u8")[cite: 4]
+                    val isDash = rawType == "dash" || lowerUrl.contains(".mpd") || lowerUrl.contains("manifest.mpd")
+                    val isM3u8 = rawType == "hls" || rawType == "m3u8" || lowerUrl.contains(".m3u8") || lowerUrl.contains("master.m3u8")
 
                     val linkType = when {
                         isDash -> ExtractorLinkType.DASH
@@ -113,7 +115,6 @@ class CinezoExtractor : ExtractorApi() {
                     }
 
                     val serverLabel = srcObj.label ?: srcObj.source ?: "Server"
-                    Log.d("CinezoDebug", "Found Link [$serverLabel | Type: $linkType]: $streamUrl")
 
                     callback.invoke(
                         newExtractorLink(
