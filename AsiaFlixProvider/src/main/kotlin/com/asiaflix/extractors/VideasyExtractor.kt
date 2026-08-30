@@ -1,7 +1,6 @@
 package com.asiaflix.extractors
 
 import android.util.Log
-import androidx.annotation.Keep
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
@@ -10,8 +9,8 @@ import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
-// Import helper baru jika menggunakan versi CS3 terbaru (opsional tergantung versi)
-import com.lagradost.cloudstream3.newExtractorLink
+// Perbaikan letak import newExtractorLink
+import com.lagradost.cloudstream3.utils.newExtractorLink 
 
 class VideasyExtractor : ExtractorApi() {
     override val name = "Videasy"
@@ -24,7 +23,6 @@ class VideasyExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        // Menggunakan println() sebagai backup karena Log.d terkadang difilter oleh CS3 Logcat
         println("VideasyDebug: 1. Extractor MULAI terpanggil untuk URL: $url")
         Log.d("VideasyDebug", "1. Extractor MULAI terpanggil untuk URL: $url")
 
@@ -91,14 +89,12 @@ class VideasyExtractor : ExtractorApi() {
             val streamUrl = "https://example-stream-provider.com/hls/$tmdbId.m3u8"
 
             if (streamUrl.contains(".m3u8")) {
-                // Cloudstream menyarankan M3u8Helper untuk semua file HLS
                 M3u8Helper.generateM3u8(
                     source = name,
                     streamUrl = streamUrl,
                     referer = mainUrl
                 ).forEach(callback)
             } else {
-                // Gunakan newExtractorLink untuk menghindari error "Deprecated" saat build di GitHub Actions
                 callback.invoke(
                     newExtractorLink(
                         source = name,
@@ -118,8 +114,7 @@ class VideasyExtractor : ExtractorApi() {
 }
 
 // --- DATA CLASSES ---
-// Anotasi @Keep WAJIB ADA agar R8/Proguard tidak merusak proses mapping JSON
-@Keep
+// @Keep Dihapus karena @JsonProperty sudah cukup mencegah obfuscation saat build GitHub Actions
 data class TmdbMediaDetails(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("title") val title: String? = null,
@@ -128,7 +123,6 @@ data class TmdbMediaDetails(
     @JsonProperty("external_ids") val externalIds: ExternalIds? = null
 )
 
-@Keep
 data class ExternalIds(
     @JsonProperty("imdb_id") val imdbId: String? = null
 )
