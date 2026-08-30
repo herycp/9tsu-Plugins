@@ -99,9 +99,10 @@ class VideasyExtractor : ExtractorApi() {
                         name,
                         name,
                         streamUrl,
-                        mainUrl,
-                        Qualities.Unknown.value
-                    )
+                        mainUrl
+                    ) {
+                        quality = Qualities.Unknown.value
+                    }
                 )
             }
             println("VideasyDebug: 5. Berhasil mengirim ExtractorLink ke Cloudstream Player.")
