@@ -8,9 +8,9 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.addQuality
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.*
 import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
@@ -188,7 +188,6 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
-        // Ambil rekomendasi berdasarkan genre seri saat ini
         val genreName = response.genres?.firstOrNull()?.name
         val recommendations = if (!genreName.isNullOrBlank()) {
             try {
