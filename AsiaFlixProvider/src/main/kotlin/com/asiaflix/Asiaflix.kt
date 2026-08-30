@@ -33,7 +33,6 @@ class Asiaflix : MainAPI() {
         return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
     }
 
-    // Ekstraksi angka episode secara aman dari berbagai format (string "Ep 1", integer 1, atau float 1.0)
     private fun extractEpNum(recentEp: Any?, episodesSize: Int?): Int? {
         val fromRecent = recentEp?.toString()?.let { str ->
             Regex("""\d+""").find(str)?.value?.toIntOrNull()
@@ -53,7 +52,6 @@ class Asiaflix : MainAPI() {
         val items = mutableListOf<SearchResponse>()
         val isLatest = request.data == "latest"
 
-        // Kembalikan Latest Updates ke endpoint dynamic-fetch
         val url = if (isLatest) {
             "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
         } else {
@@ -73,7 +71,7 @@ class Asiaflix : MainAPI() {
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val epNum = extractEpNum(item.recentEp, item.episodes?.size)
 
-            items.add(newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 // Label Kiri: Episode
                 addSub(epNum)
@@ -155,7 +153,7 @@ class Asiaflix : MainAPI() {
             val title = item.name ?: "Unknown"
             val epNum = extractEpNum(item.recentEp, item.episodes?.size)
 
-            newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 addSub(epNum)
                 if (!item.status.isNullOrBlank()) {
@@ -187,7 +185,6 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
-        // Sistem Rekomendasi diperbaiki: Fetch limit 30, abaikan seri saat ini, ambil 15 item unik
         val genreName = response.genres?.firstOrNull()?.name
         val recommendations = try {
             val recUrl = if (!genreName.isNullOrBlank()) {
@@ -209,7 +206,7 @@ class Asiaflix : MainAPI() {
                 val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
                 val epNum = extractEpNum(item.recentEp, item.episodes?.size)
 
-                newTvSeriesSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
+                newAnimeSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
                     this.posterUrl = item.image
                     addSub(epNum)
                     if (!item.status.isNullOrBlank()) {
