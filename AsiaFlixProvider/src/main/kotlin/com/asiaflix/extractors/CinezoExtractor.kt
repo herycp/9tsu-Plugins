@@ -64,7 +64,7 @@ class CinezoExtractor : ExtractorApi() {
 
         val responseText = try {
             // Evaluasi 2: Timeout disesuaikan karena API merespons dengan pola Stream (SSE)
-            app.get(apiUrl, headers = baseHeaders, timeout = 15).text
+            app.get(apiUrl, headers = baseHeaders, timeout = 60).text
         } catch (e: Exception) {
             Log.e("CinezoDebug", "Error fetching API: ${e.message}")
             return
