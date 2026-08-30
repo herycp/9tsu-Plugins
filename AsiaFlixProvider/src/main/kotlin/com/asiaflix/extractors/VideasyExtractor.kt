@@ -4,9 +4,11 @@ import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
+import com.lagradost.cloudstream3.newSubtitleFile
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
@@ -192,17 +194,25 @@ class VideasyExtractor : ExtractorApi() {
                     resultData.sources?.forEach { source ->
                         val videoUrl = source.url ?: source.file
                         if (!videoUrl.isNullOrEmpty()) {
-                            callback.invoke(
-                                newExtractorLink(
+                            if (videoUrl.contains(".m3u8")) {
+                                M3u8Helper.generateM3u8(
                                     source = name,
-                                    name = "$name - $serverName",
-                                    url = videoUrl
-                                ) {
-                                    this.referer = "https://player.videasy.to/"
-                                    this.quality = Qualities.Unknown.value
-                                    this.isM3u8 = videoUrl.contains(".m3u8")
-                                }
-                            )
+                                    streamUrl = videoUrl,
+                                    referer = "https://player.videasy.to/",
+                                    name = "$name - $serverName"
+                                ).forEach(callback)
+                            } else {
+                                callback.invoke(
+                                    newExtractorLink(
+                                        source = name,
+                                        name = "$name - $serverName",
+                                        url = videoUrl
+                                    ) {
+                                        this.referer = "https://player.videasy.to/"
+                                        this.quality = Qualities.Unknown.value
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -211,7 +221,7 @@ class VideasyExtractor : ExtractorApi() {
                         val trackUrl = track.url ?: track.file
                         if (!trackUrl.isNullOrEmpty() && (track.kind == "captions" || track.kind == "subtitles")) {
                             subtitleCallback.invoke(
-                                SubtitleFile(
+                                newSubtitleFile(
                                     lang = track.label ?: "Unknown",
                                     url = trackUrl
                                 )
