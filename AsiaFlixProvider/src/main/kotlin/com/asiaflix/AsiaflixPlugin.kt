@@ -4,6 +4,7 @@ import android.content.Context
 import com.asiaflix.extractors.PeachifyExtractor
 import com.asiaflix.extractors.VideasyExtractor
 import com.asiaflix.extractors.VidupExtractor
+import com.asiaflix.extractors.CinezoExtractor
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
 
