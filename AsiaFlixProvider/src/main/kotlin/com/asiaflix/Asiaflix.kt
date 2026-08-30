@@ -33,6 +33,14 @@ class Asiaflix : MainAPI() {
         return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
     }
 
+    // Ekstraksi angka episode secara aman dari berbagai format (string "Ep 1", integer 1, atau float 1.0)
+    private fun extractEpNum(recentEp: Any?, episodesSize: Int?): Int? {
+        val fromRecent = recentEp?.toString()?.let { str ->
+            Regex("""\d+""").find(str)?.value?.toIntOrNull()
+        }
+        return fromRecent ?: episodesSize
+    }
+
     override val mainPage = mainPageOf(
         "latest" to "Latest Updates",
         "Japan" to "Drama Jepang",
@@ -45,8 +53,9 @@ class Asiaflix : MainAPI() {
         val items = mutableListOf<SearchResponse>()
         val isLatest = request.data == "latest"
 
+        // Kembalikan Latest Updates ke endpoint dynamic-fetch
         val url = if (isLatest) {
-            "$mainUrl/drama/list?page=$page&limit=30&type=Latest%20Updates"
+            "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
         } else {
             val country = URLEncoder.encode(request.data, "UTF-8")
             "$mainUrl/drama/list?country=$country&page=$page"
@@ -62,19 +71,14 @@ class Asiaflix : MainAPI() {
             val itemId = item.id ?: return@forEach
             val title = item.name ?: "Unknown"
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
+            val epNum = extractEpNum(item.recentEp, item.episodes?.size)
 
-            val epNum = when (val ep = item.recentEp) {
-                is Number -> ep.toInt()
-                is String -> ep.toIntOrNull()
-                else -> null
-            } ?: item.episodes?.size
-
-            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            items.add(newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 // Label Kiri: Episode
                 addSub(epNum)
 
-                // Label Kanan: Status (HANYA untuk selain Latest Updates)
+                // Label Kanan: Status Ongoing/Completed (HANYA untuk selain Latest Updates)
                 if (!isLatest && !item.status.isNullOrBlank()) {
                     addQuality(item.status)
                 }
@@ -149,14 +153,9 @@ class Asiaflix : MainAPI() {
             val itemId = item.id ?: return@mapNotNull null
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val title = item.name ?: "Unknown"
-            
-            val epNum = when (val ep = item.recentEp) {
-                is Number -> ep.toInt()
-                is String -> ep.toIntOrNull()
-                else -> null
-            } ?: item.episodes?.size
+            val epNum = extractEpNum(item.recentEp, item.episodes?.size)
 
-            newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
+            newTvSeriesSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 addSub(epNum)
                 if (!item.status.isNullOrBlank()) {
@@ -188,36 +187,39 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
+        // Sistem Rekomendasi diperbaiki: Fetch limit 30, abaikan seri saat ini, ambil 15 item unik
         val genreName = response.genres?.firstOrNull()?.name
-        val recommendations = if (!genreName.isNullOrBlank()) {
-            try {
-                val encodedGenre = URLEncoder.encode(genreName, "UTF-8")
-                val recUrl = "$mainUrl/drama/list?genres=$encodedGenre&limit=10"
-                val recText = app.get(recUrl, headers = headers).text
-                val recResponse = tryParseJson<AsiaflixListResponse>(recText)
-                recResponse?.body?.mapNotNull { item ->
-                    val itemId = item.id ?: return@mapNotNull null
-                    if (itemId == response.id) return@mapNotNull null
-                    val itemTitle = item.name ?: "Unknown"
-                    val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
-                    val epNum = when (val ep = item.recentEp) {
-                        is Number -> ep.toInt()
-                        is String -> ep.toIntOrNull()
-                        else -> null
-                    } ?: item.episodes?.size
+        val recommendations = try {
+            val recUrl = if (!genreName.isNullOrBlank()) {
+                "$mainUrl/drama/list?genres=${URLEncoder.encode(genreName, "UTF-8")}&limit=30"
+            } else if (!response.country.isNullOrBlank()) {
+                "$mainUrl/drama/list?country=${URLEncoder.encode(response.country, "UTF-8")}&limit=30"
+            } else {
+                "$mainUrl/drama/list?limit=30"
+            }
 
-                    newAnimeSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
-                        this.posterUrl = item.image
-                        addSub(epNum)
-                        if (!item.status.isNullOrBlank()) {
-                            addQuality(item.status)
-                        }
+            val recText = app.get(recUrl, headers = headers).text
+            val recResponse = tryParseJson<AsiaflixListResponse>(recText)
+            
+            recResponse?.body?.filter { item ->
+                item.id != null && item.id != response.id && !item.name.equals(response.name, ignoreCase = true)
+            }?.distinctBy { it.id }?.take(15)?.mapNotNull { item ->
+                val itemId = item.id ?: return@mapNotNull null
+                val itemTitle = item.name ?: "Unknown"
+                val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
+                val epNum = extractEpNum(item.recentEp, item.episodes?.size)
+
+                newTvSeriesSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
+                    this.posterUrl = item.image
+                    addSub(epNum)
+                    if (!item.status.isNullOrBlank()) {
+                        addQuality(item.status)
                     }
                 }
-            } catch (e: Exception) {
-                null
             }
-        } else null
+        } catch (e: Exception) {
+            null
+        }
 
         return if (isMovie) {
             newMovieLoadResponse(response.name ?: "", url, TvType.Movie, episodes.firstOrNull()?.data ?: "") {
@@ -372,7 +374,7 @@ class Asiaflix : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixItem(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("recentEp") val recentEp: Any? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("genres") val genres: List<Any>? = null, @JsonProperty("episodes") val episodes: List<Any>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixDetail(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("description") val description: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("showType") val showType: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("tmdbId") val tmdbId: Long? = null, @JsonProperty("seasonNumber") val seasonNumber: Int? = null, @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null, @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null)
+    data class AsiaflixDetail(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("description") val description: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("showType") val showType: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("tmdbId") val tmdbId: Long? = null, @JsonProperty("seasonNumber") val seasonNumber: Int? = null, @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null, @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixGenre(@JsonProperty("name") val name: String? = null)
     @JsonIgnoreProperties(ignoreUnknown = true)
