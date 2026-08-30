@@ -14,7 +14,7 @@ import com.lagradost.cloudstream3.utils.newExtractorLink
 
 class CinezoExtractor : ExtractorApi() {
     override val name = "Cinezo"
-    override val mainUrl = "https://cinezo.live"
+    override val mainUrl = "https://player.cinezo.live"
     override val requiresReferer = true
 
     override suspend fun getUrl(
