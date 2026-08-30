@@ -96,12 +96,12 @@ class VideasyExtractor : ExtractorApi() {
             } else {
                 callback.invoke(
                     newExtractorLink(
-                        name,
-                        name,
-                        streamUrl,
-                        mainUrl
+                        source = name,
+                        name = name,
+                        url = streamUrl
                     ) {
-                        quality = Qualities.Unknown.value
+                        this.referer = mainUrl
+                        this.quality = Qualities.Unknown.value
                     }
                 )
             }
