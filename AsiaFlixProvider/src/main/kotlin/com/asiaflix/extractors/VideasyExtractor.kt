@@ -2,13 +2,13 @@ package com.asiaflix.extractors
 
 import android.util.Log
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.SubtitleFile
 import com.lagradost.cloudstream3.utils.M3u8Helper
+import com.lagradost.cloudstream3.utils.Qualities
 
 class VideasyExtractor : ExtractorApi() {
     override val name = "Videasy"
@@ -21,11 +21,9 @@ class VideasyExtractor : ExtractorApi() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ) {
-        Log.d("VideasyDebug", "1. Extractor MULA terpanggil untuk URL: $url")
+        Log.d("VideasyDebug", "1. Extractor MULAI terpanggil untuk URL: $url")
 
         // --- 0. PARSING PARAMETER DARI URL INPUT ---
-        // Contoh URL: https://player.videasy.to/tv/253960/1/1?nextEpisode=false
-        // atau: https://player.videasy.to/movie/253960
         val isTv = url.contains("/tv/")
         val regex = Regex("""/(tv|movie)/(\d+)(?:/(\d+)/(\d+))?""")
         val matchResult = regex.find(url)
@@ -89,23 +87,20 @@ class VideasyExtractor : ExtractorApi() {
         Log.d("VideasyDebug", "4. Meta Sukses -> Title: $title, Year: $year, IMDB: $imdbId")
 
         // --- 2. PROSES EXTRACTION / STREAM SEARCHING ---
-        // Masukkan enkripsi / API fetch server Videasy Anda di bawah ini
         try {
-            // Contoh implementasi pemanggilan endpoint stream Videasy
-            // (Sesuaikan dengan endpoint backend/encrypter stream yang Anda miliki)
-            val streamUrl = "https://example-stream-provider.com/hls/$tmdbId.m3u8" // Ganti dengan logika eksekusi Videasy Anda
+            val streamUrl = "https://example-stream-provider.com/hls/$tmdbId.m3u8"
 
             if (streamUrl.endsWith(".m3u8")) {
                 M3u8Helper.generateM3u8(
-                    name = name,
+                    source = name,
                     streamUrl = streamUrl,
                     referer = mainUrl
                 ).forEach(callback)
             } else {
                 callback.invoke(
                     ExtractorLink(
-                        name = name,
                         source = name,
+                        name = name,
                         url = streamUrl,
                         referer = mainUrl,
                         quality = Qualities.Unknown.value
@@ -120,7 +115,7 @@ class VideasyExtractor : ExtractorApi() {
     }
 }
 
-// --- DATA CLASSES UNTUK PARSING METADATA SPEEDRACELIGHT ---
+// --- DATA CLASSES ---
 data class TmdbMediaDetails(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("title") val title: String? = null,
