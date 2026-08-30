@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
 
 class VideasyExtractor : ExtractorApi() {
@@ -129,13 +130,14 @@ class VideasyExtractor : ExtractorApi() {
 
         // --- 3. AMBIL SEED ---
         val seedUrl = "$speedraceApiUrl/seed?mediaId=$tmdbId"
-        val seedResponse = try {
-            app.get(seedUrl, headers = reqHeaders).parsedSafe<SeedResponse>()
+        val seedText = try {
+            app.get(seedUrl, headers = reqHeaders).text
         } catch (e: Exception) {
             Log.e("VideasyDebug", "GAGAL Get Seed: ${e.message}")
-            null
+            ""
         }
 
+        val seedResponse = tryParseJson<SeedResponse>(seedText)
         val seed = seedResponse?.seed
         if (seed == null) {
             Log.e("VideasyDebug", "GAGAL: Seed kosong atau tidak ditemukan")
@@ -173,11 +175,15 @@ class VideasyExtractor : ExtractorApi() {
                     "seed" to seed
                 )
 
-                val decryptedResponse = app.post(
-                    decApi,
-                    headers = mapOf("Content-Type" to "application/json"),
-                    json = decPayload
-                ).parsedSafe<DecryptedResult>()
+                val decText = try {
+                    app.post(
+                        decApi,
+                        headers = mapOf("Content-Type" to "application/json"),
+                        json = decPayload
+                    ).text
+                } catch (e: Exception) { "" }
+
+                val decryptedResponse = tryParseJson<DecryptedResult>(decText)
 
                 if (decryptedResponse?.status == 200 && decryptedResponse.result != null) {
                     val resultData = decryptedResponse.result
@@ -187,14 +193,15 @@ class VideasyExtractor : ExtractorApi() {
                         val videoUrl = source.url ?: source.file
                         if (!videoUrl.isNullOrEmpty()) {
                             callback.invoke(
-                                ExtractorLink(
+                                newExtractorLink(
                                     source = name,
                                     name = "$name - $serverName",
-                                    url = videoUrl,
-                                    referer = "https://player.videasy.to/",
-                                    quality = Qualities.Unknown.value,
-                                    isM3u8 = videoUrl.contains(".m3u8")
-                                )
+                                    url = videoUrl
+                                ) {
+                                    this.referer = "https://player.videasy.to/"
+                                    this.quality = Qualities.Unknown.value
+                                    this.isM3u8 = videoUrl.contains(".m3u8")
+                                }
                             )
                         }
                     }
