@@ -9,7 +9,6 @@ import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.M3u8Helper
 import com.lagradost.cloudstream3.utils.Qualities
-// Perbaikan letak import newExtractorLink
 import com.lagradost.cloudstream3.utils.newExtractorLink 
 
 class VideasyExtractor : ExtractorApi() {
@@ -97,12 +96,11 @@ class VideasyExtractor : ExtractorApi() {
             } else {
                 callback.invoke(
                     newExtractorLink(
-                        source = name,
-                        name = name,
-                        url = streamUrl,
-                        referer = mainUrl,
-                        quality = Qualities.Unknown.value,
-                        isM3u8 = false
+                        name,
+                        name,
+                        streamUrl,
+                        mainUrl,
+                        Qualities.Unknown.value
                     )
                 )
             }
@@ -114,7 +112,6 @@ class VideasyExtractor : ExtractorApi() {
 }
 
 // --- DATA CLASSES ---
-// @Keep Dihapus karena @JsonProperty sudah cukup mencegah obfuscation saat build GitHub Actions
 data class TmdbMediaDetails(
     @JsonProperty("name") val name: String? = null,
     @JsonProperty("title") val title: String? = null,
