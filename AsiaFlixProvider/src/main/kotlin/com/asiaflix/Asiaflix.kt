@@ -8,6 +8,7 @@ import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.addQuality
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.net.URLEncoder
@@ -42,8 +43,10 @@ class Asiaflix : MainAPI() {
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val items = mutableListOf<SearchResponse>()
-        val url = if (request.data == "latest") {
-            "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
+        val isLatest = request.data == "latest"
+
+        val url = if (isLatest) {
+            "$mainUrl/drama/list?page=$page&limit=30&type=Latest%20Updates"
         } else {
             val country = URLEncoder.encode(request.data, "UTF-8")
             "$mainUrl/drama/list?country=$country&page=$page"
@@ -53,7 +56,6 @@ class Asiaflix : MainAPI() {
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
-        // Perbaikan Paginasi: jika response.hasNext null/false tapi body masih berisi item, ijinkan load page berikutnya
         val hasNext = response?.hasNext ?: (!response?.body.isNullOrEmpty())
 
         response?.body?.forEach { item ->
@@ -61,7 +63,6 @@ class Asiaflix : MainAPI() {
             val title = item.name ?: "Unknown"
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
 
-            // Ambil angka episode jika ada
             val epNum = when (val ep = item.recentEp) {
                 is Number -> ep.toInt()
                 is String -> ep.toIntOrNull()
@@ -70,8 +71,13 @@ class Asiaflix : MainAPI() {
 
             items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
-                // Menampilkan badge "Sub Ep X" murni di poster
+                // Label Kiri: Episode
                 addSub(epNum)
+
+                // Label Kanan: Status (HANYA untuk selain Latest Updates)
+                if (!isLatest && !item.status.isNullOrBlank()) {
+                    addQuality(item.status)
+                }
             })
         }
         return newHomePageResponse(request.name, items, hasNext)
@@ -82,7 +88,6 @@ class Asiaflix : MainAPI() {
         Log.d("AsiaflixDebug", "Search Query: $cleanQuery")
         var results = emptyList<AsiaflixItem>()
 
-        // 1. Pencarian menggunakan API List jika hanya berisi format parameter (diawali # tanpa text sebelumnya)
         if (cleanQuery.startsWith("#")) {
             val tagString = cleanQuery.removePrefix("#").trim()
             val queryParams = mutableListOf("limit=50")
@@ -100,9 +105,7 @@ class Asiaflix : MainAPI() {
             Log.d("AsiaflixDebug", "Search Route -> API List: $url")
             val responseText = app.get(url, headers = headers).text
             results = tryParseJson<AsiaflixListResponse>(responseText)?.body ?: emptyList()
-        } 
-        // 2. Pencarian menggunakan API Search standar dengan filter
-        else {
+        } else {
             var searchQuery = cleanQuery
             val tagFilters = mutableMapOf<String, String>()
 
@@ -156,6 +159,9 @@ class Asiaflix : MainAPI() {
             newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
                 addSub(epNum)
+                if (!item.status.isNullOrBlank()) {
+                    addQuality(item.status)
+                }
             }
         }
     }
@@ -182,12 +188,45 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
+        // Ambil rekomendasi berdasarkan genre seri saat ini
+        val genreName = response.genres?.firstOrNull()?.name
+        val recommendations = if (!genreName.isNullOrBlank()) {
+            try {
+                val encodedGenre = URLEncoder.encode(genreName, "UTF-8")
+                val recUrl = "$mainUrl/drama/list?genres=$encodedGenre&limit=10"
+                val recText = app.get(recUrl, headers = headers).text
+                val recResponse = tryParseJson<AsiaflixListResponse>(recText)
+                recResponse?.body?.mapNotNull { item ->
+                    val itemId = item.id ?: return@mapNotNull null
+                    if (itemId == response.id) return@mapNotNull null
+                    val itemTitle = item.name ?: "Unknown"
+                    val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
+                    val epNum = when (val ep = item.recentEp) {
+                        is Number -> ep.toInt()
+                        is String -> ep.toIntOrNull()
+                        else -> null
+                    } ?: item.episodes?.size
+
+                    newAnimeSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
+                        this.posterUrl = item.image
+                        addSub(epNum)
+                        if (!item.status.isNullOrBlank()) {
+                            addQuality(item.status)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                null
+            }
+        } else null
+
         return if (isMovie) {
             newMovieLoadResponse(response.name ?: "", url, TvType.Movie, episodes.firstOrNull()?.data ?: "") {
                 this.posterUrl = response.image
                 this.plot = response.description
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
+                this.recommendations = recommendations
             }
         } else {
             newTvSeriesLoadResponse(response.name ?: "", url, TvType.TvSeries, episodes) {
@@ -195,6 +234,7 @@ class Asiaflix : MainAPI() {
                 this.plot = response.description
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
+                this.recommendations = recommendations
             }
         }
     }
