@@ -9,7 +9,7 @@ import java.net.URLEncoder
 
 class VideasyExtractor : ExtractorApi() {
     override val name = "Videasy"
-    override val mainUrl = "https://player.videasy.net"
+    override val mainUrl = "https://player.videasy.to"
     override val requiresReferer = true
 
     private val tmdbApiKey = "15d292cd807f8844e60c97ca027b5fe8"
