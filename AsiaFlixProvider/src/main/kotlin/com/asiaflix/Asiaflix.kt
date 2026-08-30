@@ -53,26 +53,25 @@ class Asiaflix : MainAPI() {
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
-        val hasNext = response?.hasNext ?: false
+        // Perbaikan Paginasi: jika response.hasNext null/false tapi body masih berisi item, ijinkan load page berikutnya
+        val hasNext = response?.hasNext ?: (!response?.body.isNullOrEmpty())
 
         response?.body?.forEach { item ->
             val itemId = item.id ?: return@forEach
             val title = item.name ?: "Unknown"
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
 
-            val badgeText = if (request.data == "latest") {
-                item.recentEp?.toString()?.let { "EP $it" } ?: item.status ?: ""
-            } else {
-                val status = item.status ?: ""
-                val year = item.releaseYear?.toString() ?: ""
-                listOf(status, year).filter { it.isNotBlank() }.joinToString(" | ")
-            }
+            // Ambil angka episode jika ada
+            val epNum = when (val ep = item.recentEp) {
+                is Number -> ep.toInt()
+                is String -> ep.toIntOrNull()
+                else -> null
+            } ?: item.episodes?.size
 
-            // Menyematkan label langsung ke judul agar pasti terlihat di UI
-            val displayTitle = if (badgeText.isNotBlank()) "$title [$badgeText]" else title
-
-            items.add(newAnimeSearchResponse(displayTitle, detailUrl, TvType.AsianDrama) {
+            items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
+                // Menampilkan badge "Sub Ep X" murni di poster
+                addSub(epNum)
             })
         }
         return newHomePageResponse(request.name, items, hasNext)
@@ -146,13 +145,17 @@ class Asiaflix : MainAPI() {
         return results.mapNotNull { item ->
             val itemId = item.id ?: return@mapNotNull null
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
-            val epCount = item.recentEp?.toString()?.toIntOrNull() ?: item.episodes?.size ?: 0
-            val badgeText = "${if (epCount > 0) "$epCount Ep | " else ""}${item.status ?: ""}"
+            val title = item.name ?: "Unknown"
             
-            val displayTitle = if (badgeText.isNotBlank()) "${item.name} [$badgeText]" else item.name ?: "Unknown"
+            val epNum = when (val ep = item.recentEp) {
+                is Number -> ep.toInt()
+                is String -> ep.toIntOrNull()
+                else -> null
+            } ?: item.episodes?.size
 
-            newAnimeSearchResponse(displayTitle, detailUrl, TvType.AsianDrama) {
+            newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
+                addSub(epNum)
             }
         }
     }
@@ -275,7 +278,6 @@ class Asiaflix : MainAPI() {
             }
             if (videoUrl != null) {
                 Log.d("AsiaflixDebug", "VidMoly link found: $videoUrl")
-                // Ganti source ke VidMoly
                 callback(newExtractorLink("VidMoly", "VidMoly", videoUrl, ExtractorLinkType.M3U8))
                 true
             } else false
@@ -302,7 +304,6 @@ class Asiaflix : MainAPI() {
                     if (decrypted.startsWith("http")) {
                         Log.d("AsiaflixDebug", "VidBasic link decrypted: $decrypted")
                         val isM3u8 = decrypted.contains(".m3u8")
-                        // Ganti source ke VidBasic
                         callback(newExtractorLink(
                             if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
                             "VidBasic", decrypted,
