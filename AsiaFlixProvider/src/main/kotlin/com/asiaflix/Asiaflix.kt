@@ -236,14 +236,14 @@ class Asiaflix : MainAPI() {
                 listOf(
                     "https://peachify.top/embed/tv/$tmdbId/$season/$ep?accent=1DB954&sub=English",
                     "https://vidup.to/tv/$tmdbId/$season/$ep?theme=1DB954&autoPlay=true&sub=en",
-                    "https://player.videasy.net/tv/$tmdbId/$season/$ep?nextEpisode=false",
+                    "https://player.videasy.to/tv/$tmdbId/$season/$ep?nextEpisode=false",
                     "https://player.cinezo.live/embed/tv/$tmdbId/$season/$ep?autoplay=true"
                 )
             } else {
                 listOf(
                     "https://peachify.top/embed/movie/$tmdbId?accent=1DB954&sub=English",
                     "https://vidup.to/movie/$tmdbId?theme=1DB954&autoPlay=true&sub=en",
-                    "https://player.videasy.net/movie/$tmdbId?nextEpisode=false",
+                    "https://player.videasy.to/movie/$tmdbId?nextEpisode=false",
                     "https://player.cinezo.live/embed/movie/$tmdbId?autoplay=true"
                 )
             }
