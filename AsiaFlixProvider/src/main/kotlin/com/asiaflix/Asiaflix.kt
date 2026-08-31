@@ -12,10 +12,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
-import okhttp3.Interceptor
-import okhttp3.Response
-import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
@@ -29,11 +25,6 @@ class Asiaflix : MainAPI() {
     override var mainUrl = "https://api.asiaflix.net/v1"
     override var name = "Asiaflix"
     override val hasMainPage = true
-
-    // Variabel global sementara untuk menyimpan hasil dekripsi subtitle
-    companion object {
-        var cachedSubtitle: String? = null
-    }
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
@@ -361,25 +352,6 @@ class Asiaflix : MainAPI() {
         return anySuccess
     }
 
-    // Interceptor khusus untuk Cloudstream yang akan menyuapi ExoPlayer dengan file VTT yang ada di cache kita
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
-        return Interceptor { chain ->
-            val request = chain.request()
-            // Menangkap akses ke link palsu subtitle kita
-            if (request.url.toString().endsWith("decrypted_subtitle.vtt")) {
-                val subText = cachedSubtitle ?: ""
-                return@Interceptor Response.Builder()
-                    .request(request)
-                    .protocol(okhttp3.Protocol.HTTP_1_1)
-                    .code(200)
-                    .message("OK")
-                    .body(subText.toResponseBody("text/vtt".toMediaTypeOrNull()))
-                    .build()
-            }
-            chain.proceed(request)
-        }
-    }
-
     private suspend fun extractVidMoly(url: String, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
@@ -425,7 +397,6 @@ class Asiaflix : MainAPI() {
                             if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
 
-                        // --- Ekstraksi & Dekripsi Subtitle VidBasic yang Dioptimalkan ---
                         val subParam = Regex("""[?&]sub=([^&]+)""").find(fullUrl)?.groupValues?.get(1)
                         if (!subParam.isNullOrEmpty()) {
                             try {
@@ -435,7 +406,6 @@ class Asiaflix : MainAPI() {
                                 if (subUrl.startsWith("http")) {
                                     val vttText = app.get(subUrl, headers = headersMap).text
                                     
-                                    // PENTING: Inisialisasi Cipher SEKALI saja di luar loop untuk mencegah Out-Of-Memory (OOM)
                                     val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                                     val secretKey = SecretKeySpec("94588293375053432799222445521289".toByteArray(Charsets.UTF_8), "AES")
                                     val ivSpec = IvParameterSpec("5259228356829423".toByteArray(Charsets.UTF_8))
@@ -446,24 +416,22 @@ class Asiaflix : MainAPI() {
                                             line
                                         } else {
                                             try { 
-                                                // Cukup reset init untuk setiap baris, tidak perlu buat instance Cipher baru
                                                 cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
                                                 String(cipher.doFinal(Base64.getMimeDecoder().decode(t.replace(Regex("\\s+"), ""))), Charsets.UTF_8)
                                             } catch (e: Exception) { line }
                                         }
                                     }
                                     
-                                    // Simpan ke variabel global sementara
-                                    cachedSubtitle = decryptedVtt
+                                    val cacheFile = java.io.File(mainContext?.cacheDir, "asiaflix_sub.vtt")
+                                    cacheFile.writeText(decryptedVtt)
                                     
-                                    // Berikan URL palsu ke ExoPlayer yang akan "dicegat" oleh getVideoInterceptor di atas
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = "https://vidbasic.top/decrypted_subtitle.vtt"
+                                            url = cacheFile.absolutePath
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully decrypted and intercepted")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to local cache")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
@@ -507,7 +475,6 @@ class Asiaflix : MainAPI() {
     
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 
-    // TMDB Data Classes
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbDetail(@JsonProperty("credits") val credits: TmdbCredits? = null, @JsonProperty("videos") val videos: TmdbVideos? = null)
     
