@@ -12,8 +12,6 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
-import okhttp3.Interceptor
-import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
@@ -33,25 +31,6 @@ class Asiaflix : MainAPI() {
     
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
 
-    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
-        return Interceptor { chain ->
-            val request = chain.request()
-            val response = chain.proceed(request)
-            val url = request.url.toString()
-
-            if (url.contains(".vtt") || url.contains("sub")) {
-                val rawBody = response.body?.string() ?: ""
-                val decryptedBody = decryptVttText(rawBody)
-                
-                response.newBuilder()
-                    .body(decryptedBody.toResponseBody(response.body?.contentType()))
-                    .build()
-            } else {
-                response
-            }
-        }
-    }
-
     private fun decryptVttText(vttText: String): String {
         val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
         val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
@@ -64,13 +43,11 @@ class Asiaflix : MainAPI() {
                 line
             } else {
                 try {
-                    // 1. Sanitasi Base64 (ubah URL-safe & atur padding)
                     var b64 = t.replace("-", "+").replace("_", "/").replace(Regex("""\s+"""), "")
                     while (b64.length % 4 != 0) {
                         b64 += "="
                     }
 
-                    // 2. Dekripsi AES-128-CBC
                     val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
                     cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
                     val decodedBytes = Base64.getDecoder().decode(b64)
@@ -78,7 +55,6 @@ class Asiaflix : MainAPI() {
                     
                     String(decryptedBytes, Charsets.UTF_8).trim()
                 } catch (e: Exception) {
-                    Log.e("AsiaflixDebug", "VTT Line decrypt failed for [$t]: ${e.message}")
                     line
                 }
             }
@@ -441,13 +417,24 @@ class Asiaflix : MainAPI() {
                                 val subUrl = decryptVidBasic(decodedSubParam)
                                 
                                 if (subUrl.startsWith("http")) {
+                                    // 1. Ambil teks VTT mentah dari server
+                                    val rawVtt = app.get(subUrl, headers = headersMap).text
+                                    
+                                    // 2. Dekripsi teks VTT
+                                    val decryptedVtt = decryptVttText(rawVtt)
+                                    
+                                    // 3. Konversi hasil dekripsi ke Data URI (base64)
+                                    val base64Vtt = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
+                                    val dataUrl = "data:text/vtt;base64,$base64Vtt"
+                                    
+                                    // 4. Masukkan Data URI langsung ke callback subtitle
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = subUrl
+                                            url = dataUrl
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle URL registered: $subUrl")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle loaded successfully using Data URI")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
