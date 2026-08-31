@@ -2,8 +2,10 @@ package com.asiaflix
 
 import android.net.Uri
 import android.util.Log
+import androidx.core.content.FileProvider
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.AcActivity // Explicit import ditambahkan
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -407,36 +409,27 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    // 1. Ambil Android Context resmi dari Cloudstream
-                                    val context = com.lagradost.cloudstream3.AcActivity.context
-                                    if (context != null) {
-                                        val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
-                                        cacheFile.writeText(decryptedVtt)
-                                        
-                                        // 2. Panggil FileProvider via Reflection agar lolos kompilasi Gradle
-                                        val fileProviderClass = Class.forName("androidx.core.content.FileProvider")
-                                        val getUriForFileMethod = fileProviderClass.getMethod(
-                                            "getUriForFile",
-                                            android.content.Context::class.java,
-                                            String::class.java,
-                                            File::class.java
+                                    // Ambil Context Android dari AcActivity Cloudstream secara aman
+                                    val context = AcActivity.context?.get() ?: return false
+                                    
+                                    // Buat file temp di direktori cache aplikasi
+                                    val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
+                                    cacheFile.writeText(decryptedVtt)
+                                    
+                                    // Generate content:// URI via FileProvider
+                                    val contentUri: Uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.provider",
+                                        cacheFile
+                                    )
+                                    
+                                    subtitleCallback.invoke(
+                                        newSubtitleFile(
+                                            lang = "English",
+                                            url = contentUri.toString()
                                         )
-                                        val contentUri = getUriForFileMethod.invoke(
-                                            null,
-                                            context,
-                                            "${context.packageName}.provider",
-                                            cacheFile
-                                        ) as Uri
-
-                                        // 3. Masukkan content:// URI ke callback
-                                        subtitleCallback.invoke(
-                                            newSubtitleFile(
-                                                lang = "English",
-                                                url = contentUri.toString()
-                                            )
-                                        )
-                                        Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
-                                    }
+                                    )
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
