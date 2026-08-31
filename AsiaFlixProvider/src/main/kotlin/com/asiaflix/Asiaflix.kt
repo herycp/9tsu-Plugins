@@ -428,10 +428,10 @@ class Asiaflix : MainAPI() {
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = cacheFile.absolutePath
+                                            url = "file://" + cacheFile.absolutePath // PERBAIKAN: Prefix file:// ditambahkan agar terbaca sebagai local file
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to temporary file")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to temporary file: file://${cacheFile.absolutePath}")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
