@@ -4,7 +4,6 @@ import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
@@ -29,7 +28,7 @@ class Asiaflix : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
     
-    // TMDB Bearer Token dari Anda
+    // TMDB Bearer Token
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
 
     private fun isValidSubtitle(url: String?): Boolean {
@@ -180,8 +179,8 @@ class Asiaflix : MainAPI() {
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
         
-        // --- Integrasi TMDB: Actors, Trailer, dan Episode Metadata ---
-        var tmdbActors: List<String>? = null
+        // --- Integrasi TMDB: Rich Actors, Trailer, dan Episode Metadata ---
+        var tmdbActors: List<ActorData>? = null
         var tmdbTrailer: String? = null
         var tmdbEpisodesMap: Map<Int, TmdbEpisode>? = null
 
@@ -195,7 +194,16 @@ class Asiaflix : MainAPI() {
                 val tmdbUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?append_to_response=credits,videos"
                 val tmdbDetail = app.get(tmdbUrl, headers = tmdbHeaders).parsedSafe<TmdbDetail>()
                 
-                tmdbActors = tmdbDetail?.credits?.cast?.take(10)?.mapNotNull { it.name }
+                // Mapping TmdbCast menjadi ActorData (format pemeran dengan foto profil & nama karakter)
+                tmdbActors = tmdbDetail?.credits?.cast?.take(10)?.mapNotNull { cast ->
+                    val name = cast.name ?: return@mapNotNull null
+                    val image = cast.profile_path?.let { "https://image.tmdb.org/t/p/w185$it" }
+                    ActorData(
+                        actor = Actor(name, image),
+                        roleString = cast.character
+                    )
+                }
+                
                 tmdbTrailer = tmdbDetail?.videos?.results?.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }?.key?.let { "https://www.youtube.com/watch?v=$it" }
                 
                 // 2. Ambil Season Detail untuk Meta Episode
@@ -281,7 +289,7 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
-                addActors(tmdbActors)
+                this.actors = tmdbActors
                 addTrailer(tmdbTrailer)
             }
         } else {
@@ -291,7 +299,7 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
-                addActors(tmdbActors)
+                this.actors = tmdbActors
                 addTrailer(tmdbTrailer)
             }
         }
@@ -446,7 +454,7 @@ class Asiaflix : MainAPI() {
     
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 
-    // TMDB Data Classes
+    // TMDB Data Classes yang diperbarui dengan 'character' dan 'profile_path'
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbDetail(@JsonProperty("credits") val credits: TmdbCredits? = null, @JsonProperty("videos") val videos: TmdbVideos? = null)
     
@@ -454,7 +462,11 @@ class Asiaflix : MainAPI() {
     data class TmdbCredits(@JsonProperty("cast") val cast: List<TmdbCast>? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class TmdbCast(@JsonProperty("name") val name: String? = null)
+    data class TmdbCast(
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("character") val character: String? = null,
+        @JsonProperty("profile_path") val profile_path: String? = null
+    )
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbVideos(@JsonProperty("results") val results: List<TmdbVideoResult>? = null)
