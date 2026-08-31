@@ -4,6 +4,8 @@ import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
+import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
+import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
 import com.lagradost.cloudstream3.utils.AppUtils.tryParseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
@@ -26,6 +28,9 @@ class Asiaflix : MainAPI() {
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
+    
+    // TMDB Bearer Token dari Anda
+    private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
 
     private fun isValidSubtitle(url: String?): Boolean {
         if (url.isNullOrBlank()) return false
@@ -33,14 +38,17 @@ class Asiaflix : MainAPI() {
         return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
     }
 
-    private fun extractEpNum(recentEp: Any?, episodes: Any?): Int? {
+    private fun extractEpNum(recentEp: Any?, episodes: Any?, status: String? = null): Int? {
         recentEp?.toString()?.let { str ->
             Regex("""\d+""").find(str)?.value?.toIntOrNull()?.let { return it }
         }
         when (episodes) {
-            is Number -> return episodes.toInt()
+            is Number -> if (episodes.toInt() > 0) return episodes.toInt()
             is List<*> -> if (episodes.isNotEmpty()) return episodes.size
             is String -> Regex("""\d+""").find(episodes)?.value?.toIntOrNull()?.let { return it }
+        }
+        status?.let { str ->
+            Regex("""\d+""").find(str)?.value?.toIntOrNull()?.let { return it }
         }
         return null
     }
@@ -68,14 +76,13 @@ class Asiaflix : MainAPI() {
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         
-        // Memaksa Cloudstream untuk selalu menambah halaman (page + 1)
         val hasNext = true
 
         response?.body?.forEach { item ->
             val itemId = item.id ?: return@forEach
             val title = item.name ?: "Unknown"
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
-            val epNum = extractEpNum(item.recentEp, item.episodes)
+            val epNum = extractEpNum(item.recentEp, item.episodes, item.status)
 
             items.add(newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
@@ -154,7 +161,7 @@ class Asiaflix : MainAPI() {
             val itemId = item.id ?: return@mapNotNull null
             val detailUrl = "$mainUrl/drama/detail?id=$itemId"
             val title = item.name ?: "Unknown"
-            val epNum = extractEpNum(item.recentEp, item.episodes)
+            val epNum = extractEpNum(item.recentEp, item.episodes, item.status)
 
             newAnimeSearchResponse(title, detailUrl, TvType.AsianDrama) {
                 this.posterUrl = item.image
@@ -172,6 +179,36 @@ class Asiaflix : MainAPI() {
         val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
+        
+        // --- Integrasi TMDB: Actors, Trailer, dan Episode Metadata ---
+        var tmdbActors: List<String>? = null
+        var tmdbTrailer: String? = null
+        var tmdbEpisodesMap: Map<Int, TmdbEpisode>? = null
+
+        val tmdbId = response.tmdbId
+        if (tmdbId != null && tmdbId > 0) {
+            val tmdbHeaders = mapOf("Authorization" to "Bearer $tmdbToken")
+            val tmdbType = if (isMovie) "movie" else "tv"
+            
+            try {
+                // 1. Ambil Cast (Top 10) & Trailer
+                val tmdbUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?append_to_response=credits,videos"
+                val tmdbDetail = app.get(tmdbUrl, headers = tmdbHeaders).parsedSafe<TmdbDetail>()
+                
+                tmdbActors = tmdbDetail?.credits?.cast?.take(10)?.mapNotNull { it.name }
+                tmdbTrailer = tmdbDetail?.videos?.results?.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }?.key?.let { "https://www.youtube.com/watch?v=$it" }
+                
+                // 2. Ambil Season Detail untuk Meta Episode
+                if (!isMovie) {
+                    val seasonNum = response.seasonNumber ?: 1
+                    val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNum"
+                    val seasonData = app.get(seasonUrl, headers = tmdbHeaders).parsedSafe<TmdbSeason>()
+                    tmdbEpisodesMap = seasonData?.episodes?.associateBy { it.episode_number ?: -1 }
+                }
+            } catch (e: Exception) {
+                Log.e("AsiaflixDebug", "TMDB fetch error: ${e.message}")
+            }
+        }
 
         val episodes = response.episodes?.map { ep ->
             val linkData = EpisodeLinkData(
@@ -181,14 +218,23 @@ class Asiaflix : MainAPI() {
                 showType = response.showType ?: if (isMovie) "Movie" else "TVSeries",
                 streamUrls = ep.streamUrls
             )
+            
+            val epNum = ep.number ?: 1
+            val tmdbEpMeta = tmdbEpisodesMap?.get(epNum)
+            
+            // Prioritaskan Judul & Meta dari TMDB jika tersedia
+            val epTitle = tmdbEpMeta?.name ?: ep.title ?: "Episode $epNum"
+            val epPoster = tmdbEpMeta?.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+            val epDesc = tmdbEpMeta?.overview
 
-            newEpisode(ep.title ?: "Episode ${ep.number}") {
+            newEpisode(epTitle) {
                 this.data = linkData.toJson()
-                this.episode = ep.number
+                this.episode = epNum
+                this.posterUrl = epPoster
+                this.description = epDesc
             }
         } ?: emptyList()
 
-        // Pengecualian Genre "Drama" agar rekomendasi lebih spesifik (Comedy, Fantasy, Romance, dll)
         val genreName = response.genres?.mapNotNull { it.name }
             ?.firstOrNull { !it.equals("drama", ignoreCase = true) }
         val countryName = response.country
@@ -202,7 +248,6 @@ class Asiaflix : MainAPI() {
             
             var recResponse = tryParseJson<AsiaflixListResponse>(recText)
             
-            // Fallback ke Country jika genre spesifik tidak menghasilkan apa-apa
             if (recResponse?.body.isNullOrEmpty() && !countryName.isNullOrBlank()) {
                 val recUrl = "$mainUrl/drama/list?country=${URLEncoder.encode(countryName, "UTF-8")}&limit=30"
                 recText = app.get(recUrl, headers = headers).text
@@ -215,7 +260,7 @@ class Asiaflix : MainAPI() {
                 val itemId = item.id ?: return@mapNotNull null
                 val itemTitle = item.name ?: "Unknown"
                 val itemDetailUrl = "$mainUrl/drama/detail?id=$itemId"
-                val epNum = extractEpNum(item.recentEp, item.episodes)
+                val epNum = extractEpNum(item.recentEp, item.episodes, item.status)
 
                 newAnimeSearchResponse(itemTitle, itemDetailUrl, TvType.AsianDrama) {
                     this.posterUrl = item.image
@@ -236,6 +281,8 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
+                addActors(tmdbActors)
+                addTrailer(tmdbTrailer)
             }
         } else {
             newTvSeriesLoadResponse(response.name ?: "", url, TvType.TvSeries, episodes) {
@@ -244,6 +291,8 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
+                addActors(tmdbActors)
+                addTrailer(tmdbTrailer)
             }
         }
     }
@@ -396,4 +445,26 @@ class Asiaflix : MainAPI() {
     data class AsiaflixStream(@JsonProperty("source") val source: String? = null, @JsonProperty("url") val url: String? = null)
     
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
+
+    // TMDB Data Classes
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbDetail(@JsonProperty("credits") val credits: TmdbCredits? = null, @JsonProperty("videos") val videos: TmdbVideos? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbCredits(@JsonProperty("cast") val cast: List<TmdbCast>? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbCast(@JsonProperty("name") val name: String? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbVideos(@JsonProperty("results") val results: List<TmdbVideoResult>? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbVideoResult(@JsonProperty("key") val key: String? = null, @JsonProperty("site") val site: String? = null, @JsonProperty("type") val type: String? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbSeason(@JsonProperty("episodes") val episodes: List<TmdbEpisode>? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbEpisode(@JsonProperty("episode_number") val episode_number: Int? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("overview") val overview: String? = null, @JsonProperty("still_path") val still_path: String? = null)
 }
