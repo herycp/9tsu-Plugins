@@ -1,6 +1,8 @@
 package com.asiaflix
 
+import android.net.Uri
 import android.util.Log
+import androidx.core.content.FileProvider
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
@@ -12,6 +14,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
+import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
@@ -30,12 +33,6 @@ class Asiaflix : MainAPI() {
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
     
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
-
-    private fun isValidSubtitle(url: String?): Boolean {
-        if (url.isNullOrBlank()) return false
-        val lower = url.lowercase()
-        return lower.startsWith("http") && !lower.endsWith(".jpg") && !lower.endsWith(".png") && !lower.endsWith(".mp4") && !lower.endsWith(".m3u8")
-    }
 
     private fun extractEpNum(recentEp: Any?, episodes: Any?, status: String? = null): Int? {
         recentEp?.toString()?.let { str ->
@@ -71,10 +68,8 @@ class Asiaflix : MainAPI() {
             "$mainUrl/drama/list?country=$country&page=$page"
         }
 
-        Log.d("AsiaflixDebug", "Fetching MainPage URL: $url")
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
-        
         val hasNext = true
 
         response?.body?.forEach { item ->
@@ -96,7 +91,6 @@ class Asiaflix : MainAPI() {
 
     override suspend fun search(query: String): List<SearchResponse> {
         val cleanQuery = query.trim()
-        Log.d("AsiaflixDebug", "Search Query: $cleanQuery")
         var results = emptyList<AsiaflixItem>()
 
         if (cleanQuery.startsWith("#")) {
@@ -171,7 +165,6 @@ class Asiaflix : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        Log.d("AsiaflixDebug", "Loading detail: $url")
         val responseText = app.get(url, headers = headers).text
         val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
@@ -204,9 +197,7 @@ class Asiaflix : MainAPI() {
                     val seasonData = app.get(seasonUrl, headers = tmdbHeaders).parsedSafe<TmdbSeason>()
                     tmdbEpisodesMap = seasonData?.episodes?.associateBy { it.episode_number ?: -1 }
                 }
-            } catch (e: Exception) {
-                Log.e("AsiaflixDebug", "TMDB fetch error: ${e.message}")
-            }
+            } catch (e: Exception) { }
         }
 
         val episodes = response.episodes?.map { ep ->
@@ -267,9 +258,7 @@ class Asiaflix : MainAPI() {
                     }
                 }
             }
-        } catch (e: Exception) {
-            null
-        }
+        } catch (e: Exception) { null }
 
         return if (isMovie) {
             newMovieLoadResponse(response.name ?: "", url, TvType.Movie, episodes.firstOrNull()?.data ?: "") {
@@ -307,7 +296,6 @@ class Asiaflix : MainAPI() {
         linkData.streamUrls?.forEach { stream ->
             var streamUrl = stream.url ?: return@forEach
             if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
-            Log.d("AsiaflixDebug", "Processing Stream URL: $streamUrl")
 
             when {
                 streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top") -> {
@@ -370,9 +358,7 @@ class Asiaflix : MainAPI() {
                 callback(newExtractorLink("VidMoly", "VidMoly", videoUrl, ExtractorLinkType.M3U8))
                 true
             } else false
-        } catch (e: Exception) { 
-            false 
-        }
+        } catch (e: Exception) { false }
     }
 
     private suspend fun processVidBasic(embedUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
@@ -422,16 +408,26 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    val cacheFile = java.io.File.createTempFile("asiaflix_sub", ".vtt")
+                                    // 1. Buat file cache subtitle lokal
+                                    val context = AcActivity.context ?: app.context
+                                    val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
                                     cacheFile.writeText(decryptedVtt)
                                     
+                                    // 2. Konversi File menjadi content:// URI via FileProvider bawaan Cloudstream
+                                    val contentUri: Uri = FileProvider.getUriForFile(
+                                        context,
+                                        "${context.packageName}.provider",
+                                        cacheFile
+                                    )
+                                    
+                                    // 3. Masukkan content:// URI ke callback subtitle
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = "file://" + cacheFile.absolutePath // PERBAIKAN: Prefix file:// ditambahkan agar terbaca sebagai local file
+                                            url = contentUri.toString()
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to temporary file: file://${cacheFile.absolutePath}")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
