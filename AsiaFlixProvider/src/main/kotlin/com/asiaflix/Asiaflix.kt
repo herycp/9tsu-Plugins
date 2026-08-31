@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
+import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
@@ -179,7 +180,6 @@ class Asiaflix : MainAPI() {
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
         
-        // --- Integrasi TMDB: Rich Actors, Trailer, dan Episode Metadata ---
         var tmdbActors: List<ActorData>? = null
         var tmdbTrailer: String? = null
         var tmdbEpisodesMap: Map<Int, TmdbEpisode>? = null
@@ -190,11 +190,9 @@ class Asiaflix : MainAPI() {
             val tmdbType = if (isMovie) "movie" else "tv"
             
             try {
-                // 1. Ambil Cast (Top 10) & Trailer
                 val tmdbUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?append_to_response=credits,videos"
                 val tmdbDetail = app.get(tmdbUrl, headers = tmdbHeaders).parsedSafe<TmdbDetail>()
                 
-                // Mapping TmdbCast menjadi ActorData (format pemeran dengan foto profil & nama karakter)
                 tmdbActors = tmdbDetail?.credits?.cast?.take(10)?.mapNotNull { cast ->
                     val name = cast.name ?: return@mapNotNull null
                     val image = cast.profile_path?.let { "https://image.tmdb.org/t/p/w185$it" }
@@ -206,7 +204,6 @@ class Asiaflix : MainAPI() {
                 
                 tmdbTrailer = tmdbDetail?.videos?.results?.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }?.key?.let { "https://www.youtube.com/watch?v=$it" }
                 
-                // 2. Ambil Season Detail untuk Meta Episode
                 if (!isMovie) {
                     val seasonNum = response.seasonNumber ?: 1
                     val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNum"
@@ -230,7 +227,6 @@ class Asiaflix : MainAPI() {
             val epNum = ep.number ?: 1
             val tmdbEpMeta = tmdbEpisodesMap?.get(epNum)
             
-            // Prioritaskan Judul & Meta dari TMDB jika tersedia
             val epTitle = tmdbEpMeta?.name ?: ep.title ?: "Episode $epNum"
             val epPoster = tmdbEpMeta?.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             val epDesc = tmdbEpMeta?.overview
@@ -323,7 +319,7 @@ class Asiaflix : MainAPI() {
 
             when {
                 streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top") -> {
-                    if (processVidBasic(streamUrl, callback)) anySuccess = true
+                    if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
                 }
                 streamUrl.contains("vidmoly", ignoreCase = true) -> {
                     if (extractVidMoly(streamUrl, callback)) anySuccess = true
@@ -393,7 +389,7 @@ class Asiaflix : MainAPI() {
         }
     }
 
-    private suspend fun processVidBasic(embedUrl: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun processVidBasic(embedUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
         return try {
             val host = java.net.URL(embedUrl).host
             val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
@@ -415,6 +411,40 @@ class Asiaflix : MainAPI() {
                             "VidBasic", decrypted,
                             if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
+
+                        // --- Ekstraksi & Dekripsi Subtitle VidBasic ---
+                        val subParam = Regex("""[?&]sub=([^&]+)""").find(fullUrl)?.groupValues?.get(1)
+                        if (!subParam.isNullOrEmpty()) {
+                            try {
+                                val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
+                                val subUrl = decryptVidBasic(decodedSubParam)
+                                
+                                if (subUrl.startsWith("http")) {
+                                    val vttText = app.get(subUrl, headers = headersMap).text
+                                    
+                                    val decryptedVtt = vttText.lines().joinToString("\n") { line ->
+                                        val t = line.trim()
+                                        if (t.isEmpty() || t.startsWith("WEBVTT") || Regex("^\\d+$").matches(t) || Regex("^\\d{2}:\\d{2}:\\d{2}").containsMatchIn(t)) {
+                                            line
+                                        } else {
+                                            try { decryptVidBasic(t) } catch (e: Exception) { line }
+                                        }
+                                    }
+                                    
+                                    val base64Vtt = Base64.getEncoder().encodeToString(decryptedVtt.toByteArray(Charsets.UTF_8))
+                                    subtitleCallback.invoke(
+                                        newSubtitleFile(
+                                            lang = "English",
+                                            url = "data:text/vtt;base64,$base64Vtt"
+                                        )
+                                    )
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully decrypted")
+                                }
+                            } catch (e: Exception) {
+                                Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
+                            }
+                        }
+
                         return true
                     }
                 }
@@ -454,7 +484,7 @@ class Asiaflix : MainAPI() {
     
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 
-    // TMDB Data Classes yang diperbarui dengan 'character' dan 'profile_path'
+    // TMDB Data Classes
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbDetail(@JsonProperty("credits") val credits: TmdbCredits? = null, @JsonProperty("videos") val videos: TmdbVideos? = null)
     
