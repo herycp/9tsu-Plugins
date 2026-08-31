@@ -1,11 +1,8 @@
 package com.asiaflix
 
-import android.net.Uri
 import android.util.Log
-import androidx.core.content.FileProvider
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.AcActivity // Explicit import ditambahkan
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 import com.lagradost.cloudstream3.utils.AppUtils.toJson
@@ -15,13 +12,15 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
-import java.io.File
+import java.net.ServerSocket
+import java.net.SocketTimeoutException
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
+import kotlin.concurrent.thread
 
 class Asiaflix : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
@@ -409,27 +408,62 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    // Ambil Context Android dari AcActivity Cloudstream secara aman
-                                    val context = AcActivity.context?.get() ?: return false
-                                    
-                                    // Buat file temp di direktori cache aplikasi
-                                    val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
-                                    cacheFile.writeText(decryptedVtt)
-                                    
-                                    // Generate content:// URI via FileProvider
-                                    val contentUri: Uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.provider",
-                                        cacheFile
-                                    )
-                                    
+                                    // Solusi Socket Lokal (Bawaan Java Pure, Tanpa Context / Android Dependency)
+                                    val serverSocket = ServerSocket(0)
+                                    serverSocket.soTimeout = 15000
+                                    val localPort = serverSocket.localPort
+                                    val localUrl = "http://127.0.0.1:$localPort/subtitle.vtt"
+
+                                    thread {
+                                        var requestsHandled = 0
+                                        try {
+                                            while (!serverSocket.isClosed && requestsHandled < 3) {
+                                                val socket = try {
+                                                    serverSocket.accept()
+                                                } catch (e: SocketTimeoutException) {
+                                                    break
+                                                }
+
+                                                val input = socket.getInputStream().bufferedReader()
+                                                val firstLine = input.readLine() ?: ""
+                                                
+                                                var headerLine = input.readLine()
+                                                while (!headerLine.isNullOrEmpty()) {
+                                                    headerLine = input.readLine()
+                                                }
+
+                                                val output = socket.getOutputStream()
+                                                val vttBytes = decryptedVtt.toByteArray(Charsets.UTF_8)
+                                                
+                                                if (firstLine.startsWith("OPTIONS")) {
+                                                    val response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS, HEAD\r\nConnection: close\r\n\r\n"
+                                                    output.write(response.toByteArray(Charsets.UTF_8))
+                                                } else {
+                                                    val responseHeader = "HTTP/1.1 200 OK\r\nContent-Type: text/vtt; charset=utf-8\r\nContent-Length: ${vttBytes.size}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+                                                    output.write(responseHeader.toByteArray(Charsets.UTF_8))
+                                                    if (!firstLine.startsWith("HEAD")) {
+                                                        output.write(vttBytes)
+                                                    }
+                                                    requestsHandled++
+                                                }
+                                                output.flush()
+                                                socket.close()
+                                            }
+                                        } catch (e: Exception) {
+                                        } finally {
+                                            if (!serverSocket.isClosed) {
+                                                try { serverSocket.close() } catch (e: Exception) {}
+                                            }
+                                        }
+                                    }
+
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = contentUri.toString()
+                                            url = localUrl
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle server listening on $localUrl")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
