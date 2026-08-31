@@ -39,7 +39,6 @@ class Asiaflix : MainAPI() {
             val response = chain.proceed(request)
             val url = request.url.toString()
 
-            // Cegat request subtitle dari VidBasic/Asiaflix
             if (url.contains(".vtt") || url.contains("sub")) {
                 val rawBody = response.body?.string() ?: ""
                 val decryptedBody = decryptVttText(rawBody)
@@ -54,24 +53,35 @@ class Asiaflix : MainAPI() {
     }
 
     private fun decryptVttText(vttText: String): String {
-        return try {
-            val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-            val secretKey = SecretKeySpec("94588293375053432799222445521289".toByteArray(Charsets.UTF_8), "AES")
-            val ivSpec = IvParameterSpec("5259228356829423".toByteArray(Charsets.UTF_8))
+        val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
+        val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val ivSpec = IvParameterSpec(ivBytes)
 
-            vttText.lines().joinToString("\n") { line ->
-                val t = line.trim()
-                if (t.isEmpty() || t.startsWith("WEBVTT") || Regex("^\\d+$").matches(t) || Regex("^\\d{2}:\\d{2}:\\d{2}").containsMatchIn(t)) {
+        return vttText.lines().joinToString("\n") { line ->
+            val t = line.trim()
+            if (t.isEmpty() || t.startsWith("WEBVTT") || t.startsWith("NOTE") || Regex("""^\d+$""").matches(t) || Regex("""^\d{2}:\d{2}""").containsMatchIn(t)) {
+                line
+            } else {
+                try {
+                    // 1. Sanitasi Base64 (ubah URL-safe & atur padding)
+                    var b64 = t.replace("-", "+").replace("_", "/").replace(Regex("""\s+"""), "")
+                    while (b64.length % 4 != 0) {
+                        b64 += "="
+                    }
+
+                    // 2. Dekripsi AES-128-CBC
+                    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                    cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
+                    val decodedBytes = Base64.getDecoder().decode(b64)
+                    val decryptedBytes = cipher.doFinal(decodedBytes)
+                    
+                    String(decryptedBytes, Charsets.UTF_8).trim()
+                } catch (e: Exception) {
+                    Log.e("AsiaflixDebug", "VTT Line decrypt failed for [$t]: ${e.message}")
                     line
-                } else {
-                    try {
-                        cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-                        String(cipher.doFinal(Base64.getMimeDecoder().decode(t.replace(Regex("\\s+"), ""))), Charsets.UTF_8)
-                    } catch (e: Exception) { line }
                 }
             }
-        } catch (e: Exception) {
-            vttText
         }
     }
 
@@ -431,7 +441,6 @@ class Asiaflix : MainAPI() {
                                 val subUrl = decryptVidBasic(decodedSubParam)
                                 
                                 if (subUrl.startsWith("http")) {
-                                    // Langsung pass URL HTTP subtitle asli ke callback
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
