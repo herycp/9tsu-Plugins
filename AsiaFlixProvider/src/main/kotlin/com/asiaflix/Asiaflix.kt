@@ -422,7 +422,7 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    val cacheFile = java.io.File(main.cacheDir, "asiaflix_sub.vtt")
+                                    val cacheFile = java.io.File.createTempFile("asiaflix_sub", ".vtt")
                                     cacheFile.writeText(decryptedVtt)
                                     
                                     subtitleCallback.invoke(
@@ -431,7 +431,7 @@ class Asiaflix : MainAPI() {
                                             url = cacheFile.absolutePath
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to local cache")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle successfully written to temporary file")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
