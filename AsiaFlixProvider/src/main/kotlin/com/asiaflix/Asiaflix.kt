@@ -422,7 +422,7 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    val cacheFile = java.io.File(mainContext?.cacheDir, "asiaflix_sub.vtt")
+                                    val cacheFile = java.io.File(main.cacheDir, "asiaflix_sub.vtt")
                                     cacheFile.writeText(decryptedVtt)
                                     
                                     subtitleCallback.invoke(
