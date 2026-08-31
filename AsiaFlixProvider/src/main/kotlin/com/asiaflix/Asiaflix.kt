@@ -2,7 +2,6 @@ package com.asiaflix
 
 import android.net.Uri
 import android.util.Log
-import androidx.core.content.FileProvider
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
@@ -408,26 +407,36 @@ class Asiaflix : MainAPI() {
                                         }
                                     }
                                     
-                                    // 1. Buat file cache subtitle lokal
-                                    val context = AcActivity.context ?: app.context
-                                    val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
-                                    cacheFile.writeText(decryptedVtt)
-                                    
-                                    // 2. Konversi File menjadi content:// URI via FileProvider bawaan Cloudstream
-                                    val contentUri: Uri = FileProvider.getUriForFile(
-                                        context,
-                                        "${context.packageName}.provider",
-                                        cacheFile
-                                    )
-                                    
-                                    // 3. Masukkan content:// URI ke callback subtitle
-                                    subtitleCallback.invoke(
-                                        newSubtitleFile(
-                                            lang = "English",
-                                            url = contentUri.toString()
+                                    // 1. Ambil Android Context resmi dari Cloudstream
+                                    val context = com.lagradost.cloudstream3.AcActivity.context
+                                    if (context != null) {
+                                        val cacheFile = File(context.cacheDir, "asiaflix_sub_${System.currentTimeMillis()}.vtt")
+                                        cacheFile.writeText(decryptedVtt)
+                                        
+                                        // 2. Panggil FileProvider via Reflection agar lolos kompilasi Gradle
+                                        val fileProviderClass = Class.forName("androidx.core.content.FileProvider")
+                                        val getUriForFileMethod = fileProviderClass.getMethod(
+                                            "getUriForFile",
+                                            android.content.Context::class.java,
+                                            String::class.java,
+                                            File::class.java
                                         )
-                                    )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
+                                        val contentUri = getUriForFileMethod.invoke(
+                                            null,
+                                            context,
+                                            "${context.packageName}.provider",
+                                            cacheFile
+                                        ) as Uri
+
+                                        // 3. Masukkan content:// URI ke callback
+                                        subtitleCallback.invoke(
+                                            newSubtitleFile(
+                                                lang = "English",
+                                                url = contentUri.toString()
+                                            )
+                                        )
+                                        Log.d("AsiaflixDebug", "VidBasic subtitle loaded via content URI: $contentUri")
+                                    }
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
