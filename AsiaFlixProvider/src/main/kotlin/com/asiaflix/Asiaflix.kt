@@ -18,6 +18,7 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -341,7 +342,7 @@ class Asiaflix : MainAPI() {
     ): Boolean {
         if (data.isBlank()) return false
         val linkData = tryParseJson<EpisodeLinkData>(data) ?: return false
-        @Volatile var anySuccess = false
+        val anySuccess = AtomicBoolean(false)
         val providerName = this.name
 
         coroutineScope {
@@ -356,12 +357,12 @@ class Asiaflix : MainAPI() {
 
                 jobs.add(launch {
                     if (streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top")) {
-                        if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
+                        if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess.set(true)
                     }
                     if (streamUrl.contains("vidmoly", ignoreCase = true)) {
-                        if (extractVidMoly(streamUrl, callback)) anySuccess = true
+                        if (extractVidMoly(streamUrl, callback)) anySuccess.set(true)
                     }
-                    if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess = true
+                    if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess.set(true)
                 })
             }
 
@@ -411,7 +412,7 @@ class Asiaflix : MainAPI() {
                                 this.headers = reqHeaders
                                 this.referer = "https://asiaflix.net/"
                             })
-                            anySuccess = true
+                            anySuccess.set(true)
                         } else {
                             Log.d("AsiaflixDebug", "GAGAL: URL Proxy HLS tidak ditemukan dalam respon JSON.")
                         }
@@ -448,16 +449,15 @@ class Asiaflix : MainAPI() {
 
                 generatedUrls.forEach { embedUrl ->
                     jobs.add(launch {
-                        if (loadExtractor(embedUrl, subtitleCallback, callback)) anySuccess = true
+                        if (loadExtractor(embedUrl, subtitleCallback, callback)) anySuccess.set(true)
                     })
                 }
             }
 
-            // Tunggu seluruh coroutine job paralel selesai sebelum keluar dari loadLinks
             jobs.joinAll()
         }
 
-        return anySuccess
+        return anySuccess.get()
     }
 
     private suspend fun extractVidMoly(url: String, callback: (ExtractorLink) -> Unit): Boolean {
