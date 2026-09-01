@@ -39,7 +39,7 @@ class Asiaflix : MainAPI() {
             val response = chain.proceed(request)
             val url = request.url.toString()
 
-            if (url.contains(".vtt") || url.contains("sub")) {
+            if (url.contains(".vtt") || url.contains("sub") || url.contains("track") || url.contains("kk.vidbasic.top")) {
                 val rawBody = response.body?.string() ?: ""
                 val decryptedBody = decryptVttText(rawBody)
                 
@@ -64,7 +64,6 @@ class Asiaflix : MainAPI() {
                 line
             } else {
                 try {
-                    // Sanitasi Base64: ubah URL-safe dan perbaiki padding
                     var b64 = t.replace("-", "+").replace("_", "/").replace(Regex("""\s+"""), "")
                     while (b64.length % 4 != 0) {
                         b64 += "="
@@ -405,7 +404,6 @@ class Asiaflix : MainAPI() {
                 }
             }
             if (videoUrl != null) {
-                // Perbaikan: gunakan this.name untuk parameter source
                 callback(newExtractorLink("VidMoly", this.name, videoUrl, ExtractorLinkType.M3U8))
                 true
             } else false
@@ -429,10 +427,9 @@ class Asiaflix : MainAPI() {
                     if (decrypted.startsWith("http")) {
                         val isM3u8 = decrypted.contains(".m3u8")
                         
-                        // Perbaikan Kritis: Ganti parameter source menjadi this.name agar Interceptor bekerja
                         callback(newExtractorLink(
                             name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
-                            source = this.name, // Kunci utama untuk memicu getVideoInterceptor
+                            source = this.name,
                             url = decrypted,
                             type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
@@ -444,7 +441,6 @@ class Asiaflix : MainAPI() {
                                 val subUrl = decryptVidBasic(decodedSubParam)
                                 
                                 if (subUrl.startsWith("http")) {
-                                    // Teruskan URL HTTP subtitle asli ke ExoPlayer
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
