@@ -347,9 +347,7 @@ class Asiaflix : MainAPI() {
             if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
             val serverName = stream.source ?: "unknown"
 
-            // ------------------------------------------------------------------
-            // METODE ALTERNATIF: Ambil HLS Proxy langsung via API Asiaflix
-            // ------------------------------------------------------------------
+            // 1. METODE MANDATORI: Ambil HLS Proxy via API Asiaflix (Timeout 30s)
             try {
                 val base64Url = Base64.getEncoder().encodeToString(streamUrl.toByteArray(Charsets.UTF_8))
                 val encodedUrl = URLEncoder.encode(base64Url, "UTF-8")
@@ -367,7 +365,7 @@ class Asiaflix : MainAPI() {
 
                 Log.d("AsiaflixDebug", "Hit HLS Proxy API | Server: $serverName | URL: $proxyApiUrl")
                 
-                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders).text
+                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 30).text
                 Log.d("AsiaflixDebug", "Respon HLS Proxy API: $apiResponseText")
                 
                 val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
@@ -395,25 +393,19 @@ class Asiaflix : MainAPI() {
                 Log.e("AsiaflixDebug", "Error HLS Proxy API: ${e.message}")
             }
 
-            // ------------------------------------------------------------------
-            // METODE UTAMA: Ekstraktor Konvensional
-            // ------------------------------------------------------------------
-            when {
-                streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top") -> {
-                    if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
-                }
-                streamUrl.contains("vidmoly", ignoreCase = true) -> {
-                    if (extractVidMoly(streamUrl, callback)) anySuccess = true
-                }
-                else -> {
-                    if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess = true
-                }
+            // 2. METODE MANDATORI: Ekstraktor Khusus
+            if (streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top")) {
+                if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
             }
+            if (streamUrl.contains("vidmoly", ignoreCase = true)) {
+                if (extractVidMoly(streamUrl, callback)) anySuccess = true
+            }
+
+            // 3. METODE MANDATORI: Ekstraktor Bawaan Cloudstream (Selalu dijalankan untuk semua URL)
+            if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess = true
         }
 
-        // ------------------------------------------------------------------
-        // METODE CADANGAN: Fallback TMDB Embed Links
-        // ------------------------------------------------------------------
+        // 4. METODE MANDATORI: Fallback TMDB Embed Links
         val tmdbId = linkData.tmdbId
         if (tmdbId != null && tmdbId > 0) {
             val isTv = linkData.showType == "TVSeries"
