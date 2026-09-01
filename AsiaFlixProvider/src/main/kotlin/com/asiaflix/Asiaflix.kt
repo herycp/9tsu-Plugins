@@ -345,7 +345,59 @@ class Asiaflix : MainAPI() {
         linkData.streamUrls?.forEach { stream ->
             var streamUrl = stream.url ?: return@forEach
             if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
+            val serverName = stream.source ?: "unknown"
 
+            // ------------------------------------------------------------------
+            // METODE ALTERNATIF: Ambil HLS Proxy langsung via API Asiaflix
+            // ------------------------------------------------------------------
+            try {
+                val base64Url = Base64.getEncoder().encodeToString(streamUrl.toByteArray(Charsets.UTF_8))
+                val encodedUrl = URLEncoder.encode(base64Url, "UTF-8")
+                val encodedServer = URLEncoder.encode(serverName, "UTF-8")
+                
+                val proxyApiUrl = "$mainUrl/drama/get-stream-url?value=$encodedUrl&server=$encodedServer"
+                
+                val reqHeaders = mapOf(
+                    "accept" to "application/json, text/plain, */*",
+                    "origin" to "https://asiaflix.net",
+                    "referer" to "https://asiaflix.net/drama/",
+                    "user-agent" to userAgent,
+                    "x-access-control" to "web"
+                )
+
+                Log.d("AsiaflixDebug", "Hit HLS Proxy API | Server: $serverName | URL: $proxyApiUrl")
+                
+                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders).text
+                Log.d("AsiaflixDebug", "Respon HLS Proxy API: $apiResponseText")
+                
+                val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
+                    ?: Regex(""""(https://[^"]*hlsproxy[^"]*)"""").find(apiResponseText)
+                
+                val proxyUrl = tryParseJson<AsiaflixStreamResponse>(apiResponseText)?.url ?: proxyUrlMatch?.groupValues?.get(1)
+
+                if (!proxyUrl.isNullOrEmpty()) {
+                    Log.d("AsiaflixDebug", "BERHASIL: Direct HLS Proxy terdeteksi -> $proxyUrl")
+                    
+                    callback(newExtractorLink(
+                        name = "Asiaflix Proxy - $serverName",
+                        source = this.name,
+                        url = proxyUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.headers = reqHeaders
+                        this.referer = "https://asiaflix.net/"
+                    })
+                    anySuccess = true
+                } else {
+                    Log.d("AsiaflixDebug", "GAGAL: URL Proxy HLS tidak ditemukan dalam respon JSON.")
+                }
+            } catch (e: Exception) {
+                Log.e("AsiaflixDebug", "Error HLS Proxy API: ${e.message}")
+            }
+
+            // ------------------------------------------------------------------
+            // METODE UTAMA: Ekstraktor Konvensional
+            // ------------------------------------------------------------------
             when {
                 streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top") -> {
                     if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
@@ -359,6 +411,9 @@ class Asiaflix : MainAPI() {
             }
         }
 
+        // ------------------------------------------------------------------
+        // METODE CADANGAN: Fallback TMDB Embed Links
+        // ------------------------------------------------------------------
         val tmdbId = linkData.tmdbId
         if (tmdbId != null && tmdbId > 0) {
             val isTv = linkData.showType == "TVSeries"
@@ -489,6 +544,9 @@ class Asiaflix : MainAPI() {
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixStream(@JsonProperty("source") val source: String? = null, @JsonProperty("url") val url: String? = null)
     
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class AsiaflixStreamResponse(@JsonProperty("url") val url: String? = null)
+
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 
     @JsonIgnoreProperties(ignoreUnknown = true)
