@@ -12,15 +12,14 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
-import java.net.ServerSocket
-import java.net.SocketTimeoutException
+import okhttp3.Interceptor
+import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
-import kotlin.concurrent.thread
 
 class Asiaflix : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
@@ -33,6 +32,57 @@ class Asiaflix : MainAPI() {
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
     
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
+
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
+        return Interceptor { chain ->
+            val request = chain.request()
+            val response = chain.proceed(request)
+            val url = request.url.toString()
+
+            if (url.contains(".vtt") || url.contains("sub")) {
+                val rawBody = response.body?.string() ?: ""
+                val decryptedBody = decryptVttText(rawBody)
+                
+                response.newBuilder()
+                    .body(decryptedBody.toResponseBody(response.body?.contentType()))
+                    .build()
+            } else {
+                response
+            }
+        }
+    }
+
+    private fun decryptVttText(vttText: String): String {
+        val keyBytes = "94588293375053432799222445521289".toByteArray(Charsets.UTF_8)
+        val ivBytes = "5259228356829423".toByteArray(Charsets.UTF_8)
+        val secretKey = SecretKeySpec(keyBytes, "AES")
+        val ivSpec = IvParameterSpec(ivBytes)
+
+        return vttText.lines().joinToString("\n") { line ->
+            val t = line.trim()
+            if (t.isEmpty() || t.startsWith("WEBVTT") || t.startsWith("NOTE") || Regex("""^\d+$""").matches(t) || Regex("""^\d{2}:\d{2}""").containsMatchIn(t)) {
+                line
+            } else {
+                try {
+                    // Sanitasi Base64: ubah URL-safe dan perbaiki padding
+                    var b64 = t.replace("-", "+").replace("_", "/").replace(Regex("""\s+"""), "")
+                    while (b64.length % 4 != 0) {
+                        b64 += "="
+                    }
+
+                    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
+                    cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
+                    val decodedBytes = Base64.getDecoder().decode(b64)
+                    val decryptedBytes = cipher.doFinal(decodedBytes)
+                    
+                    String(decryptedBytes, Charsets.UTF_8).trim()
+                } catch (e: Exception) {
+                    Log.e("AsiaflixDebug", "VTT Line decrypt failed for [$t]: ${e.message}")
+                    line
+                }
+            }
+        }
+    }
 
     private fun extractEpNum(recentEp: Any?, episodes: Any?, status: String? = null): Int? {
         recentEp?.toString()?.let { str ->
@@ -355,7 +405,8 @@ class Asiaflix : MainAPI() {
                 }
             }
             if (videoUrl != null) {
-                callback(newExtractorLink("VidMoly", "VidMoly", videoUrl, ExtractorLinkType.M3U8))
+                // Perbaikan: gunakan this.name untuk parameter source
+                callback(newExtractorLink("VidMoly", this.name, videoUrl, ExtractorLinkType.M3U8))
                 true
             } else false
         } catch (e: Exception) { false }
@@ -377,10 +428,13 @@ class Asiaflix : MainAPI() {
                     val decrypted = decryptVidBasic(encrypted)
                     if (decrypted.startsWith("http")) {
                         val isM3u8 = decrypted.contains(".m3u8")
+                        
+                        // Perbaikan Kritis: Ganti parameter source menjadi this.name agar Interceptor bekerja
                         callback(newExtractorLink(
-                            if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
-                            "VidBasic", decrypted,
-                            if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            name = if (isM3u8) "VidBasic - HLS" else "VidBasic - Direct",
+                            source = this.name, // Kunci utama untuk memicu getVideoInterceptor
+                            url = decrypted,
+                            type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
 
                         val subParam = Regex("""[?&]sub=([^&]+)""").find(fullUrl)?.groupValues?.get(1)
@@ -390,80 +444,14 @@ class Asiaflix : MainAPI() {
                                 val subUrl = decryptVidBasic(decodedSubParam)
                                 
                                 if (subUrl.startsWith("http")) {
-                                    val vttText = app.get(subUrl, headers = headersMap).text
-                                    
-                                    val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-                                    val secretKey = SecretKeySpec("94588293375053432799222445521289".toByteArray(Charsets.UTF_8), "AES")
-                                    val ivSpec = IvParameterSpec("5259228356829423".toByteArray(Charsets.UTF_8))
-                                    
-                                    val decryptedVtt = vttText.lines().joinToString("\n") { line ->
-                                        val t = line.trim()
-                                        if (t.isEmpty() || t.startsWith("WEBVTT") || Regex("^\\d+$").matches(t) || Regex("^\\d{2}:\\d{2}:\\d{2}").containsMatchIn(t)) {
-                                            line
-                                        } else {
-                                            try { 
-                                                cipher.init(Cipher.DECRYPT_MODE, secretKey, ivSpec)
-                                                String(cipher.doFinal(Base64.getMimeDecoder().decode(t.replace(Regex("\\s+"), ""))), Charsets.UTF_8)
-                                            } catch (e: Exception) { line }
-                                        }
-                                    }
-                                    
-                                    // Solusi Socket Lokal (Bawaan Java Pure, Tanpa Context / Android Dependency)
-                                    val serverSocket = ServerSocket(0)
-                                    serverSocket.soTimeout = 15000
-                                    val localPort = serverSocket.localPort
-                                    val localUrl = "http://127.0.0.1:$localPort/subtitle.vtt"
-
-                                    thread {
-                                        var requestsHandled = 0
-                                        try {
-                                            while (!serverSocket.isClosed && requestsHandled < 3) {
-                                                val socket = try {
-                                                    serverSocket.accept()
-                                                } catch (e: SocketTimeoutException) {
-                                                    break
-                                                }
-
-                                                val input = socket.getInputStream().bufferedReader()
-                                                val firstLine = input.readLine() ?: ""
-                                                
-                                                var headerLine = input.readLine()
-                                                while (!headerLine.isNullOrEmpty()) {
-                                                    headerLine = input.readLine()
-                                                }
-
-                                                val output = socket.getOutputStream()
-                                                val vttBytes = decryptedVtt.toByteArray(Charsets.UTF_8)
-                                                
-                                                if (firstLine.startsWith("OPTIONS")) {
-                                                    val response = "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, OPTIONS, HEAD\r\nConnection: close\r\n\r\n"
-                                                    output.write(response.toByteArray(Charsets.UTF_8))
-                                                } else {
-                                                    val responseHeader = "HTTP/1.1 200 OK\r\nContent-Type: text/vtt; charset=utf-8\r\nContent-Length: ${vttBytes.size}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
-                                                    output.write(responseHeader.toByteArray(Charsets.UTF_8))
-                                                    if (!firstLine.startsWith("HEAD")) {
-                                                        output.write(vttBytes)
-                                                    }
-                                                    requestsHandled++
-                                                }
-                                                output.flush()
-                                                socket.close()
-                                            }
-                                        } catch (e: Exception) {
-                                        } finally {
-                                            if (!serverSocket.isClosed) {
-                                                try { serverSocket.close() } catch (e: Exception) {}
-                                            }
-                                        }
-                                    }
-
+                                    // Teruskan URL HTTP subtitle asli ke ExoPlayer
                                     subtitleCallback.invoke(
                                         newSubtitleFile(
                                             lang = "English",
-                                            url = localUrl
+                                            url = subUrl
                                         )
                                     )
-                                    Log.d("AsiaflixDebug", "VidBasic subtitle server listening on $localUrl")
+                                    Log.d("AsiaflixDebug", "VidBasic subtitle URL registered for interceptor: $subUrl")
                                 }
                             } catch (e: Exception) {
                                 Log.e("AsiaflixDebug", "VidBasic Subtitle Error: ${e.message}")
