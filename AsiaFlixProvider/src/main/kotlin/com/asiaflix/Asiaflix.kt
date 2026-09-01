@@ -365,7 +365,7 @@ class Asiaflix : MainAPI() {
 
                 Log.d("AsiaflixDebug", "Hit HLS Proxy API | Server: $serverName | URL: $proxyApiUrl")
                 
-                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 30).text
+                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 10).text
                 Log.d("AsiaflixDebug", "Respon HLS Proxy API: $apiResponseText")
                 
                 val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
