@@ -12,6 +12,7 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.*
 import okhttp3.Interceptor
 import okhttp3.ResponseBody.Companion.toResponseBody
 import java.net.URLDecoder
@@ -340,97 +341,120 @@ class Asiaflix : MainAPI() {
     ): Boolean {
         if (data.isBlank()) return false
         val linkData = tryParseJson<EpisodeLinkData>(data) ?: return false
-        var anySuccess = false
+        @Volatile var anySuccess = false
+        val providerName = this.name
 
-        linkData.streamUrls?.forEach { stream ->
-            var streamUrl = stream.url ?: return@forEach
-            if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
-            val serverName = stream.source ?: "unknown"
+        coroutineScope {
+            val jobs = mutableListOf<Job>()
 
-            // 1. METODE MANDATORI: Ambil HLS Proxy via API Asiaflix (Timeout 30s)
-            try {
-                val base64Url = Base64.getEncoder().encodeToString(streamUrl.toByteArray(Charsets.UTF_8))
-                val encodedUrl = URLEncoder.encode(base64Url, "UTF-8")
-                val encodedServer = URLEncoder.encode(serverName, "UTF-8")
-                
-                val proxyApiUrl = "$mainUrl/drama/get-stream-url?value=$encodedUrl&server=$encodedServer"
-                
-                val reqHeaders = mapOf(
-                    "accept" to "application/json, text/plain, */*",
-                    "origin" to "https://asiaflix.net",
-                    "referer" to "https://asiaflix.net/drama/",
-                    "user-agent" to userAgent,
-                    "x-access-control" to "web"
-                )
+            // ------------------------------------------------------------------
+            // URUTAN 1: Ekstraktor Konvensional (VidBasic, VidMoly, loadExtractor)
+            // ------------------------------------------------------------------
+            linkData.streamUrls?.forEach { stream ->
+                var streamUrl = stream.url ?: return@forEach
+                if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
 
-                Log.d("AsiaflixDebug", "Hit HLS Proxy API | Server: $serverName | URL: $proxyApiUrl")
-                
-                val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 10).text
-                Log.d("AsiaflixDebug", "Respon HLS Proxy API: $apiResponseText")
-                
-                val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
-                    ?: Regex(""""(https://[^"]*hlsproxy[^"]*)"""").find(apiResponseText)
-                
-                val proxyUrl = tryParseJson<AsiaflixStreamResponse>(apiResponseText)?.url ?: proxyUrlMatch?.groupValues?.get(1)
+                jobs.add(launch {
+                    if (streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top")) {
+                        if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
+                    }
+                    if (streamUrl.contains("vidmoly", ignoreCase = true)) {
+                        if (extractVidMoly(streamUrl, callback)) anySuccess = true
+                    }
+                    if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess = true
+                })
+            }
 
-                if (!proxyUrl.isNullOrEmpty()) {
-                    Log.d("AsiaflixDebug", "BERHASIL: Direct HLS Proxy terdeteksi -> $proxyUrl")
-                    
-                    callback(newExtractorLink(
-                        name = "Asiaflix Proxy - $serverName",
-                        source = this.name,
-                        url = proxyUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.headers = reqHeaders
-                        this.referer = "https://asiaflix.net/"
-                    })
-                    anySuccess = true
+            // ------------------------------------------------------------------
+            // URUTAN 2: API HLS Proxy Asiaflix (Timeout 10s & Non-blocking Async)
+            // ------------------------------------------------------------------
+            linkData.streamUrls?.forEach { stream ->
+                var streamUrl = stream.url ?: return@forEach
+                if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
+                val serverName = stream.source ?: "unknown"
+
+                jobs.add(launch {
+                    try {
+                        val base64Url = Base64.getEncoder().encodeToString(streamUrl.toByteArray(Charsets.UTF_8))
+                        val encodedUrl = URLEncoder.encode(base64Url, "UTF-8")
+                        val encodedServer = URLEncoder.encode(serverName, "UTF-8")
+                        
+                        val proxyApiUrl = "$mainUrl/drama/get-stream-url?value=$encodedUrl&server=$encodedServer"
+                        
+                        val reqHeaders = mapOf(
+                            "accept" to "application/json, text/plain, */*",
+                            "origin" to "https://asiaflix.net",
+                            "referer" to "https://asiaflix.net/drama/",
+                            "user-agent" to userAgent,
+                            "x-access-control" to "web"
+                        )
+
+                        Log.d("AsiaflixDebug", "Hit HLS Proxy API | Server: $serverName | URL: $proxyApiUrl")
+                        
+                        val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 10).text
+                        Log.d("AsiaflixDebug", "Respon HLS Proxy API: $apiResponseText")
+                        
+                        val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
+                            ?: Regex(""""(https://[^"]*hlsproxy[^"]*)"""").find(apiResponseText)
+                        
+                        val proxyUrl = tryParseJson<AsiaflixStreamResponse>(apiResponseText)?.url ?: proxyUrlMatch?.groupValues?.get(1)
+
+                        if (!proxyUrl.isNullOrEmpty()) {
+                            Log.d("AsiaflixDebug", "BERHASIL: Direct HLS Proxy terdeteksi -> $proxyUrl")
+                            
+                            callback(newExtractorLink(
+                                name = "Asiaflix Proxy - $serverName",
+                                source = providerName,
+                                url = proxyUrl,
+                                type = ExtractorLinkType.M3U8
+                            ) {
+                                this.headers = reqHeaders
+                                this.referer = "https://asiaflix.net/"
+                            })
+                            anySuccess = true
+                        } else {
+                            Log.d("AsiaflixDebug", "GAGAL: URL Proxy HLS tidak ditemukan dalam respon JSON.")
+                        }
+                    } catch (e: Exception) {
+                        Log.e("AsiaflixDebug", "Error HLS Proxy API: ${e.message}")
+                    }
+                })
+            }
+
+            // ------------------------------------------------------------------
+            // URUTAN 3: Fallback TMDB Embed Links (Eksekusi Non-blocking Async)
+            // ------------------------------------------------------------------
+            val tmdbId = linkData.tmdbId
+            if (tmdbId != null && tmdbId > 0) {
+                val isTv = linkData.showType == "TVSeries"
+                val season = linkData.seasonNumber ?: 1
+                val ep = linkData.epNumber
+
+                val generatedUrls = if (isTv) {
+                    listOf(
+                        "https://peachify.top/embed/tv/$tmdbId/$season/$ep?accent=1DB954&sub=English",
+                        "https://vidup.to/tv/$tmdbId/$season/$ep?theme=1DB954&autoPlay=true&sub=en",
+                        "https://player.videasy.to/tv/$tmdbId/$season/$ep?nextEpisode=false",
+                        "https://player.cinezo.live/embed/tv/$tmdbId/$season/$ep?autoplay=true"
+                    )
                 } else {
-                    Log.d("AsiaflixDebug", "GAGAL: URL Proxy HLS tidak ditemukan dalam respon JSON.")
+                    listOf(
+                        "https://peachify.top/embed/movie/$tmdbId?accent=1DB954&sub=English",
+                        "https://vidup.to/movie/$tmdbId?theme=1DB954&autoPlay=true&sub=en",
+                        "https://player.videasy.to/movie/$tmdbId?nextEpisode=false",
+                        "https://player.cinezo.live/embed/movie/$tmdbId?autoplay=true"
+                    )
                 }
-            } catch (e: Exception) {
-                Log.e("AsiaflixDebug", "Error HLS Proxy API: ${e.message}")
+
+                generatedUrls.forEach { embedUrl ->
+                    jobs.add(launch {
+                        if (loadExtractor(embedUrl, subtitleCallback, callback)) anySuccess = true
+                    })
+                }
             }
 
-            // 2. METODE MANDATORI: Ekstraktor Khusus
-            if (streamUrl.contains("vidbasic.top") || streamUrl.contains("vidb.top")) {
-                if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess = true
-            }
-            if (streamUrl.contains("vidmoly", ignoreCase = true)) {
-                if (extractVidMoly(streamUrl, callback)) anySuccess = true
-            }
-
-            // 3. METODE MANDATORI: Ekstraktor Bawaan Cloudstream (Selalu dijalankan untuk semua URL)
-            if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess = true
-        }
-
-        // 4. METODE MANDATORI: Fallback TMDB Embed Links
-        val tmdbId = linkData.tmdbId
-        if (tmdbId != null && tmdbId > 0) {
-            val isTv = linkData.showType == "TVSeries"
-            val season = linkData.seasonNumber ?: 1
-            val ep = linkData.epNumber
-
-            val generatedUrls = if (isTv) {
-                listOf(
-                    "https://peachify.top/embed/tv/$tmdbId/$season/$ep?accent=1DB954&sub=English",
-                    "https://vidup.to/tv/$tmdbId/$season/$ep?theme=1DB954&autoPlay=true&sub=en",
-                    "https://player.videasy.to/tv/$tmdbId/$season/$ep?nextEpisode=false",
-                    "https://player.cinezo.live/embed/tv/$tmdbId/$season/$ep?autoplay=true"
-                )
-            } else {
-                listOf(
-                    "https://peachify.top/embed/movie/$tmdbId?accent=1DB954&sub=English",
-                    "https://vidup.to/movie/$tmdbId?theme=1DB954&autoPlay=true&sub=en",
-                    "https://player.videasy.to/movie/$tmdbId?nextEpisode=false",
-                    "https://player.cinezo.live/embed/movie/$tmdbId?autoplay=true"
-                )
-            }
-
-            generatedUrls.forEach { embedUrl ->
-                if (loadExtractor(embedUrl, subtitleCallback, callback)) anySuccess = true
-            }
+            // Tunggu seluruh coroutine job paralel selesai sebelum keluar dari loadLinks
+            jobs.joinAll()
         }
 
         return anySuccess
