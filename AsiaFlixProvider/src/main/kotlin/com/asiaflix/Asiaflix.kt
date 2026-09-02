@@ -358,7 +358,6 @@ class Asiaflix : MainAPI() {
             val candidates = mutableListOf<String>()
             response.name?.let { candidates.add(it.trim()) }
             
-            // Helper parsing aman untuk altNames
             fun addCandidate(data: Any?) {
                 when (data) {
                     is String -> data.split(",").forEach { if (it.isNotBlank()) candidates.add(it.trim()) }
@@ -387,7 +386,6 @@ class Asiaflix : MainAPI() {
 
                     val mdlTitle = mdlJson?.title ?: ""
                     
-                    // Diperbaiki: Menangkap 4 digit tahun secara utuh (misal: 2023)
                     val mdlYearMatch = Regex("""\b((19|20)\d{2})\b""").find(mdlTitle)
                     val mdlYear = mdlYearMatch?.groupValues?.get(1)
 
@@ -446,7 +444,8 @@ class Asiaflix : MainAPI() {
                 seasonNumber = response.seasonNumber ?: 1,
                 epNumber = ep.number ?: 1,
                 showType = response.showType ?: if (isMovie) "Movie" else "TVSeries",
-                streamUrls = ep.streamUrls
+                streamUrls = ep.streamUrls,
+                isTmdbValid = isTmdbValid
             )
             
             val epNum = ep.number ?: 1
@@ -618,10 +617,12 @@ class Asiaflix : MainAPI() {
             }
 
             // ------------------------------------------------------------------
-            // URUTAN 3: Fallback TMDB Embed Links (Eksekusi Non-blocking Async)
+            // URUTAN 3: Fallback TMDB Embed Links (Hanya jika TMDB Valid)
             // ------------------------------------------------------------------
             val tmdbId = linkData.tmdbId
-            if (tmdbId != null && tmdbId > 0) {
+            val isTmdbValid = linkData.isTmdbValid == true
+
+            if (isTmdbValid && tmdbId != null && tmdbId > 0) {
                 val isTv = linkData.showType == "TVSeries"
                 val season = linkData.seasonNumber ?: 1
                 val ep = linkData.epNumber
@@ -818,7 +819,8 @@ class Asiaflix : MainAPI() {
         val seasonNumber: Int?, 
         val epNumber: Int, 
         val showType: String?, 
-        val streamUrls: List<AsiaflixStream>?
+        val streamUrls: List<AsiaflixStream>?,
+        val isTmdbValid: Boolean? = false
     )
 
     // TMDB
