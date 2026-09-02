@@ -386,8 +386,10 @@ class Asiaflix : MainAPI() {
                     }
 
                     val mdlTitle = mdlJson?.title ?: ""
-                    val mdlYear = Regex("""\((19|20)\d{2}\)""").find(mdlTitle)?.groupValues?.get(1)
-                        ?: Regex("""\b(19|20)\d{2}\b""").find(mdlTitle)?.value
+                    
+                    // Diperbaiki: Menangkap 4 digit tahun secara utuh (misal: 2023)
+                    val mdlYearMatch = Regex("""\b((19|20)\d{2})\b""").find(mdlTitle)
+                    val mdlYear = mdlYearMatch?.groupValues?.get(1)
 
                     val yearMatches = (asiaflixYear == null || mdlYear == null || asiaflixYear == mdlYear)
 
