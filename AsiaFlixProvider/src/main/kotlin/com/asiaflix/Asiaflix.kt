@@ -34,6 +34,7 @@ class Asiaflix : MainAPI() {
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
     
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
+    private val mdlBaseUrl = "https://my-drama-list-api-ten.vercel.app"
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
@@ -85,11 +86,9 @@ class Asiaflix : MainAPI() {
         }
     }
 
-    // ==================== HELPER EKSTRAKSI SUBTITLE PAKSA (BRUTE FORCE) ====================
     private fun extractSubtitlesFromHtml(html: String, subtitleCallback: (SubtitleFile) -> Unit): Int {
         var subtitleFoundCount = 0
 
-        // 1. Ekstraksi via penguraian array 'tracks' JS
         val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
         if (tracksMatch != null) {
             val tracksHtml = tracksMatch.groupValues[1]
@@ -113,7 +112,6 @@ class Asiaflix : MainAPI() {
             }
         }
 
-        // 2. Ekstraksi Brute Force (pencarian langsung .vtt / .srt dalam HTML)
         if (subtitleFoundCount == 0) {
             val bruteForceRegex = Regex("""["']([^"']+\.(?:vtt|srt)[^"']*)["']""")
             val allMatches = bruteForceRegex.findAll(html).toList()
@@ -268,11 +266,19 @@ class Asiaflix : MainAPI() {
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
         
-        var tmdbActors: List<ActorData>? = null
+        var actorsList: List<ActorData>? = null
         var tmdbTrailer: String? = null
-        var tmdbEpisodesMap: Map<Int, TmdbEpisode>? = null
+        var episodesMetaMap: Map<Int, EpisodeMeta>? = null
 
         val tmdbId = response.tmdbId
+        var isTmdbValid = false
+
+        val asiaflixYear = response.releaseYear?.toString()?.let { Regex("""\d{4}""").find(it)?.value }
+        val asiaflixCountry = response.country?.lowercase() ?: ""
+
+        // ==================================================================
+        // 1. PEMERIKSAAN & VALIDASI TMDB (Berdasarkan Tahun & Negara)
+        // ==================================================================
         if (tmdbId != null && tmdbId > 0) {
             val tmdbHeaders = mapOf("Authorization" to "Bearer $tmdbToken")
             val tmdbType = if (isMovie) "movie" else "tv"
@@ -281,21 +287,140 @@ class Asiaflix : MainAPI() {
                 val tmdbUrl = "https://api.themoviedb.org/3/$tmdbType/$tmdbId?append_to_response=credits,videos"
                 val tmdbDetail = app.get(tmdbUrl, headers = tmdbHeaders).parsedSafe<TmdbDetail>()
                 
-                tmdbActors = tmdbDetail?.credits?.cast?.take(10)?.mapNotNull { cast ->
-                    val name = cast.name ?: return@mapNotNull null
-                    val image = cast.profile_path?.let { "https://image.tmdb.org/t/p/w185$it" }
-                    ActorData(actor = Actor(name, image), roleString = cast.character)
+                if (tmdbDetail != null) {
+                    val tmdbDate = tmdbDetail.releaseDate ?: tmdbDetail.firstAirDate ?: ""
+                    val tmdbYear = Regex("""\d{4}""").find(tmdbDate)?.value
+
+                    val tmdbCountries = mutableListOf<String>()
+                    tmdbDetail.originCountry?.forEach { tmdbCountries.add(it.lowercase()) }
+                    tmdbDetail.productionCountries?.forEach { 
+                        it.iso?.let { iso -> tmdbCountries.add(iso.lowercase()) }
+                        it.name?.let { name -> tmdbCountries.add(name.lowercase()) }
+                    }
+
+                    val yearMatches = (asiaflixYear == null || tmdbYear == null || asiaflixYear == tmdbYear)
+
+                    val countryMatches = if (asiaflixCountry.isBlank() || tmdbCountries.isEmpty()) true else {
+                        when {
+                            asiaflixCountry.contains("korea") && tmdbCountries.any { it == "kr" || it.contains("korea") } -> true
+                            asiaflixCountry.contains("japan") && tmdbCountries.any { it == "jp" || it.contains("japan") } -> true
+                            asiaflixCountry.contains("china") && tmdbCountries.any { it == "cn" || it.contains("china") } -> true
+                            asiaflixCountry.contains("thailand") && tmdbCountries.any { it == "th" || it.contains("thailand") } -> true
+                            asiaflixCountry.contains("taiwan") && tmdbCountries.any { it == "tw" || it.contains("taiwan") } -> true
+                            else -> tmdbCountries.any { it.contains(asiaflixCountry) || asiaflixCountry.contains(it) }
+                        }
+                    }
+
+                    if (yearMatches && countryMatches) {
+                        isTmdbValid = true
+                        Log.d("AsiaflixDebug", "TMDB Valid! Match Tahun: $tmdbYear, Negara: $tmdbCountries")
+
+                        actorsList = tmdbDetail.credits?.cast?.take(10)?.mapNotNull { cast ->
+                            val name = cast.name ?: return@mapNotNull null
+                            val image = cast.profile_path?.let { "https://image.tmdb.org/t/p/w185$it" }
+                            ActorData(actor = Actor(name, image), roleString = cast.character)
+                        }
+                        
+                        tmdbTrailer = tmdbDetail.videos?.results?.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }?.key?.let { "https://www.youtube.com/watch?v=$it" }
+                        
+                        if (!isMovie) {
+                            val seasonNum = response.seasonNumber ?: 1
+                            val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNum"
+                            val seasonData = app.get(seasonUrl, headers = tmdbHeaders).parsedSafe<TmdbSeason>()
+                            episodesMetaMap = seasonData?.episodes?.associateBy { it.episode_number ?: -1 }?.mapValues {
+                                EpisodeMeta(
+                                    title = it.value.name,
+                                    poster = it.value.still_path?.let { p -> "https://image.tmdb.org/t/p/w500$p" },
+                                    description = it.value.overview
+                                )
+                            }
+                        }
+                    } else {
+                        Log.d("AsiaflixDebug", "TMDB Tidak Valid. Mis-match Tahun/Negara. (TMDB Yr: $tmdbYear, Asiaflix Yr: $asiaflixYear)")
+                    }
                 }
+            } catch (e: Exception) {
+                Log.e("AsiaflixDebug", "Pemeriksaan TMDB Gagal: ${e.message}")
+            }
+        }
+
+        // ==================================================================
+        // 2. FALLBACK KE MYDRAMALIST (MDL) API (Jika TMDB Tidak Ada / Invalid)
+        // ==================================================================
+        if (!isTmdbValid) {
+            Log.d("AsiaflixDebug", "Mulai Fallback ke MyDramaList (MDL) API...")
+            
+            val candidates = mutableListOf<String>()
+            response.name?.let { candidates.add(it) }
+            
+            val altNamesStr = response.altName ?: response.otherName
+            altNamesStr?.split(",")?.forEach { candidates.add(it.trim()) }
+
+            for (candidate in candidates.distinct()) {
+                if (candidate.isBlank()) continue
                 
-                tmdbTrailer = tmdbDetail?.videos?.results?.firstOrNull { it.site == "YouTube" && it.type == "Trailer" }?.key?.let { "https://www.youtube.com/watch?v=$it" }
-                
-                if (!isMovie) {
-                    val seasonNum = response.seasonNumber ?: 1
-                    val seasonUrl = "https://api.themoviedb.org/3/tv/$tmdbId/season/$seasonNum"
-                    val seasonData = app.get(seasonUrl, headers = tmdbHeaders).parsedSafe<TmdbSeason>()
-                    tmdbEpisodesMap = seasonData?.episodes?.associateBy { it.episode_number ?: -1 }
+                try {
+                    val slug = candidate.trim().lowercase().replace(Regex("""[^a-z0-9]+"""), "-").trim('-')
+                    val encodedParam = URLEncoder.encode(candidate.trim(), "UTF-8")
+                    
+                    var mdlUrl = "$mdlBaseUrl/api/id/$slug"
+                    var mdlText = try { app.get(mdlUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
+                    var mdlJson = tryParseJson<MdlDetail>(mdlText)
+
+                    if (mdlJson == null || (mdlJson.title == null && mdlJson.data == null)) {
+                        mdlUrl = "$mdlBaseUrl/api/id/$encodedParam"
+                        mdlText = try { app.get(mdlUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
+                        mdlJson = tryParseJson<MdlDetail>(mdlText)
+                    }
+
+                    val mdlTitle = mdlJson?.title ?: mdlJson?.data?.title ?: ""
+                    
+                    // C. Cocokkan Tahun dari parameter "title" (Pola: Judul (Tahun))
+                    val mdlYear = Regex("""\((19|20)\d{2}\)""").find(mdlTitle)?.groupValues?.get(1)
+                        ?: Regex("""\b(19|20)\d{2}\b""").find(mdlTitle)?.value
+
+                    val yearMatches = (asiaflixYear == null || mdlYear == null || asiaflixYear == mdlYear)
+
+                    if (yearMatches && mdlTitle.isNotBlank()) {
+                        Log.d("AsiaflixDebug", "MDL Match Ditemukan! Title: $mdlTitle, Candidate: $candidate")
+                        
+                        val activeParam = if (mdlUrl.contains(slug)) slug else encodedParam
+
+                        // D1. Ambil Data Episode: /api/id/{param}/episodes/all
+                        val epUrl = "$mdlBaseUrl/api/id/$activeParam/episodes/all"
+                        val epText = try { app.get(epUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
+                        val epData = tryParseJson<MdlEpisodeResponse>(epText)
+                        val mdlEpList = epData?.episodes ?: epData?.data
+
+                        // D2. Ambil Data Pemain (10 Teratas): /api/id/{param}/cast
+                        val castUrl = "$mdlBaseUrl/api/id/$activeParam/cast"
+                        val castText = try { app.get(castUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
+                        val castData = tryParseJson<MdlCastResponse>(castText)
+                        val mdlCastList = castData?.casts ?: castData?.data
+
+                        actorsList = mdlCastList?.take(10)?.mapNotNull { c ->
+                            val cName = c.name ?: return@mapNotNull null
+                            val img = c.image ?: c.profileImage
+                            val role = c.character ?: c.role
+                            ActorData(actor = Actor(cName, img), roleString = role)
+                        }
+
+                        episodesMetaMap = mdlEpList?.associateBy { it.episode ?: it.number ?: -1 }?.mapValues {
+                            EpisodeMeta(
+                                title = it.value.title ?: it.value.name,
+                                poster = it.value.image ?: it.value.thumbnail,
+                                description = it.value.overview ?: it.value.description
+                            )
+                        }
+
+                        break // Hentikan pencarian kandidat jika cocok
+                    } else {
+                        Log.d("AsiaflixDebug", "MDL Candidate '$candidate' tahun tidak cocok (MDL: $mdlYear vs Asiaflix: $asiaflixYear)")
+                    }
+                } catch (e: Exception) {
+                    Log.e("AsiaflixDebug", "Gagal memproses kandidat MDL '$candidate': ${e.message}")
                 }
-            } catch (e: Exception) { }
+            }
         }
 
         val episodes = response.episodes?.map { ep ->
@@ -308,11 +433,11 @@ class Asiaflix : MainAPI() {
             )
             
             val epNum = ep.number ?: 1
-            val tmdbEpMeta = tmdbEpisodesMap?.get(epNum)
+            val epMeta = episodesMetaMap?.get(epNum)
             
-            val epTitle = tmdbEpMeta?.name ?: ep.title ?: "Episode $epNum"
-            val epPoster = tmdbEpMeta?.still_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-            val epDesc = tmdbEpMeta?.overview
+            val epTitle = epMeta?.title ?: ep.title ?: "Episode $epNum"
+            val epPoster = epMeta?.poster
+            val epDesc = epMeta?.description
 
             newEpisode(epTitle) {
                 this.data = linkData.toJson()
@@ -365,7 +490,7 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
-                this.actors = tmdbActors
+                this.actors = actorsList
                 addTrailer(tmdbTrailer)
             }
         } else {
@@ -375,7 +500,7 @@ class Asiaflix : MainAPI() {
                 this.year = response.releaseYear?.toString()?.toIntOrNull()
                 this.tags = response.genres?.mapNotNull { it.name }
                 this.recommendations = recommendations
-                this.actors = tmdbActors
+                this.actors = actorsList
                 addTrailer(tmdbTrailer)
             }
         }
@@ -516,7 +641,6 @@ class Asiaflix : MainAPI() {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
             val pageHtml = doc.html()
             
-            // Terapkan pencarian subtitle paksa dari HTML player VidMoly
             extractSubtitlesFromHtml(pageHtml, subtitleCallback)
 
             var videoUrl: String? = null
@@ -546,7 +670,6 @@ class Asiaflix : MainAPI() {
             val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
             val html = app.get(embedUrl, headers = headersMap).text
             
-            // Pindai subtitle mentah dari HTML utama VidBasic jika ada
             extractSubtitlesFromHtml(html, subtitleCallback)
 
             val dataVideo = Regex("""data-video="([^"]+)">Standard""").find(html)?.groupValues?.get(1)
@@ -555,7 +678,6 @@ class Asiaflix : MainAPI() {
                 val fullUrl = if (dataVideo.startsWith("http")) dataVideo else "https://$host$dataVideo"
                 val html2 = app.get(fullUrl, headers = headersMap).text
                 
-                // Pindai subtitle mentah dari HTML sekunder VidBasic
                 extractSubtitlesFromHtml(html2, subtitleCallback)
 
                 val encrypted = Regex("""data-name="crypto"\s*data-value="([^"]+)"""").find(html2)?.groupValues?.get(1)
@@ -572,7 +694,6 @@ class Asiaflix : MainAPI() {
                             type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
 
-                        // Ekstraksi subtitle terenkripsi bawaan VidBasic
                         val subParam = Regex("""[?&]sub=([^&]+)""").find(fullUrl)?.groupValues?.get(1)
                         if (!subParam.isNullOrEmpty()) {
                             try {
@@ -610,6 +731,14 @@ class Asiaflix : MainAPI() {
         return String(cipher.doFinal(Base64.getMimeDecoder().decode(encrypted.trim().replace(Regex("\\s+"), ""))), Charsets.UTF_8)
     }
 
+    // ==================== DATA CLASSES ====================
+
+    data class EpisodeMeta(
+        val title: String? = null,
+        val poster: String? = null,
+        val description: String? = null
+    )
+
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixListResponse(@JsonProperty("hasNext") val hasNext: Boolean? = null, @JsonProperty("body") val body: List<AsiaflixItem>? = null)
     
@@ -617,7 +746,22 @@ class Asiaflix : MainAPI() {
     data class AsiaflixItem(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("recentEp") val recentEp: Any? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("genres") val genres: List<Any>? = null, @JsonProperty("episodes") val episodes: Any? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class AsiaflixDetail(@JsonProperty("_id") val id: String? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("description") val description: String? = null, @JsonProperty("image") val image: String? = null, @JsonProperty("showType") val showType: String? = null, @JsonProperty("status") val status: String? = null, @JsonProperty("country") val country: String? = null, @JsonProperty("releaseYear") val releaseYear: Any? = null, @JsonProperty("tmdbId") val tmdbId: Long? = null, @JsonProperty("seasonNumber") val seasonNumber: Int? = null, @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null, @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null)
+    data class AsiaflixDetail(
+        @JsonProperty("_id") val id: String? = null, 
+        @JsonProperty("name") val name: String? = null, 
+        @JsonProperty("altName") val altName: String? = null,
+        @JsonProperty("otherName") val otherName: String? = null,
+        @JsonProperty("description") val description: String? = null, 
+        @JsonProperty("image") val image: String? = null, 
+        @JsonProperty("showType") val showType: String? = null, 
+        @JsonProperty("status") val status: String? = null, 
+        @JsonProperty("country") val country: String? = null, 
+        @JsonProperty("releaseYear") val releaseYear: Any? = null, 
+        @JsonProperty("tmdbId") val tmdbId: Long? = null, 
+        @JsonProperty("seasonNumber") val seasonNumber: Int? = null, 
+        @JsonProperty("genres") val genres: List<AsiaflixGenre>? = null, 
+        @JsonProperty("episodes") val episodes: List<AsiaflixEpisode>? = null
+    )
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixGenre(@JsonProperty("name") val name: String? = null)
@@ -633,8 +777,19 @@ class Asiaflix : MainAPI() {
 
     data class EpisodeLinkData(val tmdbId: Long?, val seasonNumber: Int?, val epNumber: Int, val showType: String?, val streamUrls: List<AsiaflixStream>?)
 
+    // TMDB
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class TmdbDetail(@JsonProperty("credits") val credits: TmdbCredits? = null, @JsonProperty("videos") val videos: TmdbVideos? = null)
+    data class TmdbDetail(
+        @JsonProperty("credits") val credits: TmdbCredits? = null, 
+        @JsonProperty("videos") val videos: TmdbVideos? = null,
+        @JsonProperty("release_date") val releaseDate: String? = null,
+        @JsonProperty("first_air_date") val firstAirDate: String? = null,
+        @JsonProperty("origin_country") val originCountry: List<String>? = null,
+        @JsonProperty("production_countries") val productionCountries: List<TmdbCountry>? = null
+    )
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class TmdbCountry(@JsonProperty("iso_3166_1") val iso: String? = null, @JsonProperty("name") val name: String? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbCredits(@JsonProperty("cast") val cast: List<TmdbCast>? = null)
@@ -657,4 +812,38 @@ class Asiaflix : MainAPI() {
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class TmdbEpisode(@JsonProperty("episode_number") val episode_number: Int? = null, @JsonProperty("name") val name: String? = null, @JsonProperty("overview") val overview: String? = null, @JsonProperty("still_path") val still_path: String? = null)
+
+    // MyDramaList (MDL)
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlDetail(@JsonProperty("title") val title: String? = null, @JsonProperty("data") val data: MdlData? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlData(@JsonProperty("title") val title: String? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlCastResponse(@JsonProperty("casts") val casts: List<MdlCast>? = null, @JsonProperty("data") val data: List<MdlCast>? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlCast(
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("character") val character: String? = null,
+        @JsonProperty("role") val role: String? = null,
+        @JsonProperty("image") val image: String? = null,
+        @JsonProperty("profile_image") val profileImage: String? = null
+    )
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlEpisodeResponse(@JsonProperty("episodes") val episodes: List<MdlEpisode>? = null, @JsonProperty("data") val data: List<MdlEpisode>? = null)
+    
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    data class MdlEpisode(
+        @JsonProperty("episode") val episode: Int? = null,
+        @JsonProperty("number") val number: Int? = null,
+        @JsonProperty("title") val title: String? = null,
+        @JsonProperty("name") val name: String? = null,
+        @JsonProperty("overview") val overview: String? = null,
+        @JsonProperty("description") val description: String? = null,
+        @JsonProperty("image") val image: String? = null,
+        @JsonProperty("thumbnail") val thumbnail: String? = null
+    )
 }
