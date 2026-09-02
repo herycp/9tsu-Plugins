@@ -6,23 +6,21 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.loadExtractor
 import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.utils.getAndUnpack
+import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MultipartBody
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.jsoup.nodes.Element
 import org.json.JSONObject
 import org.json.JSONArray
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.Base64
-import java.util.UUID
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import android.util.Log
 
 class Dramacool : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama)
@@ -176,78 +174,82 @@ class Dramacool : MainAPI() {
         }.joinToString("\n")
     }
 
-    // Mekanisme Testing Transparan: Menguji provider satu per satu dengan Logcat eksplisit tanpa failover diam-diam
-    private suspend fun uploadSubtitleExplicitTest(finalVtt: String): String {
-        val reqBody = finalVtt.toRequestBody("text/vtt".toMediaTypeOrNull())
+    // =========================================================================
+    // THE MAGIC: PENCEGATAN HTTP LANGSUNG OLEH EXOPLAYER TANPA UPLOAD
+    // =========================================================================
+    override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
+        return Interceptor { chain ->
+            val request = chain.request()
+            val url = request.url.toString()
 
-        // 1. Test Provider: 0x0.st
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("file", "sub.vtt", reqBody).build()
-            val res = app.post("https://0x0.st", requestBody = multiBody, timeout = 5).text.trim()
-            Log.d("DramacoolSubTest", "0x0.st Response: $res")
-            if (res.startsWith("http")) return res
-        } catch (e: Exception) {
-            Log.e("DramacoolSubTest", "0x0.st Error: ${e.message}")
-        }
+            val response = chain.proceed(request)
 
-        // 2. Test Provider: Litterbox (Catbox Temp)
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("reqtype", "fileupload")
-                .addFormDataPart("time", "1h")
-                .addFormDataPart("fileToUpload", "sub.vtt", reqBody).build()
-            val res = app.post("https://litterbox.catbox.moe/api.php", requestBody = multiBody, timeout = 5).text.trim()
-            Log.d("DramacoolSubTest", "Litterbox Response: $res")
-            if (res.startsWith("http")) return res
-        } catch (e: Exception) {
-            Log.e("DramacoolSubTest", "Litterbox Error: ${e.message}")
-        }
+            // Jika URL adalah tautan subtitle yang kita tandai sebelumnya
+            if (url.contains("drmclmy_decrypt=true")) {
+                val encryptedBody = response.body?.string() ?: return@Interceptor response
+                
+                try {
+                    // Eksekusi Dekripsi on-the-fly
+                    val decryptedVtt = decryptVidBasicSubtitle(encryptedBody)
+                    var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
+                    if (cleanVtt.startsWith("WEBVTT")) {
+                        cleanVtt = cleanVtt.substring(6).trim()
+                    }
+                    val finalVtt = "WEBVTT\n\n$cleanVtt"
 
-        // 3. Test Provider: Pixeldrain
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("file", "sub.vtt", reqBody).build()
-            val res = app.post("https://pixeldrain.com/api/file/", requestBody = multiBody, timeout = 5).text
-            val id = JSONObject(res).optString("id")
-            val directUrl = "https://pixeldrain.com/api/file/$id"
-            Log.d("DramacoolSubTest", "Pixeldrain Response: $directUrl")
-            if (id.isNotBlank()) return directUrl
-        } catch (e: Exception) {
-            Log.e("DramacoolSubTest", "Pixeldrain Error: ${e.message}")
-        }
+                    // Ganti respons dari server dengan format VTT bersih dan kirim ke ExoPlayer
+                    val contentType = response.body?.contentType() ?: "text/vtt".toMediaTypeOrNull()
+                    val newBody = finalVtt.toResponseBody(contentType)
 
-        // 4. Test Provider: Tmpfiles (Dengan mekanisme konversi HTML page ke Raw Link via Jsoup)
-        try {
-            val multiBody = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("file", "sub.vtt", reqBody).build()
-            val res = app.post("https://tmpfiles.org/api/v1/upload", requestBody = multiBody, timeout = 5).text
-            val pageUrl = JSONObject(res).getJSONObject("data").optString("url")
-            Log.d("DramacoolSubTest", "Tmpfiles Page URL: $pageUrl")
-            
-            if (pageUrl.isNotBlank()) {
-                // Konversi halaman HTML download ke direct raw link tanpa JS menggunakan Jsoup parsing
-                val doc = app.get(pageUrl, headers = mapOf("User-Agent" to userAgent)).document
-                val rawLink = doc.select("a#download, a[href*='/dl/']").attr("href").ifBlank {
-                    pageUrl.replace("tmpfiles.org/", "tmpfiles.org/dl/")
+                    return@Interceptor response.newBuilder()
+                        .body(newBody)
+                        .build()
+                } catch (e: Exception) {
+                    return@Interceptor response
                 }
-                Log.d("DramacoolSubTest", "Tmpfiles Converted Raw Link: $rawLink")
-                if (rawLink.isNotBlank()) return rawLink
             }
-        } catch (e: Exception) {
-            Log.e("DramacoolSubTest", "Tmpfiles Error: ${e.message}")
+            response
+        }
+    }
+
+    // Ekstraksi Direct MyAsianTv (Sebagai fallback pencegahan jika sub tidak dienkripsi)
+    private fun extractDirectSubtitles(html: String, subtitleCallback: (SubtitleFile) -> Unit): Int {
+        var subtitleFoundCount = 0
+        val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
+        if (tracksMatch != null) {
+            val tracksHtml = tracksMatch.groupValues[1]
+            val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
+            
+            for (track in individualTracks) {
+                val trackData = track.groupValues[1]
+                val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                
+                val file = fileMatch?.groupValues?.get(1)
+                var label = labelMatch?.groupValues?.get(1)
+                if (label.isNullOrBlank()) label = "English"
+                
+                if (file != null && !file.contains(".jpg") && !file.contains(".png")) {
+                    subtitleCallback.invoke(SubtitleFile(label, fixUrlScheme(file)))
+                    subtitleFoundCount++
+                }
+            }
         }
 
-        // 5. Test Provider: Transfer.sh
-        try {
-            val res = app.put("https://transfer.sh/sub.vtt", requestBody = reqBody, timeout = 5).text.trim()
-            Log.d("DramacoolSubTest", "Transfer.sh Response: $res")
-            if (res.startsWith("http")) return res
-        } catch (e: Exception) {
-            Log.e("DramacoolSubTest", "Transfer.sh Error: ${e.message}")
+        if (subtitleFoundCount == 0) {
+            val bruteForceRegex = Regex("""["']([^"']+\.(?:vtt|srt)[^"']*)["']""")
+            val allMatches = bruteForceRegex.findAll(html).toList()
+            
+            allMatches.forEachIndexed { index, match ->
+                val fileUrl = fixUrlScheme(match.groupValues[1])
+                if (!fileUrl.contains(".jpg") && !fileUrl.contains(".png")) {
+                    val subName = if (allMatches.size > 1) "English ${index + 1}" else "English"
+                    subtitleCallback.invoke(SubtitleFile(subName, fileUrl))
+                    subtitleFoundCount++
+                }
+            }
         }
-
-        return ""
+        return subtitleFoundCount
     }
 
     private suspend fun processVidBasic(
@@ -268,6 +270,8 @@ class Dramacool : MainAPI() {
             val response = app.get(embedUrl, headers = headersMap)
             val html = response.text
 
+            extractDirectSubtitles(html, subtitleCallback)
+
             val dataVideoRegex = Regex("""data-video="([^"]+)">Standard""")
             var dataVideo = dataVideoRegex.find(html)?.groupValues?.get(1)
             
@@ -285,52 +289,34 @@ class Dramacool : MainAPI() {
                 }
 
                 val html2 = app.get(fullUrl, headers = headersMap).text
+                
+                val directFound = extractDirectSubtitles(html2, subtitleCallback)
 
-                val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
-                    it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
-                }
+                // Jika subtitle gagal ditemukan dari HTML mentah, gunakan URL terenkripsi yang diarahkan ke Interceptor
+                if (directFound == 0) {
+                    val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
+                        it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
+                    }
 
-                if (!subParam.isNullOrEmpty()) {
-                    try {
-                        val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
-                        val decryptedSubUrl = decryptVidBasic(decodedSubParam)
-                        
-                        if (decryptedSubUrl.startsWith("http")) {
-                            val encryptedVtt = app.get(decryptedSubUrl, headers = headersMap).text
-                            val decryptedVtt = decryptVidBasicSubtitle(encryptedVtt)
-
-                            var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
-                            if (cleanVtt.startsWith("WEBVTT")) {
-                                cleanVtt = cleanVtt.substring(6).trim()
-                            }
-                            val finalVtt = "WEBVTT\n\n$cleanVtt"
-
-                            if (finalVtt.isNotBlank()) {
-                                val uploadedUrl = uploadSubtitleExplicitTest(finalVtt)
-                                
-                                if (uploadedUrl.isNotBlank()) {
-                                    // Validasi akhir memastikan konten merespons dengan format WEBVTT
-                                    try {
-                                        val testCheck = app.get(uploadedUrl, timeout = 3).text
-                                        if (testCheck.contains("WEBVTT")) {
-                                            Log.i("DramacoolSubTest", "Subtitle Verified Successfully as WEBVTT!")
-                                            subtitleCallback.invoke(
-                                                SubtitleFile("English (VidBasic)", uploadedUrl)
-                                            )
-                                        } else {
-                                            Log.w("DramacoolSubTest", "Warning: Uploaded URL did not return WEBVTT content format.")
-                                        }
-                                    } catch (ex: Exception) {
-                                        // Tetap daftarkan jika validasi jaringan ketat terhalang VPN
-                                        subtitleCallback.invoke(
-                                            SubtitleFile("English (VidBasic)", uploadedUrl)
-                                        )
-                                    }
+                    if (!subParam.isNullOrEmpty()) {
+                        try {
+                            val decodedSubParam = URLDecoder.decode(subParam, "UTF-8")
+                            val decryptedSubUrl = decryptVidBasic(decodedSubParam)
+                            
+                            if (decryptedSubUrl.startsWith("http")) {
+                                // Pasang bendera unik di akhir URL agar ditangkap oleh getVideoInterceptor!
+                                val flaggedUrl = if (decryptedSubUrl.contains("?")) {
+                                    "$decryptedSubUrl&drmclmy_decrypt=true"
+                                } else {
+                                    "$decryptedSubUrl?drmclmy_decrypt=true"
                                 }
+                                subtitleCallback.invoke(
+                                    SubtitleFile("English (VidBasic)", flaggedUrl)
+                                )
                             }
+                        } catch (e: Exception) {
+                            e.printStackTrace()
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
                     }
                 }
 
@@ -602,6 +588,8 @@ class Dramacool : MainAPI() {
         val html = docRes.text
         val doc = docRes.document
 
+        extractDirectSubtitles(html, subtitleCallback)
+
         val allUrls = mutableSetOf<String>()
 
         doc.select("iframe").forEach { iframe ->
@@ -631,6 +619,8 @@ class Dramacool : MainAPI() {
             val decoded = decodeBase64IfPossible(scriptData)
             if (decoded != scriptData) scriptData = decoded
             
+            extractDirectSubtitles(scriptData, subtitleCallback)
+            
             extractVideoUrls(scriptData).forEach { url -> allUrls.add(fixUrlScheme(url)) }
             
             val jsonPattern = Regex("""(\{.*?(?:file|src|video|url)\s*:\s*"[^"]+".*?\})""")
@@ -657,6 +647,11 @@ class Dramacool : MainAPI() {
                 if (result) linkFound = true
                 continue
             }
+
+            try {
+                val iframeHtml = app.get(cleanUrl, headers = mapOf("User-Agent" to userAgent)).text
+                extractDirectSubtitles(iframeHtml, subtitleCallback)
+            } catch (e: Exception) {}
 
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
