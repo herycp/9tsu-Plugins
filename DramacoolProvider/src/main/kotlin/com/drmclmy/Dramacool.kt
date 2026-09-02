@@ -446,6 +446,40 @@ class Dramacool : MainAPI() {
         return actors.take(10)
     }
 
+    // Fungsi Penguji & Pemvalidasi Tahun MDL
+    private suspend fun findMatchingMdlTitle(candidates: List<String>, targetYear: String?): String? {
+        var fallbackSlug: String? = null
+
+        for (candidate in candidates) {
+            try {
+                val encoded = URLEncoder.encode(candidate, "UTF-8")
+                val apiUrl = "https://my-drama-list-api-ten.vercel.app/api/id/$encoded"
+                val response = app.get(apiUrl, headers = mapOf("User-Agent" to userAgent), timeout = 4)
+                if (response.code == 200) {
+                    val json = JSONObject(response.text)
+                    val mdlTitle = json.optString("title", "")
+                    val mdlAired = json.optString("aired", "")
+                    val mdlSlug = json.optString("slug", "").takeIf { it.isNotBlank() } ?: candidate
+
+                    if (fallbackSlug == null) fallbackSlug = mdlSlug
+
+                    // Verifikasi pencocokan tahun pada judul atau tanggal tayang
+                    if (!targetYear.isNullOrBlank()) {
+                        if (mdlTitle.contains(targetYear) || mdlAired.contains(targetYear)) {
+                            return mdlSlug // Cocok sempurna dengan tahun!
+                        }
+                    } else {
+                        return mdlSlug
+                    }
+                }
+            } catch (e: Exception) {
+                // Lanjut ke kandidat berikutnya
+            }
+        }
+
+        return fallbackSlug
+    }
+
     override suspend fun load(url: String): LoadResponse? = coroutineScope {
         val document = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
 
@@ -453,15 +487,31 @@ class Dramacool : MainAPI() {
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: return@coroutineScope null
 
-        // Mengambil elemen "other_name"
-        val otherNameRaw = document.selectFirst(".details .info p.other_name a")?.text()
-            ?: document.selectFirst(".details .info p.other_name")?.text()?.replace("Other name:", "", ignoreCase = true)
-        
-        // Memecah berdasarkan koma dan mengambil item pertama (Sebelum koma pertama)
-        val firstOtherName = otherNameRaw?.split(",")?.firstOrNull()?.trim()
-        
-        // Memprioritaskan firstOtherName. Jika kosong, fallback ke judul reguler tanpa embel-embel tahun.
-        val apiQueryTitle = firstOtherName?.takeIf { it.isNotBlank() } ?: title.replace(Regex("""\s*\(\d{4}\)$"""), "").trim()
+        // 1. Ekstraksi Tahun dari Judul Utama
+        val targetYear = Regex("""\((\d{4})\)""").find(title)?.groupValues?.get(1)
+        val cleanTitle = title.replace(Regex("""\s*\(\d{4}\)$"""), "").trim()
+
+        // 2. Kumpulkan Semua Nama Alternatif dari div/p other_name
+        val candidates = mutableListOf<String>()
+        val otherNameEl = document.selectFirst(".details .info p.other_name a") 
+            ?: document.selectFirst(".details .info p.other_name")
+        val otherNameText = otherNameEl?.text()?.replace("Other name:", "", ignoreCase = true)?.trim()
+
+        if (!otherNameText.isNullOrBlank()) {
+            otherNameText.split(",").forEach {
+                val candidate = it.trim()
+                if (candidate.isNotBlank() && !candidates.contains(candidate)) {
+                    candidates.add(candidate)
+                }
+            }
+        }
+
+        if (cleanTitle.isNotBlank() && !candidates.contains(cleanTitle)) {
+            candidates.add(cleanTitle)
+        }
+
+        // 3. Cari Slug MDL yang Tepat & Tervalidasi Tahunnya
+        val matchedMdlTitle = findMatchingMdlTitle(candidates, targetYear) ?: cleanTitle
 
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
@@ -474,8 +524,8 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        // Memanggil API MDL menggunakan parameter hasil ekstraksi other_name
-        val actorsDeferred = async { fetchDramaCast(apiQueryTitle) }
+        // 4. Panggil Cast dan Extras Menggunakan Matched Slug Hasil Validasi
+        val actorsDeferred = async { fetchDramaCast(matchedMdlTitle) }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -488,8 +538,7 @@ class Dramacool : MainAPI() {
                 val epMatch = episodeRegex.find(titleText)
                 val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-                // Memanggil API MDL menggunakan parameter hasil ekstraksi other_name
-                val extras = fetchEpisodeExtras(apiQueryTitle, epNum)
+                val extras = fetchEpisodeExtras(matchedMdlTitle, epNum)
 
                 val descBuilder = StringBuilder()
                 val metaData = mutableListOf<String>()
@@ -555,7 +604,6 @@ class Dramacool : MainAPI() {
         val episodes = episodesDeferred.awaitAll().filterNotNull().sortedByDescending { it.episode ?: 0 }
         val finalRecommendations = recommendationsDeferred.await()
 
-        // Menampilkan hasil menggunakan judul utamanya agar UI pengguna tetap ramah dibaca
         if (episodes.isEmpty()) {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
