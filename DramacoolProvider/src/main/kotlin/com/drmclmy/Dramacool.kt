@@ -174,9 +174,6 @@ class Dramacool : MainAPI() {
         }.joinToString("\n")
     }
 
-    // =========================================================================
-    // THE MAGIC: PENCEGATAN HTTP LANGSUNG OLEH EXOPLAYER TANPA UPLOAD
-    // =========================================================================
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor? {
         return Interceptor { chain ->
             val request = chain.request()
@@ -184,12 +181,10 @@ class Dramacool : MainAPI() {
 
             val response = chain.proceed(request)
 
-            // Jika URL adalah tautan subtitle yang kita tandai sebelumnya
             if (url.contains("drmclmy_decrypt=true")) {
                 val encryptedBody = response.body?.string() ?: return@Interceptor response
                 
                 try {
-                    // Eksekusi Dekripsi on-the-fly
                     val decryptedVtt = decryptVidBasicSubtitle(encryptedBody)
                     var cleanVtt = decryptedVtt.replace("\r\n", "\n").replace("\r", "\n").trim()
                     if (cleanVtt.startsWith("WEBVTT")) {
@@ -197,7 +192,6 @@ class Dramacool : MainAPI() {
                     }
                     val finalVtt = "WEBVTT\n\n$cleanVtt"
 
-                    // Ganti respons dari server dengan format VTT bersih dan kirim ke ExoPlayer
                     val contentType = response.body?.contentType() ?: "text/vtt".toMediaTypeOrNull()
                     val newBody = finalVtt.toResponseBody(contentType)
 
@@ -212,7 +206,6 @@ class Dramacool : MainAPI() {
         }
     }
 
-    // Ekstraksi Direct MyAsianTv (Sebagai fallback pencegahan jika sub tidak dienkripsi)
     private fun extractDirectSubtitles(html: String, subtitleCallback: (SubtitleFile) -> Unit): Int {
         var subtitleFoundCount = 0
         val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
@@ -292,7 +285,6 @@ class Dramacool : MainAPI() {
                 
                 val directFound = extractDirectSubtitles(html2, subtitleCallback)
 
-                // Jika subtitle gagal ditemukan dari HTML mentah, gunakan URL terenkripsi yang diarahkan ke Interceptor
                 if (directFound == 0) {
                     val subParam = Regex("""[\?&]sub=([^&"'>]+)""").let {
                         it.find(fullUrl)?.groupValues?.get(1) ?: it.find(embedUrl)?.groupValues?.get(1)
@@ -304,7 +296,6 @@ class Dramacool : MainAPI() {
                             val decryptedSubUrl = decryptVidBasic(decodedSubParam)
                             
                             if (decryptedSubUrl.startsWith("http")) {
-                                // Pasang bendera unik di akhir URL agar ditangkap oleh getVideoInterceptor!
                                 val flaggedUrl = if (decryptedSubUrl.contains("?")) {
                                     "$decryptedSubUrl&drmclmy_decrypt=true"
                                 } else {
@@ -462,6 +453,16 @@ class Dramacool : MainAPI() {
             ?: document.selectFirst("h1")?.text()?.trim()
             ?: return@coroutineScope null
 
+        // Mengambil elemen "other_name"
+        val otherNameRaw = document.selectFirst(".details .info p.other_name a")?.text()
+            ?: document.selectFirst(".details .info p.other_name")?.text()?.replace("Other name:", "", ignoreCase = true)
+        
+        // Memecah berdasarkan koma dan mengambil item pertama (Sebelum koma pertama)
+        val firstOtherName = otherNameRaw?.split(",")?.firstOrNull()?.trim()
+        
+        // Memprioritaskan firstOtherName. Jika kosong, fallback ke judul reguler tanpa embel-embel tahun.
+        val apiQueryTitle = firstOtherName?.takeIf { it.isNotBlank() } ?: title.replace(Regex("""\s*\(\d{4}\)$"""), "").trim()
+
         val posterUrl = document.selectFirst(".details .img img")?.attr("src")?.let { fixUrl(it) }
             ?: document.selectFirst("img.poster")?.attr("src")?.let { fixUrl(it) }
 
@@ -473,7 +474,8 @@ class Dramacool : MainAPI() {
             document.select(".details .info").first()?.text()?.substringAfter("Description:")?.trim()
         }
 
-        val actorsDeferred = async { fetchDramaCast(title) }
+        // Memanggil API MDL menggunakan parameter hasil ekstraksi other_name
+        val actorsDeferred = async { fetchDramaCast(apiQueryTitle) }
 
         val episodeItems = document.select("ul.list-episode-item-2.all-episode li a")
         val episodeRegex = Regex("""(?i)(?:Episode|EP|E)\s*(\d+(?:\.\d+)?)""")
@@ -486,7 +488,8 @@ class Dramacool : MainAPI() {
                 val epMatch = episodeRegex.find(titleText)
                 val epNum = epMatch?.groupValues?.get(1)?.toIntOrNull() ?: 1
 
-                val extras = fetchEpisodeExtras(title, epNum)
+                // Memanggil API MDL menggunakan parameter hasil ekstraksi other_name
+                val extras = fetchEpisodeExtras(apiQueryTitle, epNum)
 
                 val descBuilder = StringBuilder()
                 val metaData = mutableListOf<String>()
@@ -552,6 +555,7 @@ class Dramacool : MainAPI() {
         val episodes = episodesDeferred.awaitAll().filterNotNull().sortedByDescending { it.episode ?: 0 }
         val finalRecommendations = recommendationsDeferred.await()
 
+        // Menampilkan hasil menggunakan judul utamanya agar UI pengguna tetap ramah dibaca
         if (episodes.isEmpty()) {
             newMovieLoadResponse(title, url, TvType.Movie, url) {
                 this.posterUrl = posterUrl
