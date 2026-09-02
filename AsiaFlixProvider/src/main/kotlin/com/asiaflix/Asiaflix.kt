@@ -85,6 +85,53 @@ class Asiaflix : MainAPI() {
         }
     }
 
+    // ==================== HELPER EKSTRAKSI SUBTITLE PAKSA (BRUTE FORCE) ====================
+    private fun extractSubtitlesFromHtml(html: String, subtitleCallback: (SubtitleFile) -> Unit): Int {
+        var subtitleFoundCount = 0
+
+        // 1. Ekstraksi via penguraian array 'tracks' JS
+        val tracksMatch = Regex("""tracks\s*:\s*\[(.*?)\]""", RegexOption.DOT_MATCHES_ALL).find(html)
+        if (tracksMatch != null) {
+            val tracksHtml = tracksMatch.groupValues[1]
+            val individualTracks = Regex("""\{(.*?)\}""").findAll(tracksHtml)
+            
+            for (track in individualTracks) {
+                val trackData = track.groupValues[1]
+                val fileMatch = Regex("""["']?file["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                val labelMatch = Regex("""["']?label["']?\s*:\s*["']([^"']+)["']""").find(trackData)
+                
+                val file = fileMatch?.groupValues?.get(1)
+                var label = labelMatch?.groupValues?.get(1)
+                
+                if (label.isNullOrBlank()) label = "English"
+                
+                if (!file.isNullOrBlank() && !file.contains(".jpg") && !file.contains(".png")) {
+                    val fixedUrl = if (file.startsWith("//")) "https:$file" else file
+                    subtitleCallback.invoke(SubtitleFile(label, fixedUrl))
+                    subtitleFoundCount++
+                }
+            }
+        }
+
+        // 2. Ekstraksi Brute Force (pencarian langsung .vtt / .srt dalam HTML)
+        if (subtitleFoundCount == 0) {
+            val bruteForceRegex = Regex("""["']([^"']+\.(?:vtt|srt)[^"']*)["']""")
+            val allMatches = bruteForceRegex.findAll(html).toList()
+            
+            allMatches.forEachIndexed { index, match ->
+                val rawUrl = match.groupValues[1]
+                if (!rawUrl.contains(".jpg") && !rawUrl.contains(".png")) {
+                    val fixedUrl = if (rawUrl.startsWith("//")) "https:$rawUrl" else rawUrl
+                    val subName = if (allMatches.size > 1) "English ${index + 1}" else "English"
+                    subtitleCallback.invoke(SubtitleFile(subName, fixedUrl))
+                    subtitleFoundCount++
+                }
+            }
+        }
+
+        return subtitleFoundCount
+    }
+
     private fun extractEpNum(recentEp: Any?, episodes: Any?, status: String? = null): Int? {
         recentEp?.toString()?.let { str ->
             Regex("""\d+""").find(str)?.value?.toIntOrNull()?.let { return it }
@@ -360,7 +407,7 @@ class Asiaflix : MainAPI() {
                         if (processVidBasic(streamUrl, subtitleCallback, callback)) anySuccess.set(true)
                     }
                     if (streamUrl.contains("vidmoly", ignoreCase = true)) {
-                        if (extractVidMoly(streamUrl, callback)) anySuccess.set(true)
+                        if (extractVidMoly(streamUrl, subtitleCallback, callback)) anySuccess.set(true)
                     }
                     if (loadExtractor(streamUrl, subtitleCallback, callback)) anySuccess.set(true)
                 })
@@ -460,11 +507,19 @@ class Asiaflix : MainAPI() {
         return anySuccess.get()
     }
 
-    private suspend fun extractVidMoly(url: String, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun extractVidMoly(
+        url: String, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         return try {
             val doc = app.get(url, headers = mapOf("User-Agent" to userAgent)).document
-            var videoUrl: String? = null
+            val pageHtml = doc.html()
+            
+            // Terapkan pencarian subtitle paksa dari HTML player VidMoly
+            extractSubtitlesFromHtml(pageHtml, subtitleCallback)
 
+            var videoUrl: String? = null
             for (script in doc.select("script")) {
                 val html = script.html()
                 val match = Regex("""(?:file|src|hls|videoUrl|url)"\s*:\s*"([^"]+\.m3u8[^"]*)"""").find(html)
@@ -481,16 +536,28 @@ class Asiaflix : MainAPI() {
         } catch (e: Exception) { false }
     }
 
-    private suspend fun processVidBasic(embedUrl: String, subtitleCallback: (SubtitleFile) -> Unit, callback: (ExtractorLink) -> Unit): Boolean {
+    private suspend fun processVidBasic(
+        embedUrl: String, 
+        subtitleCallback: (SubtitleFile) -> Unit, 
+        callback: (ExtractorLink) -> Unit
+    ): Boolean {
         return try {
             val host = java.net.URL(embedUrl).host
             val headersMap = mapOf("User-Agent" to userAgent, "Referer" to "https://$host/", "Origin" to "https://$host")
             val html = app.get(embedUrl, headers = headersMap).text
+            
+            // Pindai subtitle mentah dari HTML utama VidBasic jika ada
+            extractSubtitlesFromHtml(html, subtitleCallback)
+
             val dataVideo = Regex("""data-video="([^"]+)">Standard""").find(html)?.groupValues?.get(1)
 
             if (!dataVideo.isNullOrEmpty()) {
                 val fullUrl = if (dataVideo.startsWith("http")) dataVideo else "https://$host$dataVideo"
                 val html2 = app.get(fullUrl, headers = headersMap).text
+                
+                // Pindai subtitle mentah dari HTML sekunder VidBasic
+                extractSubtitlesFromHtml(html2, subtitleCallback)
+
                 val encrypted = Regex("""data-name="crypto"\s*data-value="([^"]+)"""").find(html2)?.groupValues?.get(1)
 
                 if (!encrypted.isNullOrEmpty()) {
@@ -505,6 +572,7 @@ class Asiaflix : MainAPI() {
                             type = if (isM3u8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                         ) { this.referer = fullUrl; this.headers = headersMap })
 
+                        // Ekstraksi subtitle terenkripsi bawaan VidBasic
                         val subParam = Regex("""[?&]sub=([^&]+)""").find(fullUrl)?.groupValues?.get(1)
                         if (!subParam.isNullOrEmpty()) {
                             try {
