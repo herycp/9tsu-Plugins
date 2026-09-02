@@ -277,7 +277,7 @@ class Asiaflix : MainAPI() {
         val asiaflixCountry = response.country?.lowercase() ?: ""
 
         // ==================================================================
-        // 1. PEMERIKSAAN & VALIDASI TMDB (Berdasarkan Tahun & Negara)
+        // 1. PEMERIKSAAN & VALIDASI TMDB
         // ==================================================================
         if (tmdbId != null && tmdbId > 0) {
             val tmdbHeaders = mapOf("Authorization" to "Bearer $tmdbToken")
@@ -336,7 +336,7 @@ class Asiaflix : MainAPI() {
                             }
                         }
                     } else {
-                        Log.d("AsiaflixDebug", "TMDB Tidak Valid. Mis-match Tahun/Negara. (TMDB Yr: $tmdbYear, Asiaflix Yr: $asiaflixYear)")
+                        Log.d("AsiaflixDebug", "TMDB Tidak Valid. (TMDB Yr: $tmdbYear, Asiaflix Yr: $asiaflixYear)")
                     }
                 }
             } catch (e: Exception) {
@@ -345,16 +345,16 @@ class Asiaflix : MainAPI() {
         }
 
         // ==================================================================
-        // 2. FALLBACK KE MYDRAMALIST (MDL) API (Jika TMDB Tidak Ada / Invalid)
+        // 2. FALLBACK KE MYDRAMALIST (MDL) API (Jika TMDB Tidak Valid)
         // ==================================================================
         if (!isTmdbValid) {
             Log.d("AsiaflixDebug", "Mulai Fallback ke MyDramaList (MDL) API...")
             
             val candidates = mutableListOf<String>()
-            response.name?.let { candidates.add(it) }
-            
-            val altNamesStr = response.altName ?: response.otherName
-            altNamesStr?.split(",")?.forEach { candidates.add(it.trim()) }
+            // 2A. Memasukkan judul utama dan altNames sebagai kandidat
+            response.name?.let { candidates.add(it.trim()) }
+            response.altNames?.split(",")?.forEach { candidates.add(it.trim()) }
+            response.otherName?.split(",")?.forEach { candidates.add(it.trim()) }
 
             for (candidate in candidates.distinct()) {
                 if (candidate.isBlank()) continue
@@ -367,15 +367,16 @@ class Asiaflix : MainAPI() {
                     var mdlText = try { app.get(mdlUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
                     var mdlJson = tryParseJson<MdlDetail>(mdlText)
 
-                    if (mdlJson == null || (mdlJson.title == null && mdlJson.data == null)) {
+                    // 2B. Pemeriksaan respons API
+                    if (mdlJson == null || mdlJson.title == null) {
                         mdlUrl = "$mdlBaseUrl/api/id/$encodedParam"
                         mdlText = try { app.get(mdlUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
                         mdlJson = tryParseJson<MdlDetail>(mdlText)
                     }
 
-                    val mdlTitle = mdlJson?.title ?: mdlJson?.data?.title ?: ""
+                    val mdlTitle = mdlJson?.title ?: ""
                     
-                    // C. Cocokkan Tahun dari parameter "title" (Pola: Judul (Tahun))
+                    // 2C. Cocokkan Tahun dari properti "title" (Pola: Judul (Tahun))
                     val mdlYear = Regex("""\((19|20)\d{2}\)""").find(mdlTitle)?.groupValues?.get(1)
                         ?: Regex("""\b(19|20)\d{2}\b""").find(mdlTitle)?.value
 
@@ -386,34 +387,37 @@ class Asiaflix : MainAPI() {
                         
                         val activeParam = if (mdlUrl.contains(slug)) slug else encodedParam
 
-                        // D1. Ambil Data Episode: /api/id/{param}/episodes/all
+                        // 2D-1. Ambil Data Episode
                         val epUrl = "$mdlBaseUrl/api/id/$activeParam/episodes/all"
                         val epText = try { app.get(epUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
                         val epData = tryParseJson<MdlEpisodeResponse>(epText)
-                        val mdlEpList = epData?.episodes ?: epData?.data
+                        val mdlEpList = epData?.episodes
 
-                        // D2. Ambil Data Pemain (10 Teratas): /api/id/{param}/cast
+                        // 2D-2. Ambil Data Pemain 
                         val castUrl = "$mdlBaseUrl/api/id/$activeParam/cast"
                         val castText = try { app.get(castUrl, headers = headers, timeout = 10).text } catch (e: Exception) { "" }
                         val castData = tryParseJson<MdlCastResponse>(castText)
-                        val mdlCastList = castData?.casts ?: castData?.data
+                        
+                        // Menyatukan Map Kategori Cast (Main Role & Support Role) ke dalam satu List
+                        val flatCastList = mutableListOf<MdlCast>()
+                        castData?.cast?.get("Main Role")?.let { flatCastList.addAll(it) }
+                        castData?.cast?.get("Support Role")?.let { flatCastList.addAll(it) }
 
-                        actorsList = mdlCastList?.take(10)?.mapNotNull { c ->
+                        // Ambil 10 teratas
+                        actorsList = flatCastList.take(10).mapNotNull { c ->
                             val cName = c.name ?: return@mapNotNull null
-                            val img = c.image ?: c.profileImage
-                            val role = c.character ?: c.role
-                            ActorData(actor = Actor(cName, img), roleString = role)
+                            ActorData(actor = Actor(cName, c.image), roleString = c.character)
                         }
 
-                        episodesMetaMap = mdlEpList?.associateBy { it.episode ?: it.number ?: -1 }?.mapValues {
+                        episodesMetaMap = mdlEpList?.associateBy { it.episodeNumber?.toIntOrNull() ?: -1 }?.mapValues {
                             EpisodeMeta(
-                                title = it.value.title ?: it.value.name,
-                                poster = it.value.image ?: it.value.thumbnail,
-                                description = it.value.overview ?: it.value.description
+                                title = it.value.title,
+                                poster = it.value.image,
+                                description = it.value.description
                             )
                         }
 
-                        break // Hentikan pencarian kandidat jika cocok
+                        break // Hentikan pencarian kandidat karena sudah cocok
                     } else {
                         Log.d("AsiaflixDebug", "MDL Candidate '$candidate' tahun tidak cocok (MDL: $mdlYear vs Asiaflix: $asiaflixYear)")
                     }
@@ -749,7 +753,7 @@ class Asiaflix : MainAPI() {
     data class AsiaflixDetail(
         @JsonProperty("_id") val id: String? = null, 
         @JsonProperty("name") val name: String? = null, 
-        @JsonProperty("altName") val altName: String? = null,
+        @JsonProperty("altNames") val altNames: String? = null,
         @JsonProperty("otherName") val otherName: String? = null,
         @JsonProperty("description") val description: String? = null, 
         @JsonProperty("image") val image: String? = null, 
@@ -815,35 +819,26 @@ class Asiaflix : MainAPI() {
 
     // MyDramaList (MDL)
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MdlDetail(@JsonProperty("title") val title: String? = null, @JsonProperty("data") val data: MdlData? = null)
+    data class MdlDetail(@JsonProperty("title") val title: String? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MdlData(@JsonProperty("title") val title: String? = null)
-    
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MdlCastResponse(@JsonProperty("casts") val casts: List<MdlCast>? = null, @JsonProperty("data") val data: List<MdlCast>? = null)
+    data class MdlCastResponse(@JsonProperty("cast") val cast: Map<String, List<MdlCast>>? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class MdlCast(
         @JsonProperty("name") val name: String? = null,
         @JsonProperty("character") val character: String? = null,
-        @JsonProperty("role") val role: String? = null,
-        @JsonProperty("image") val image: String? = null,
-        @JsonProperty("profile_image") val profileImage: String? = null
+        @JsonProperty("image") val image: String? = null
     )
     
     @JsonIgnoreProperties(ignoreUnknown = true)
-    data class MdlEpisodeResponse(@JsonProperty("episodes") val episodes: List<MdlEpisode>? = null, @JsonProperty("data") val data: List<MdlEpisode>? = null)
+    data class MdlEpisodeResponse(@JsonProperty("episodes") val episodes: List<MdlEpisode>? = null)
     
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class MdlEpisode(
-        @JsonProperty("episode") val episode: Int? = null,
-        @JsonProperty("number") val number: Int? = null,
+        @JsonProperty("episode_number") val episodeNumber: String? = null,
         @JsonProperty("title") val title: String? = null,
-        @JsonProperty("name") val name: String? = null,
-        @JsonProperty("overview") val overview: String? = null,
         @JsonProperty("description") val description: String? = null,
-        @JsonProperty("image") val image: String? = null,
-        @JsonProperty("thumbnail") val thumbnail: String? = null
+        @JsonProperty("image") val image: String? = null
     )
 }
