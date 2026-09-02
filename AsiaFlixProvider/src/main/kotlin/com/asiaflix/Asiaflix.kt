@@ -358,7 +358,7 @@ class Asiaflix : MainAPI() {
             val candidates = mutableListOf<String>()
             response.name?.let { candidates.add(it.trim()) }
             
-            // Helper parsing aman untuk altNames (bisa berupa List, String, dll.)
+            // Helper parsing aman untuk altNames
             fun addCandidate(data: Any?) {
                 when (data) {
                     is String -> data.split(",").forEach { if (it.isNotBlank()) candidates.add(it.trim()) }
@@ -367,7 +367,6 @@ class Asiaflix : MainAPI() {
             }
             
             addCandidate(response.altNames)
-            addCandidate(response.otherName)
 
             val uniqueCandidates = candidates.distinct().filter { it.isNotBlank() }.take(3)
 
@@ -463,7 +462,6 @@ class Asiaflix : MainAPI() {
             }
         } ?: emptyList()
 
-        // Mapping genre dari list objek Asiaflix ("genre")
         val genreList = when (val g = response.genre) {
             is List<*> -> g.mapNotNull { if (it is Map<*, *>) it["name"]?.toString() else it?.toString() }
             is String -> listOf(g)
