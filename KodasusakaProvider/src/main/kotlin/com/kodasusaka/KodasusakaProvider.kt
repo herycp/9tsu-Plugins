@@ -3,9 +3,8 @@ package com.kodasusaka
 import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.LoadResponse.Companion.addTrailer
 
-class KodasusakaProvider : MainPageProvider() {
+class KodasusakaProvider : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
     override var name = "Kodasusaka"
     override var hasMainPage = true
@@ -24,7 +23,7 @@ class KodasusakaProvider : MainPageProvider() {
         "/type/movie" to "Film Terbaru"
     )
 
-    override async fun getMainPage(
+    override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
@@ -45,7 +44,7 @@ class KodasusakaProvider : MainPageProvider() {
         )
     }
 
-    override async fun search(query: String): List<SearchResponse> {
+    override suspend fun search(query: String): List<SearchResponse> {
         val url = "$mainUrl/search?q=$query&page=1"
         val doc = app.get(url).document
 
@@ -54,7 +53,7 @@ class KodasusakaProvider : MainPageProvider() {
         }
     }
 
-    override async fun load(url: String): LoadResponse? {
+    override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1")?.text()?.trim() ?: return null
@@ -65,7 +64,6 @@ class KodasusakaProvider : MainPageProvider() {
         val tags = doc.select("a[href*=/genre/]").map { it.text().trim() }
         val year = doc.selectFirst("span:contains(20)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
 
-        // Deteksi apakah ini TV Series atau Movie
         val episodeElements = doc.select("a[href*=/episode/], div.episodes-list a")
         val isTvSeries = episodeElements.isNotEmpty()
 
@@ -98,7 +96,7 @@ class KodasusakaProvider : MainPageProvider() {
         }
     }
 
-    override async fun loadLinks(
+    override suspend fun loadLinks(
         data: String,
         isCdnReDirect: Boolean,
         referer: String?,
@@ -107,7 +105,6 @@ class KodasusakaProvider : MainPageProvider() {
     ): Boolean {
         val doc = app.get(data).document
 
-        // Mengambil iframe atau video player embed URL
         val iframeUrl = doc.selectFirst("iframe")?.attr("src") 
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
 
