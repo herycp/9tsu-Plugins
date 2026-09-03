@@ -40,7 +40,6 @@ class JPFilms : MainAPI() {
         val document = app.get(url).document
         val home = ArrayList<SearchResponse>()
         
-        // Memutus error JSpecify dengan tidak menggunakan mapNotNull
         val elements = document.select("article.thumb.grid-item")
         for (element in elements) {
             val title = element.selectFirst(".entry-title")?.text() ?: continue
@@ -92,7 +91,7 @@ class JPFilms : MainAPI() {
         return newSearchResponseList(searchResults, hasNext)
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query).list
+    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
