@@ -11,6 +11,7 @@ import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
 import org.json.JSONArray
 import org.jsoup.Jsoup
 
+@Suppress("INACCESSIBLE_TYPE") // Hindari error anotasi JSpecify
 class JPFilms : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
     override var name = "JPFilms"
@@ -52,7 +53,6 @@ class JPFilms : MainAPI() {
         } ?: ""
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
-            // Hindari takeIf, gunakan if eksplisit
             this.posterUrl = if (poster.isNotEmpty()) poster else null
         }
     }
