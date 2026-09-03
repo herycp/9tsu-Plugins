@@ -14,7 +14,6 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
-    // 1. Perbaikan link halaman depan
     override val mainPage = mainPageOf(
         "/top/tmdb" to "Top TMDB",
         "/top/imdb" to "Top IMDB",
@@ -31,7 +30,6 @@ class KodasusakaProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Menangani pagination (menambahkan ?page= atau &page= dengan aman)
         val url = if (request.data.contains("?")) {
             "$mainUrl${request.data}&page=$page"
         } else {
@@ -104,7 +102,6 @@ class KodasusakaProvider : MainAPI() {
                     this.episode = epNum
                 }
             }.ifEmpty {
-                // Fallback: Jika episode tidak terdeteksi di DOM tapi sistem membaca sebagai series, panggil halaman pemutar utama
                 listOf(
                     newEpisode(watchUrl) {
                         this.name = "Episode 1"
@@ -115,37 +112,34 @@ class KodasusakaProvider : MainAPI() {
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
-                this.backgroundPosterUrl = background // (A) Dimasukkan di sini
-                this.plot = description // (C)
-                this.tags = tags // (E)
+                this.backgroundPosterUrl = background
+                this.plot = description
+                this.tags = tags
                 this.year = year
-                addTrailer(trailerUrl) // (B)
-                addActors(actors) // (D)
+                this.trailerUrl = trailerUrl
+                this.actors = actors.map { ActorData(Actor(it)) }
             }
         } else {
-            // G. Jenis Movie: link play (watchUrl) langsung menuju halaman player (hanya satu episode)
             newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
                 this.posterUrl = poster
-                this.backgroundPosterUrl = background // (A)
-                this.plot = description // (C)
-                this.tags = tags // (E)
+                this.backgroundPosterUrl = background
+                this.plot = description
+                this.tags = tags
                 this.year = year
-                addTrailer(trailerUrl) // (B)
-                addActors(actors) // (D)
+                this.trailerUrl = trailerUrl
+                this.actors = actors.map { ActorData(Actor(it)) }
             }
         }
     }
 
     override suspend fun loadLinks(
-        data: String, // 'data' berisi 'watchUrl' yang dilempar dari LoadResponse
+        data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Melakukan request ke halaman player (URL dari Watch Now)
         val doc = app.get(data).document
 
-        // Mengambil link Iframe dari halaman player tersebut
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
 
