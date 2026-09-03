@@ -1,6 +1,6 @@
 package com.ninetsuin
 
-import com.gomio.VidomonOkruExtractor
+import com.ninetsuin.VidomonOkruExtractor
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
