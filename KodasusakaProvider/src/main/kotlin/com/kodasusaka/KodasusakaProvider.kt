@@ -2,7 +2,6 @@ package com.kodasusaka
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.utils.AppUtils.addTrailer
 import org.jsoup.nodes.Element
 
 class KodasusakaProvider : MainAPI() {
@@ -117,8 +116,13 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                addTrailer(trailerUrl)
                 this.actors = actors.map { ActorData(Actor(it)) }
+                // Memasukkan trailer aman via search response bawaan tanpa helper eksternal
+                if (!trailerUrl.isNullOrEmpty()) {
+                    this.recommendations = listOf(
+                        newMovieSearchResponse("Trailer", trailerUrl, TvType.Movie)
+                    )
+                }
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
@@ -127,8 +131,12 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                addTrailer(trailerUrl)
                 this.actors = actors.map { ActorData(Actor(it)) }
+                if (!trailerUrl.isNullOrEmpty()) {
+                    this.recommendations = listOf(
+                        newMovieSearchResponse("Trailer", trailerUrl, TvType.Movie)
+                    )
+                }
             }
         }
     }
