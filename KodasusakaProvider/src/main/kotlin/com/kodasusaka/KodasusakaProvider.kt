@@ -15,7 +15,6 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
-    // Menyisakan 5 menu halaman depan sesuai permintaan
     override val mainPage = mainPageOf(
         "/top/views" to "Top Views",
         "/top/tmdb" to "Top TMDB",
@@ -150,15 +149,14 @@ class KodasusakaProvider : MainAPI() {
                 val fileUrl = src.file
                 if (!fileUrl.isNullOrEmpty()) {
                     callback.invoke(
-                        newExtractorLink(
+                        ExtractorLink(
                             source = name,
                             name = name,
-                            url = fileUrl
-                        ) {
-                            this.referer = mainUrl
-                            this.quality = Qualities.Unknown.value
-                            this.isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
-                        }
+                            url = fileUrl,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            type = if (fileUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                        )
                     )
                 }
             }
