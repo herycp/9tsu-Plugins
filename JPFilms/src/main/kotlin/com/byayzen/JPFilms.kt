@@ -44,13 +44,12 @@ class JPFilms : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = true)
     }
 
-    // Perbaikan: beri tipe eksplisit String? pada variabel poster
+    // Fungsi untuk mengambil URL poster dengan penanganan null sendiri (tanpa fixUrlNull)
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst(".entry-title")?.text() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
         val poster: String? = this.selectFirst("img")?.let { img ->
-            val url = img.attr("data-src").ifEmpty { img.attr("src") }
-            fixUrlNull(url)
+            img.attr("data-src").ifEmpty { img.attr("src") }.takeIf { it.isNotEmpty() }
         }
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
@@ -83,13 +82,13 @@ class JPFilms : MainAPI() {
             ?.replace("Full HD", "", ignoreCase = true)
             ?.trim() ?: return null
 
-        // Perbaikan: beri tipe eksplisit String? pada posterraw dan poster
-        val posterraw: String? = document.selectFirst("img.movie-thumb")?.let { 
-            it.attr("data-src").ifEmpty { it.attr("src") } 
-        } ?: document.selectFirst(".movie-poster img")?.let { 
-            it.attr("data-src").ifEmpty { it.attr("src") } 
+        // Mengambil poster tanpa fixUrlNull
+        val posterraw: String? = document.selectFirst("img.movie-thumb")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }.takeIf { it.isNotEmpty() }
+        } ?: document.selectFirst(".movie-poster img")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }.takeIf { it.isNotEmpty() }
         }
-        val poster: String? = fixUrlNull(posterraw)
+        val poster: String? = posterraw // langsung assign, tanpa fixUrlNull
 
         val country = document.select("p.actors:contains(Country:) a").map { it.text() }
         val tags = document.select(".category a").map { it.text() } + country
