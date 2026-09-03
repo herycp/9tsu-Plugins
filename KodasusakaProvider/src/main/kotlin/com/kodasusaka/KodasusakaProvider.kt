@@ -15,12 +15,13 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
+    // Menyisakan 5 menu halaman depan sesuai permintaan
     override val mainPage = mainPageOf(
+        "/top/views" to "Top Views",
         "/top/tmdb" to "Top TMDB",
         "/top/imdb" to "Top IMDB",
-        "/top/views" to "Top Views",
-        "/movies?sortby=newest" to "Movies - Newest",
-        "/tv-series?sortby=newest" to "TV Series - Newest"
+        "/movies?sortby=newest" to "Movie Newest",
+        "/tv-series?sortby=newest" to "TV Series Newest"
     )
 
     override suspend fun getMainPage(
@@ -152,11 +153,11 @@ class KodasusakaProvider : MainAPI() {
                         newExtractorLink(
                             source = name,
                             name = name,
-                            url = fileUrl,
-                            referer = mainUrl,
-                            quality = Qualities.Unknown.value
+                            url = fileUrl
                         ) {
-                            isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
+                            this.referer = mainUrl
+                            this.quality = Qualities.Unknown.value
+                            this.isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
                         }
                     )
                 }
