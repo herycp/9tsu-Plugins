@@ -2,6 +2,7 @@ package com.kodasusaka
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.addTrailer
 import org.jsoup.nodes.Element
 
 class KodasusakaProvider : MainAPI() {
@@ -116,7 +117,7 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                this.trailer = trailerUrl
+                addTrailer(trailerUrl)
                 this.actors = actors.map { ActorData(Actor(it)) }
             }
         } else {
@@ -126,7 +127,7 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                this.trailer = trailerUrl
+                addTrailer(trailerUrl)
                 this.actors = actors.map { ActorData(Actor(it)) }
             }
         }
