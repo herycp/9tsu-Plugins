@@ -116,7 +116,7 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                this.trailerUrl = trailerUrl
+                this.trailer = trailerUrl
                 this.actors = actors.map { ActorData(Actor(it)) }
             }
         } else {
@@ -126,7 +126,7 @@ class KodasusakaProvider : MainAPI() {
                 this.plot = description
                 this.tags = tags
                 this.year = year
-                this.trailerUrl = trailerUrl
+                this.trailer = trailerUrl
                 this.actors = actors.map { ActorData(Actor(it)) }
             }
         }
