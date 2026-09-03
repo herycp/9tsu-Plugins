@@ -1,6 +1,7 @@
 package com.byayzen
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.api.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
@@ -18,6 +19,8 @@ class JPFilms : MainAPI() {
     override var lang = "en"
     override val hasQuickSearch = false
     override val supportedTypes = setOf(TvType.AsianDrama)
+
+    private val tag = "JPFilmsLog"
 
     override val mainPage = mainPageOf(
         "$mainUrl/movies?sortby=newest" to "Movies - Newest",
@@ -37,35 +40,62 @@ class JPFilms : MainAPI() {
             if (query.isNotEmpty()) "$base/page/$page/?$query" else "$base/page/$page/"
         }
         
-        val document = app.get(url).document
-        val home = ArrayList<SearchResponse>()
-        
+        Log.d(tag, "=== getMainPage Started ===")
+        Log.d(tag, "Section: ${request.name} | Page: $page | Request URL: $url")
+
+        val res = try {
+            app.get(url)
+        } catch (e: Exception) {
+            Log.e(tag, "Network request failed for URL: $url", e)
+            return newHomePageResponse(request.name, emptyList(), hasNext = false)
+        }
+
+        Log.d(tag, "Response Status: ${res.code} | Final URL: ${res.url}")
+
+        val document = res.document
         val elements = document.select("article.thumb.grid-item")
-        for (element in elements) {
-            val title = element.selectFirst(".entry-title")?.text() ?: continue
-            val href = element.selectFirst("a")?.attr("href") ?: continue
+        Log.d(tag, "Found ${elements.size} elements using selector 'article.thumb.grid-item'")
+
+        val home = ArrayList<SearchResponse>()
+        for ((index, element) in elements.withIndex()) {
+            val title = element.selectFirst(".entry-title")?.text()
+            val href = element.selectFirst("a")?.attr("href")
+            
+            if (title.isNullOrEmpty() || href.isNullOrEmpty()) {
+                Log.w(tag, "Item #$index SKIPPED: title='$title', href='$href'")
+                continue
+            }
             
             var poster = element.selectFirst("img")?.attr("data-src")
             if (poster.isNullOrEmpty()) {
                 poster = element.selectFirst("img")?.attr("src")
             }
 
+            Log.d(tag, "Item #$index OK: Title='$title' | Poster='$poster'")
             home.add(newMovieSearchResponse(title, href, TvType.Movie) {
                 this.posterUrl = poster
             })
         }
 
-        return newHomePageResponse(request.name, home, hasNext = true)
+        Log.d(tag, "Total items successfully loaded for '${request.name}': ${home.size}")
+        Log.d(tag, "=== getMainPage Finished ===")
+
+        return newHomePageResponse(request.name, home, hasNext = home.isNotEmpty())
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val url = if (page <= 1) "$mainUrl/search/$query" else "$mainUrl/search/$query/page/$page"
-        val document = app.get(url).document
+        Log.d(tag, "=== search Started ===")
+        Log.d(tag, "Query: '$query' | Search URL: $url")
+
+        val res = app.get(url)
+        val document = res.document
         
         val searchResults = ArrayList<SearchResponse>()
         val elements = document.select("article.thumb.grid-item")
+        Log.d(tag, "Search elements found: ${elements.size}")
         
-        for (element in elements) {
+        for ((index, element) in elements.withIndex()) {
             val title = element.selectFirst(".entry-title")?.text() ?: continue
             val href = element.selectFirst("a")?.attr("href") ?: continue
             
@@ -88,18 +118,27 @@ class JPFilms : MainAPI() {
             }
         }
 
+        Log.d(tag, "Search results parsed: ${searchResults.size} | hasNext: $hasNext")
         return newSearchResponseList(searchResults, hasNext)
     }
 
     override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
 
     override suspend fun load(url: String): LoadResponse? {
+        Log.d(tag, "=== load Started ===")
+        Log.d(tag, "Loading details from URL: $url")
+
         val document = app.get(url).document
 
         val title = document.selectFirst("h1.entry-title")?.text()
             ?.replace(Regex("\\s*\\(\\d{4}\\)$"), "")
             ?.replace("Full HD", "", ignoreCase = true)
-            ?.trim() ?: return null
+            ?.trim()
+
+        if (title.isNullOrEmpty()) {
+            Log.e(tag, "Failed to extract title from $url")
+            return null
+        }
 
         var poster = document.selectFirst("img.movie-thumb")?.attr("data-src")
         if (poster.isNullOrEmpty()) poster = document.selectFirst("img.movie-thumb")?.attr("src")
@@ -107,8 +146,8 @@ class JPFilms : MainAPI() {
         if (poster.isNullOrEmpty()) poster = document.selectFirst(".movie-poster img")?.attr("src")
 
         val tags = ArrayList<String>()
-        for (tag in document.select(".category a")) {
-            tags.add(tag.text())
+        for (tagEl in document.select(".category a")) {
+            tags.add(tagEl.text())
         }
         for (country in document.select("p.actors:contains(Country:) a")) {
             tags.add(country.text())
@@ -131,7 +170,6 @@ class JPFilms : MainAPI() {
         val year = document.selectFirst("p.released a[href*='release']")?.text()?.toIntOrNull()
 
         val allEpisodes = ArrayList<Episode>()
-        
         val scripts = document.select("script")
         var scriptData: String? = null
         for (script in scripts) {
@@ -143,6 +181,7 @@ class JPFilms : MainAPI() {
 
         if (scriptData != null) {
             val jsonStr = scriptData.substringAfter("var jsonEpisodes = ").substringBefore(";</script>").trim().removeSuffix(";")
+            Log.d(tag, "Found jsonEpisodes raw: ${jsonStr.take(100)}...")
             try {
                 val parsedEpisodes = AppUtils.parseJson<List<List<JpEpisode>>>(jsonStr)
                 for (innerList in parsedEpisodes) {
@@ -159,9 +198,13 @@ class JPFilms : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                // Silently fallback if JSON malformed
+                Log.e(tag, "Error parsing jsonEpisodes", e)
             }
+        } else {
+            Log.w(tag, "No 'var jsonEpisodes' script tag found")
         }
+
+        Log.d(tag, "Total episodes extracted: ${allEpisodes.size}")
 
         val recommendations = ArrayList<SearchResponse>()
         val relatedElements = document.select(".related-film article.thumb")
@@ -209,6 +252,9 @@ class JPFilms : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d(tag, "=== loadLinks Started ===")
+        Log.d(tag, "Episode URL / Data: $data")
+
         val document = app.get(data).document
         val nonce = document.selectFirst("body")?.attr("data-nonce").orEmpty()
         
@@ -219,13 +265,18 @@ class JPFilms : MainAPI() {
                 break
             }
         }
-        if (scriptData == null) return false
+        
+        if (scriptData == null) {
+            Log.e(tag, "Script 'var halim_cfg' not found on page")
+            return false
+        }
 
         val postId = Regex(""""post_id"\s*:\s*(\d+)""").find(scriptData)?.groupValues?.get(1) ?: return false
         val episodeSlug = Regex(""""episode_slug"\s*:\s*"([^"]+)"""").find(scriptData)?.groupValues?.get(1) ?: "server-1"
         val serverId = Regex(""""server"\s*:\s*"([^"]+)"""").find(scriptData)?.groupValues?.get(1) ?: "1"
 
         val ajaxUrl = "$mainUrl/wp-content/themes/halimmovies/player.php?episode_slug=$episodeSlug&server_id=$serverId&subsv_id=&post_id=$postId&nonce=$nonce&custom_var="
+        Log.d(tag, "Ajax Request URL: $ajaxUrl")
 
         val playerResponse = app.get(
             ajaxUrl,
@@ -235,8 +286,14 @@ class JPFilms : MainAPI() {
             )
         ).text
 
-        val rawStreamUrl = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerResponse)?.groupValues?.get(1) ?: return false
+        val rawStreamUrl = Regex(""""file"\s*:\s*"([^"]+)"""").find(playerResponse)?.groupValues?.get(1)
+        if (rawStreamUrl == null) {
+            Log.e(tag, "Failed to parse stream file URL from response: $playerResponse")
+            return false
+        }
+        
         val streamUrl = rawStreamUrl.replace("\\/", "/")
+        Log.d(tag, "Extracted Stream URL: $streamUrl")
 
         callback.invoke(
             newExtractorLink(
