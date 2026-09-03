@@ -16,8 +16,15 @@ class KodasusakaProvider : MainAPI() {
 
     // 1. Perbaikan link halaman depan
     override val mainPage = mainPageOf(
-        "/movies" to "Movies",
-        "/tv-series" to "TV Series"
+        "/top/tmdb" to "Top TMDB",
+        "/top/imdb" to "Top IMDB",
+        "/top/views" to "Top Views",
+        "/movies?sortby=newest" to "Movies - Newest",
+        "/movies?sortby=latest-update" to "Movies - Latest Update",
+        "/movies?sortby=mostview" to "Movies - Most View",
+        "/tv-series?sortby=newest" to "TV Series - Newest",
+        "/tv-series?sortby=latest-update" to "TV Series - Latest Update",
+        "/tv-series?sortby=mostview" to "TV Series - Most View"
     )
 
     override suspend fun getMainPage(
