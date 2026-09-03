@@ -4,9 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import com.lagradost.cloudstream3.LoadResponse.Companion.addActors
-import org.jsoup.nodes.Element
 
-// Modul baru: Menggunakan Data Class untuk menggantikan org.json.JSONArray
 data class JpEpisode(
     @JsonProperty("serverId") val serverId: Int? = null,
     @JsonProperty("postUrl") val postUrl: String? = null,
@@ -40,43 +38,61 @@ class JPFilms : MainAPI() {
         }
         
         val document = app.get(url).document
+        val home = ArrayList<SearchResponse>()
         
-        // Fix: Konversi eksplisit ke List<Element> untuk menghilangkan error JSpecify
-        val elements: List<Element> = document.select("article.thumb.grid-item").toList()
-        val home = elements.mapNotNull { it.toSearchResult() }
+        // Memutus error JSpecify dengan tidak menggunakan mapNotNull
+        val elements = document.select("article.thumb.grid-item")
+        for (element in elements) {
+            val title = element.selectFirst(".entry-title")?.text() ?: continue
+            val href = element.selectFirst("a")?.attr("href") ?: continue
+            
+            var poster = element.selectFirst("img")?.attr("data-src")
+            if (poster.isNullOrEmpty()) {
+                poster = element.selectFirst("img")?.attr("src")
+            }
+
+            home.add(newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster
+            })
+        }
 
         return newHomePageResponse(request.name, home, hasNext = true)
-    }
-
-    private fun Element.toSearchResult(): SearchResponse? {
-        val title = this.selectFirst(".entry-title")?.text() ?: return null
-        val href = this.selectFirst("a")?.attr("href") ?: return null
-        val poster = this.selectFirst("img")?.let { img ->
-            img.attr("data-src").ifEmpty { img.attr("src") }
-        }
-
-        return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = if (!poster.isNullOrEmpty()) poster else null
-        }
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val url = if (page <= 1) "$mainUrl/search/$query" else "$mainUrl/search/$query/page/$page"
         val document = app.get(url).document
         
-        // Fix: Konversi eksplisit ke List<Element>
-        val elements: List<Element> = document.select("article.thumb.grid-item").toList()
-        val searchResults = elements.mapNotNull { it.toSearchResult() }
+        val searchResults = ArrayList<SearchResponse>()
+        val elements = document.select("article.thumb.grid-item")
+        
+        for (element in elements) {
+            val title = element.selectFirst(".entry-title")?.text() ?: continue
+            val href = element.selectFirst("a")?.attr("href") ?: continue
+            
+            var poster = element.selectFirst("img")?.attr("data-src")
+            if (poster.isNullOrEmpty()) {
+                poster = element.selectFirst("img")?.attr("src")
+            }
 
-        val pagination: List<Element> = document.select("ul.page-numbers li a").toList()
-        val hasNext = pagination.any {
-            it.text().contains((page + 1).toString()) || it.hasClass("next")
+            searchResults.add(newMovieSearchResponse(title, href, TvType.Movie) {
+                this.posterUrl = poster
+            })
+        }
+
+        var hasNext = false
+        val pagination = document.select("ul.page-numbers li a")
+        for (item in pagination) {
+            if (item.text().contains((page + 1).toString()) || item.hasClass("next")) {
+                hasNext = true
+                break
+            }
         }
 
         return newSearchResponseList(searchResults, hasNext)
     }
 
-    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query)
+    override suspend fun quickSearch(query: String): List<SearchResponse>? = search(query).list
 
     override suspend fun load(url: String): LoadResponse? {
         val document = app.get(url).document
@@ -86,20 +102,28 @@ class JPFilms : MainAPI() {
             ?.replace("Full HD", "", ignoreCase = true)
             ?.trim() ?: return null
 
-        val poster = document.selectFirst("img.movie-thumb")?.let {
-            it.attr("data-src").ifEmpty { it.attr("src") }
-        } ?: document.selectFirst(".movie-poster img")?.let {
-            it.attr("data-src").ifEmpty { it.attr("src") }
+        var poster = document.selectFirst("img.movie-thumb")?.attr("data-src")
+        if (poster.isNullOrEmpty()) poster = document.selectFirst("img.movie-thumb")?.attr("src")
+        if (poster.isNullOrEmpty()) poster = document.selectFirst(".movie-poster img")?.attr("data-src")
+        if (poster.isNullOrEmpty()) poster = document.selectFirst(".movie-poster img")?.attr("src")
+
+        val tags = ArrayList<String>()
+        for (tag in document.select(".category a")) {
+            tags.add(tag.text())
+        }
+        for (country in document.select("p.actors:contains(Country:) a")) {
+            tags.add(country.text())
         }
 
-        val country = document.select("p.actors:contains(Country:) a").toList().map { it.text() }
-        val tags = document.select(".category a").toList().map { it.text() } + country
-
-        val directors = document.select(".directors a").toList().map { Actor(it.text(), "Director") }
-        val cast = document.select(".actors a").toList()
-            .filter { it.parent()?.text()?.contains("Country:") == false }
-            .map { Actor(it.text()) }
-        val actors = directors + cast
+        val actors = ArrayList<Actor>()
+        for (director in document.select(".directors a")) {
+            actors.add(Actor(director.text(), "Director"))
+        }
+        for (cast in document.select(".actors a")) {
+            if (cast.parent()?.text()?.contains("Country:") == false) {
+                actors.add(Actor(cast.text()))
+            }
+        }
 
         val ratingTxt = document.selectFirst(".imdb-icon")?.attr("data-rating")?.toDoubleOrNull()
             ?: document.selectFirst(".halim_imdbrating .score")?.text()?.toDoubleOrNull()?.times(2.0)
@@ -107,23 +131,32 @@ class JPFilms : MainAPI() {
         val duration = Regex("""(\d+)\s*min""").find(document.select("p.released").text())?.groupValues?.get(1)?.toIntOrNull()
         val year = document.selectFirst("p.released a[href*='release']")?.text()?.toIntOrNull()
 
-        val allEpisodes = mutableListOf<Episode>()
+        val allEpisodes = ArrayList<Episode>()
+        
+        val scripts = document.select("script")
+        var scriptData: String? = null
+        for (script in scripts) {
+            if (script.data().contains("var jsonEpisodes")) {
+                scriptData = script.data()
+                break
+            }
+        }
 
-        // Rombak: Parsing JSON menggunakan AppUtils (Standar Cloudstream) menghindari org.json exception
-        val scriptData = document.select("script").toList().map { it.data() }.find { it.contains("var jsonEpisodes") }
         if (scriptData != null) {
             val jsonStr = scriptData.substringAfter("var jsonEpisodes = ").substringBefore(";</script>").trim().removeSuffix(";")
             try {
                 val parsedEpisodes = AppUtils.parseJson<List<List<JpEpisode>>>(jsonStr)
-                parsedEpisodes.forEach { innerList ->
-                    innerList.filter { it.serverId == 2 }.forEach { epObj ->
-                        val epUrl = epObj.postUrl?.replace("\\/", "/") ?: return@forEach
-                        val epName = epObj.episodeName ?: ""
-                        
-                        allEpisodes.add(newEpisode(epUrl) {
-                            this.name = epName
-                            this.episode = Regex("""\d+""").find(epName)?.value?.toIntOrNull()
-                        })
+                for (innerList in parsedEpisodes) {
+                    for (epObj in innerList) {
+                        if (epObj.serverId == 2) {
+                            val epUrl = epObj.postUrl?.replace("\\/", "/") ?: continue
+                            val epName = epObj.episodeName ?: ""
+                            
+                            allEpisodes.add(newEpisode(epUrl) {
+                                this.name = epName
+                                this.episode = Regex("""\d+""").find(epName)?.value?.toIntOrNull()
+                            })
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -131,14 +164,24 @@ class JPFilms : MainAPI() {
             }
         }
 
-        val relatedElements: List<Element> = document.select(".related-film article.thumb").toList()
-        val recommendations = relatedElements.mapNotNull { it.toSearchResult() }
+        val recommendations = ArrayList<SearchResponse>()
+        val relatedElements = document.select(".related-film article.thumb")
+        for (element in relatedElements) {
+            val recTitle = element.selectFirst(".entry-title")?.text() ?: continue
+            val recHref = element.selectFirst("a")?.attr("href") ?: continue
+            var recPoster = element.selectFirst("img")?.attr("data-src")
+            if (recPoster.isNullOrEmpty()) recPoster = element.selectFirst("img")?.attr("src")
+
+            recommendations.add(newMovieSearchResponse(recTitle, recHref, TvType.Movie) {
+                this.posterUrl = recPoster
+            })
+        }
 
         val plot = document.select("article.item-content p").text().trim()
 
         return if (allEpisodes.size <= 1) {
             newMovieLoadResponse(title, url, TvType.Movie, allEpisodes.firstOrNull()?.data ?: url) {
-                this.posterUrl = if (!poster.isNullOrEmpty()) poster else null
+                this.posterUrl = poster
                 this.plot = plot
                 this.year = year
                 this.tags = tags
@@ -148,9 +191,8 @@ class JPFilms : MainAPI() {
                 addActors(actors)
             }
         } else {
-            // Fix: Merubah tipe respon ke TvSeries
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, allEpisodes) {
-                this.posterUrl = if (!poster.isNullOrEmpty()) poster else null
+                this.posterUrl = poster
                 this.plot = plot
                 this.year = year
                 this.tags = tags
@@ -171,8 +213,14 @@ class JPFilms : MainAPI() {
         val document = app.get(data).document
         val nonce = document.selectFirst("body")?.attr("data-nonce").orEmpty()
         
-        val scripts: List<String> = document.select("script").toList().map { it.data() }
-        val scriptData = scripts.find { it.contains("var halim_cfg") } ?: return false
+        var scriptData: String? = null
+        for (script in document.select("script")) {
+            if (script.data().contains("var halim_cfg")) {
+                scriptData = script.data()
+                break
+            }
+        }
+        if (scriptData == null) return false
 
         val postId = Regex(""""post_id"\s*:\s*(\d+)""").find(scriptData)?.groupValues?.get(1) ?: return false
         val episodeSlug = Regex(""""episode_slug"\s*:\s*"([^"]+)"""").find(scriptData)?.groupValues?.get(1) ?: "server-1"
