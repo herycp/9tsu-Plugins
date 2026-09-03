@@ -8,7 +8,6 @@ class KodasusakaProvider : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
     override var name = "Kodasusaka"
     override var hasMainPage = true
-    override var mainUrlHost = mainUrl
     override val supportedTypes = setOf(
         TvType.AsianDrama,
         TvType.TvSeries,
@@ -73,11 +72,10 @@ class KodasusakaProvider : MainAPI() {
                 val epName = ep.text().trim()
                 val epNum = epName.filter { it.isDigit() }.toIntOrNull()
 
-                Episode(
-                    data = fixUrl(epHref),
-                    name = epName,
-                    episode = epNum
-                )
+                newEpisode(fixUrl(epHref)) {
+                    this.name = epName
+                    this.episode = epNum
+                }
             }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
@@ -98,8 +96,7 @@ class KodasusakaProvider : MainAPI() {
 
     override suspend fun loadLinks(
         data: String,
-        isCdnReDirect: Boolean,
-        referer: String?,
+        isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
