@@ -38,9 +38,41 @@ class Asiaflix : MainAPI() {
 
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
-            val request = chain.request()
+            val originalRequest = chain.request()
+            val url = originalRequest.url.toString()
+
+            val request = if (url.contains("hlsproxy")) {
+                val requestBuilder = originalRequest.newBuilder()
+                    .header("accept", "*/*")
+                    .header("dnt", "1")
+                    .header("origin", "https://asiaflix.net")
+                    .header("referer", "https://asiaflix.net/")
+                    .header("sec-ch-ua", "\"Chromium\";v=\"152\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"152\"")
+                    .header("sec-ch-ua-mobile", "?1")
+                    .header("sec-ch-ua-platform", "\"Android\"")
+                    .header("sec-fetch-dest", "video")
+                    .header("sec-fetch-mode", "cors")
+                    .header("sec-fetch-site", "cross-site")
+                    .header("user-agent", userAgent)
+
+                val rangeHeader = originalRequest.header("Range")
+                if (rangeHeader != null) {
+                    val startByte = rangeHeader.substringAfter("bytes=").substringBefore("-")
+                    if (startByte.isNotEmpty()) {
+                        requestBuilder.header("Range", "bytes=$startByte-")
+                    } else {
+                        requestBuilder.header("Range", rangeHeader)
+                    }
+                } else {
+                    requestBuilder.header("Range", "bytes=0-")
+                }
+
+                requestBuilder.build()
+            } else {
+                originalRequest
+            }
+
             val response = chain.proceed(request)
-            val url = request.url.toString()
 
             if (url.contains(".vtt") || url.contains("sub") || url.contains("track") || url.contains("kk.vidbasic.top")) {
                 val rawBody = response.body?.string() ?: ""
