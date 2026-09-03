@@ -4,10 +4,11 @@ import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.app
 import com.lagradost.cloudstream3.utils.ExtractorApi
 import com.lagradost.cloudstream3.utils.ExtractorLink
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import com.lagradost.cloudstream3.SubtitleFile
 import kotlinx.coroutines.withTimeoutOrNull
-import java.util.concurrent.TimeUnit
 
 class VidomonOkruExtractor : ExtractorApi() {
     override val name: String = "Ok.ru (Vidomon Backup)"
@@ -22,20 +23,17 @@ class VidomonOkruExtractor : ExtractorApi() {
     ) {
         val apiUrl = "https://vidomon.com/wp-json/aio-dl/video-data/"
 
-        // Membatasi eksekusi API maksimal 1 menit (60.000 milidetik)
+        // Timeout coroutine 1 menit (60.000 ms)
         val response = withTimeoutOrNull(60_000L) {
             app.post(
                 apiUrl,
                 data = mapOf("url" to url),
-                timeout = 60,
-                timeoutUnit = TimeUnit.SECONDS
+                timeout = 60L
             ).parsedSafe<VidomonResponse>()
         }
 
-        // Jika response timeout/null, eksekusi dihentikan tanpa membekukan aplikasi
         response?.medias?.forEach { media ->
             if (media.videoAvailable == true && !media.url.isNullOrEmpty()) {
-                // Pemetaan kualitas video
                 val quality = when (media.quality?.lowercase()) {
                     "hd" -> Qualities.P720.value
                     "sd" -> Qualities.P480.value
@@ -45,21 +43,22 @@ class VidomonOkruExtractor : ExtractorApi() {
                     else -> Qualities.Unknown.value
                 }
 
+                // Menggunakan newExtractorLink untuk menggantikan constructor ExtractorLink yang deprecated
                 callback.invoke(
-                    ExtractorLink(
+                    newExtractorLink(
                         source = name,
                         name = name,
                         url = media.url,
-                        referer = mainUrl,
-                        quality = quality,
-                        isM3u8 = false
-                    )
+                        type = ExtractorLinkType.VIDEO
+                    ) {
+                        this.referer = mainUrl
+                        this.quality = quality
+                    }
                 )
             }
         }
     }
 
-    // Data Class untuk parsing JSON response Vidomon
     data class VidomonResponse(
         @JsonProperty("medias") val medias: List<Media>? = null
     )
