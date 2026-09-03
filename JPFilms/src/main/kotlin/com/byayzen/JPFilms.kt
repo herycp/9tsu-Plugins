@@ -46,7 +46,7 @@ class JPFilms : MainAPI() {
         val res = try {
             app.get(url)
         } catch (e: Exception) {
-            Log.e(tag, "Network request failed for URL: $url", e)
+            Log.e(tag, "Network request failed for URL: $url | Error: ${e.message}")
             return newHomePageResponse(request.name, emptyList(), hasNext = false)
         }
 
@@ -198,7 +198,7 @@ class JPFilms : MainAPI() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(tag, "Error parsing jsonEpisodes", e)
+                Log.e(tag, "Error parsing jsonEpisodes | Error: ${e.message}")
             }
         } else {
             Log.w(tag, "No 'var jsonEpisodes' script tag found")
