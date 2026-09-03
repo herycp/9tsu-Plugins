@@ -44,15 +44,16 @@ class JPFilms : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = true)
     }
 
-    // Tidak ada variabel lokal bertipe nullable; langsung set posterUrl
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst(".entry-title")?.text() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
+        val poster = this.selectFirst("img")?.let { img ->
+            img.attr("data-src").ifEmpty { img.attr("src") }
+        } ?: ""
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = this@toSearchResult.selectFirst("img")?.let { img ->
-                img.attr("data-src").ifEmpty { img.attr("src") }.takeIf { it.isNotEmpty() }
-            }
+            // Hindari takeIf, gunakan if eksplisit
+            this.posterUrl = if (poster.isNotEmpty()) poster else null
         }
     }
 
@@ -81,12 +82,11 @@ class JPFilms : MainAPI() {
             ?.replace("Full HD", "", ignoreCase = true)
             ?.trim() ?: return null
 
-        // Ambil poster secara langsung tanpa variabel perantara
-        val posterUrl = document.selectFirst("img.movie-thumb")?.let {
-            it.attr("data-src").ifEmpty { it.attr("src") }.takeIf { it.isNotEmpty() }
+        val poster = document.selectFirst("img.movie-thumb")?.let {
+            it.attr("data-src").ifEmpty { it.attr("src") }
         } ?: document.selectFirst(".movie-poster img")?.let {
-            it.attr("data-src").ifEmpty { it.attr("src") }.takeIf { it.isNotEmpty() }
-        }
+            it.attr("data-src").ifEmpty { it.attr("src") }
+        } ?: ""
 
         val country = document.select("p.actors:contains(Country:) a").map { it.text() }
         val tags = document.select(".category a").map { it.text() } + country
@@ -133,7 +133,7 @@ class JPFilms : MainAPI() {
 
         return if (allepisodes.size <= 1) {
             newMovieLoadResponse(title, url, TvType.Movie, allepisodes.firstOrNull()?.data ?: url) {
-                this.posterUrl = posterUrl
+                this.posterUrl = if (poster.isNotEmpty()) poster else null
                 this.plot = plot
                 this.year = year
                 this.tags = tags
@@ -144,7 +144,7 @@ class JPFilms : MainAPI() {
             }
         } else {
             newTvSeriesLoadResponse(title, url, TvType.Movie, allepisodes) {
-                this.posterUrl = posterUrl
+                this.posterUrl = if (poster.isNotEmpty()) poster else null
                 this.plot = plot
                 this.year = year
                 this.tags = tags
