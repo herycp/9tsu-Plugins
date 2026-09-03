@@ -1,5 +1,6 @@
 package com.ninetsuin
 
+import com.gomio.VidomonOkruExtractor
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
@@ -186,7 +187,6 @@ class NineTsuInProvider : MainAPI() {
             doc.selectFirst(".entry-content, .post-content")?.text()?.trim()?.replace(Regex("\\s+"), " ") ?: ""
         }
 
-        // Ekstraksi Related Items
         val relatedItems = mutableListOf<SearchResponse>()
         val relatedContainer = doc.selectFirst(".post-list-in-single, .related-posts, .post-related, .related-content")
         if (relatedContainer != null) {
@@ -229,14 +229,12 @@ class NineTsuInProvider : MainAPI() {
         val allUrls = mutableSetOf<String>()
         val nestedIframes = mutableSetOf<String>()
 
-        // 1. Ekstraksi Iframe Utama
         doc.select("iframe").forEach { iframe ->
             var src = iframe.attr("src").ifBlank { iframe.attr("data-src") }.ifBlank { iframe.attr("data-lazy-src") }
             if (src.isNotBlank()) {
                 if (src.startsWith("//")) src = "https:$src"
                 if (!src.startsWith("http")) return@forEach
 
-                // Penanganan khusus blogspherenews
                 if (src.contains("blogspherenews.xyz/embed/")) {
                     try {
                         val innerDoc = app.get(src, referer = data, headers = mapOf("User-Agent" to userAgent)).document
@@ -288,13 +286,11 @@ class NineTsuInProvider : MainAPI() {
             }
         }
 
-        // 2. video/source
         doc.select("video source, video").forEach { v ->
             val src = v.attr("src").ifBlank { v.attr("data-src") }
             if (src.isNotBlank()) allUrls.add(src)
         }
 
-        // 3. script
         doc.select("script").forEach { script ->
             var scriptData = script.data()
             try {
@@ -327,21 +323,32 @@ class NineTsuInProvider : MainAPI() {
             }
         }
 
-        // 4. data-* attributes
         doc.select("[data-video], [data-src], [data-url], [data-file], [data-link]").forEach { el ->
             val video = el.attr("data-video").ifBlank { el.attr("data-src") }.ifBlank { el.attr("data-url") }.ifBlank { el.attr("data-file") }.ifBlank { el.attr("data-link") }
             if (video.isNotBlank()) allUrls.add(video)
         }
 
-        // 5. general regex
         extractVideoUrls(html).forEach { url -> allUrls.add(url) }
 
-        // 6. Validasi URL Ekstraktor
         var linkFound = false
         for (rawUrl in allUrls) {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
+
+            // Penanganan khusus link ok.ru menggunakan Extractor bawaan + Backup Extractor Vidomon
+            if (cleanUrl.contains("ok.ru")) {
+                loadExtractor(cleanUrl, subtitleCallback, callback)
+                
+                VidomonOkruExtractor().getUrl(
+                    url = cleanUrl,
+                    referer = data,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+                linkFound = true
+                continue
+            }
 
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
@@ -365,7 +372,6 @@ class NineTsuInProvider : MainAPI() {
             }
         }
 
-        // 7. Fallback Recursive untuk Nested Iframe
         if (!linkFound && nestedIframes.isNotEmpty()) {
             for (nestedUrl in nestedIframes) {
                 val nestedFound = loadLinks(nestedUrl, isCasting, subtitleCallback, callback)
