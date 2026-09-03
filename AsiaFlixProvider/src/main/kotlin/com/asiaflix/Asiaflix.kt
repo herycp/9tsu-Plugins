@@ -566,7 +566,10 @@ class Asiaflix : MainAPI() {
             linkData.streamUrls?.forEach { stream ->
                 var streamUrl = stream.url ?: return@forEach
                 if (streamUrl.startsWith("//")) streamUrl = "https:$streamUrl"
-                val serverName = stream.source ?: "unknown"
+                
+                // Hilangkan prefiks "asiaflix-" jika ada
+                val rawServerName = stream.source ?: "unknown"
+                val serverName = rawServerName.removePrefix("asiaflix-")
 
                 jobs.add(launch {
                     try {
