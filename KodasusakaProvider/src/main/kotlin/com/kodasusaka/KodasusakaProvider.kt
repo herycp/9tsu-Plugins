@@ -14,19 +14,22 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
+    // 1. Perbaikan link halaman depan
     override val mainPage = mainPageOf(
-        "/top/tmdb" to "Top TMDB",
-        "/top/imdb" to "Top IMDB",
-        "/top/views" to "Top Views",
-        "/type/series" to "Series Terbaru",
-        "/type/movie" to "Film Terbaru"
+        "/movies" to "Movies",
+        "/tv-series" to "TV Series"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        val url = "$mainUrl${request.data}?page=$page"
+        // Menangani pagination (menambahkan ?page= atau &page= dengan aman)
+        val url = if (request.data.contains("?")) {
+            "$mainUrl${request.data}&page=$page"
+        } else {
+            "$mainUrl${request.data}?page=$page"
+        }
         val doc = app.get(url).document
 
         val homeItems = doc.select("article.group").mapNotNull {
@@ -55,18 +58,33 @@ class KodasusakaProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         val doc = app.get(url).document
 
-        val title = doc.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = fixUrlNull(
-            doc.selectFirst("img[src*=/uploads/]")?.attr("src")
-                ?: doc.selectFirst("article img")?.attr("src")
-        )
+        val title = doc.selectFirst("h1.cls-info-title")?.text()?.trim() ?: return null
+        
+        // A. Gambar halaman (Backdrop / Background) & Poster
+        val poster = fixUrlNull(doc.selectFirst("div.cls-poster-lg img")?.attr("src"))
+        val background = fixUrlNull(doc.selectFirst("div.cls-backdrop-gallery a.cls-bd-item")?.attr("href"))
 
-        val description = doc.selectFirst("p.text-gray-300, p.text-mist-400, div.synopsis")?.text()?.trim()
-        val tags = doc.select("a[href*=/genre/]").map { it.text().trim() }
-        val year = doc.selectFirst("span:contains(20)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
+        // C. Deskripsi film
+        val description = doc.selectFirst("div.cls-prose")?.text()?.trim()
+        
+        // E. Kategori / Genre
+        val tags = doc.select("div.cls-info-people:contains(Genre) a").map { it.text().trim() }
+        
+        // D. Nama Aktor
+        val actors = doc.select("div.cls-info-people:contains(Cast) a").map { it.text().trim() }
+        
+        val year = doc.selectFirst("a.cls-badge[href^=/year/]")?.text()?.toIntOrNull()
 
+        // B. Trailer (Link YouTube)
+        val trailerUrl = doc.selectFirst("a:contains(Watch the trailer), a.cls-btn[href*='youtube.com']")?.attr("href")
+
+        // F. Link halaman untuk player (di button play)
+        val watchBtn = doc.selectFirst("a.cls-btn-watch")?.attr("href")
+        val watchUrl = fixUrlNull(watchBtn) ?: url
+
+        // H. Cek apakah ini TV Series & tarik tombol episode-nya
         val episodeElements = doc.select("a[href*=/episode/], div.episodes-list a")
-        val isTvSeries = episodeElements.isNotEmpty()
+        val isTvSeries = episodeElements.isNotEmpty() || doc.select(".cls-badges .cls-badge").text().contains("EP", ignoreCase = true)
 
         return if (isTvSeries) {
             val episodes = episodeElements.mapNotNull { ep ->
@@ -78,32 +96,49 @@ class KodasusakaProvider : MainAPI() {
                     this.name = epName
                     this.episode = epNum
                 }
+            }.ifEmpty {
+                // Fallback: Jika episode tidak terdeteksi di DOM tapi sistem membaca sebagai series, panggil halaman pemutar utama
+                listOf(
+                    newEpisode(watchUrl) {
+                        this.name = "Episode 1"
+                        this.episode = 1
+                    }
+                )
             }
 
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
-                this.plot = description
-                this.tags = tags
+                this.backgroundPosterUrl = background // (A) Dimasukkan di sini
+                this.plot = description // (C)
+                this.tags = tags // (E)
                 this.year = year
+                addTrailer(trailerUrl) // (B)
+                addActors(actors) // (D)
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, url) {
+            // G. Jenis Movie: link play (watchUrl) langsung menuju halaman player (hanya satu episode)
+            newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
                 this.posterUrl = poster
-                this.plot = description
-                this.tags = tags
+                this.backgroundPosterUrl = background // (A)
+                this.plot = description // (C)
+                this.tags = tags // (E)
                 this.year = year
+                addTrailer(trailerUrl) // (B)
+                addActors(actors) // (D)
             }
         }
     }
 
     override suspend fun loadLinks(
-        data: String,
+        data: String, // 'data' berisi 'watchUrl' yang dilempar dari LoadResponse
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        // Melakukan request ke halaman player (URL dari Watch Now)
         val doc = app.get(data).document
 
+        // Mengambil link Iframe dari halaman player tersebut
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
 
