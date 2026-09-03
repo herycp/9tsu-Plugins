@@ -58,7 +58,6 @@ class KodasusakaProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // Mengubah URL web standar menjadi endpoint API v2 berdasarkan slug
         val slug = url.trimEnd('/').split("/").last()
         val apiUrl = "$mainUrl/api/v2/movies/$slug"
 
@@ -69,26 +68,26 @@ class KodasusakaProvider : MainAPI() {
         val backdrops = response.backdrops ?: emptyList()
         val background = fixUrlNull(backdrops.firstOrNull())
         val description = response.overview
-        val tags = response.genres?.map { it.name } ?: emptyList()
-        val actors = response.actors?.map { it.name } ?: emptyList()
+        val tags = response.genres?.mapNotNull { it.name } ?: emptyList()
+        val actors = response.actors?.mapNotNull { it.name } ?: emptyList()
         val year = response.year
-        val trailerUrl = response.trailer_url
         val isTvSeries = response.kind.equals("tv-series", ignoreCase = true) || (response.seasons ?: 1) > 1
 
         val episodes = mutableListOf<Episode>()
         response.servers?.forEach { server ->
             server.episodes?.forEach { ep ->
-                episodes.add(
-                    newEpisode(ep.sources_url ?: "") {
-                        this.name = ep.name ?: "Episode ${ep.number}"
-                        this.episode = ep.number
-                        this.season = ep.season
-                    }
-                )
+                if (!ep.sources_url.isNullOrEmpty()) {
+                    episodes.add(
+                        newEpisode(ep.sources_url!!) {
+                            this.name = ep.name ?: "Episode ${ep.number}"
+                            this.episode = ep.number
+                            this.season = ep.season
+                        }
+                    )
+                }
             }
         }
 
-        // Fallback jika episodes kosong dari server API
         if (episodes.isEmpty()) {
             episodes.add(
                 newEpisode(url) {
@@ -98,7 +97,6 @@ class KodasusakaProvider : MainAPI() {
             )
         }
 
-        // Mapping rekomendasi dari JSON API
         val recommendations = response.related?.mapNotNull { rel ->
             val relSlug = rel.slug ?: return@mapNotNull null
             val relTitle = rel.title ?: "Unknown"
@@ -125,9 +123,6 @@ class KodasusakaProvider : MainAPI() {
                 this.year = year
                 this.actors = actors.map { ActorData(Actor(it)) }
                 this.recommendations = recommendations
-                if (!trailerUrl.isNullOrEmpty()) {
-                    // Menyimpan informasi trailer aman via rekomendasi tambahan jika diperlukan
-                }
             }
         } else {
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
@@ -148,27 +143,27 @@ class KodasusakaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Jika data adalah URL endpoint sources API
         if (data.contains("/api/v1/episodes/")) {
             val sourceResponse = app.get(data).parsedSafe<SourceApiResponse>()
             sourceResponse?.sources?.forEach { src ->
-                if (!src.file.isNullOrEmpty()) {
+                val fileUrl = src.file
+                if (!fileUrl.isNullOrEmpty()) {
                     callback.invoke(
-                        ExtractorLink(
+                        newExtractorLink(
                             source = name,
                             name = name,
-                            url = src.file,
+                            url = fileUrl,
                             referer = mainUrl,
-                            quality = Qualities.Unknown.value,
-                            isM3u8 = src.file.contains(".m3u8", ignoreCase = true)
-                        )
+                            quality = Qualities.Unknown.value
+                        ) {
+                            this.isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
+                        }
                     )
                 }
             }
             return true
         }
 
-        // Fallback lama jika data berupa web page biasa
         val doc = app.get(data).document
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
@@ -210,7 +205,6 @@ class KodasusakaProvider : MainAPI() {
         }
     }
 
-    // --- Data Classes untuk Parsing JSON API ---
     data class ApiResponse(
         @JsonProperty("title") val title: String?,
         @JsonProperty("slug") val slug: String?,
