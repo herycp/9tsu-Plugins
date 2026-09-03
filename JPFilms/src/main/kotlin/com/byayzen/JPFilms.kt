@@ -44,16 +44,17 @@ class JPFilms : MainAPI() {
         return newHomePageResponse(request.name, home, hasNext = true)
     }
 
+    // Perbaikan: beri tipe eksplisit String? pada variabel poster
     private fun Element.toSearchResult(): SearchResponse? {
         val title = this.selectFirst(".entry-title")?.text() ?: return null
         val href = this.selectFirst("a")?.attr("href") ?: return null
-        val poster = this.selectFirst("img")?.let { img ->
+        val poster: String? = this.selectFirst("img")?.let { img ->
             val url = img.attr("data-src").ifEmpty { img.attr("src") }
             fixUrlNull(url)
         }
 
         return newMovieSearchResponse(title, href, TvType.Movie) {
-            this.posterUrl = poster?.toString()
+            this.posterUrl = poster
         }
     }
 
@@ -82,9 +83,13 @@ class JPFilms : MainAPI() {
             ?.replace("Full HD", "", ignoreCase = true)
             ?.trim() ?: return null
 
-        val posterraw = document.selectFirst("img.movie-thumb")?.let { it.attr("data-src").ifEmpty { it.attr("src") } }
-            ?: document.selectFirst(".movie-poster img")?.let { it.attr("data-src").ifEmpty { it.attr("src") } }
-        val poster = fixUrlNull(posterraw)
+        // Perbaikan: beri tipe eksplisit String? pada posterraw dan poster
+        val posterraw: String? = document.selectFirst("img.movie-thumb")?.let { 
+            it.attr("data-src").ifEmpty { it.attr("src") } 
+        } ?: document.selectFirst(".movie-poster img")?.let { 
+            it.attr("data-src").ifEmpty { it.attr("src") } 
+        }
+        val poster: String? = fixUrlNull(posterraw)
 
         val country = document.select("p.actors:contains(Country:) a").map { it.text() }
         val tags = document.select(".category a").map { it.text() } + country
