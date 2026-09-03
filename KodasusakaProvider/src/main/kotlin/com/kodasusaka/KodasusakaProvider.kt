@@ -1,8 +1,8 @@
 package com.kodasusaka
 
-import org.jsoup.nodes.Element
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
 class KodasusakaProvider : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
@@ -28,7 +28,7 @@ class KodasusakaProvider : MainAPI() {
     ): HomePageResponse {
         val url = "$mainUrl${request.data}?page=$page"
         val doc = app.get(url).document
-        
+
         val homeItems = doc.select("article.group").mapNotNull {
             it.toSearchResult()
         }
@@ -39,7 +39,7 @@ class KodasusakaProvider : MainAPI() {
                 list = homeItems,
                 isHorizontalImages = false
             ),
-            hasNext = doc.selectFirst("nav[aria-label=Pagination] a:contains(Next)") != null
+            hasNext = homeItems.isNotEmpty() && doc.selectFirst("nav[aria-label=Pagination] a:contains(Next), nav[aria-label=Pagination] a:contains(Selanjutnya), a[rel=next]") != null
         )
     }
 
@@ -56,9 +56,11 @@ class KodasusakaProvider : MainAPI() {
         val doc = app.get(url).document
 
         val title = doc.selectFirst("h1")?.text()?.trim() ?: return null
-        val poster = doc.selectFirst("img[src*=/uploads/]")?.attr("src") 
-            ?: doc.selectFirst("article img")?.attr("src")
-        
+        val poster = fixUrlNull(
+            doc.selectFirst("img[src*=/uploads/]")?.attr("src")
+                ?: doc.selectFirst("article img")?.attr("src")
+        )
+
         val description = doc.selectFirst("p.text-gray-300, p.text-mist-400, div.synopsis")?.text()?.trim()
         val tags = doc.select("a[href*=/genre/]").map { it.text().trim() }
         val year = doc.selectFirst("span:contains(20)")?.text()?.filter { it.isDigit() }?.toIntOrNull()
@@ -102,7 +104,7 @@ class KodasusakaProvider : MainAPI() {
     ): Boolean {
         val doc = app.get(data).document
 
-        val iframeUrl = doc.selectFirst("iframe")?.attr("src") 
+        val iframeUrl = doc.selectFirst("iframe")?.attr("src")
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
 
         if (!iframeUrl.isNullOrEmpty()) {
@@ -116,15 +118,16 @@ class KodasusakaProvider : MainAPI() {
     private fun Element.toSearchResult(): SearchResponse? {
         val linkElement = this.selectFirst("a") ?: return null
         val href = linkElement.attr("href")
-        
+
         val title = this.selectFirst("h3")?.text()?.trim() ?: return null
         if (title.isEmpty()) return null
 
-        val posterUrl = this.selectFirst("img")?.attr("src")
-        val badgeText = this.selectFirst("span.backdrop-blur-sm")?.text()?.trim()
-        
-        val isTvSeries = badgeText?.contains("EP", ignoreCase = true) == true || 
-                         href.contains("/series/", ignoreCase = true)
+        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
+        val badgeText = this.selectFirst("span.backdrop-blur-sm, span.absolute")?.text()?.trim()
+
+        val isTvSeries = badgeText?.contains("EP", ignoreCase = true) == true ||
+                href.contains("/series/", ignoreCase = true) ||
+                href.contains("/tv-series", ignoreCase = true)
 
         return if (isTvSeries) {
             newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
@@ -133,7 +136,7 @@ class KodasusakaProvider : MainAPI() {
         } else {
             newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
                 this.posterUrl = posterUrl
-                if (badgeText?.contains("FULLHD", ignoreCase = true) == true || 
+                if (badgeText?.contains("FULLHD", ignoreCase = true) == true ||
                     badgeText?.contains("HD", ignoreCase = true) == true) {
                     this.quality = SearchQuality.HD
                 }
