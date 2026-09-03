@@ -559,7 +559,7 @@ class Asiaflix : MainAPI() {
             }
 
             // ------------------------------------------------------------------
-            // URUTAN 2: API HLS Proxy Asiaflix (Penanganan HLS & Direct MP4)
+            // URUTAN 2: API HLS Proxy Asiaflix (Penanganan HLS & Direct MP4 tanpa hardcode Range)
             // ------------------------------------------------------------------
             linkData.streamUrls?.forEach { stream ->
                 var streamUrl = stream.url ?: return@forEach
@@ -590,23 +590,17 @@ class Asiaflix : MainAPI() {
                         val proxyData = tryParseJson<AsiaflixProxyResponse>(apiResponseText)
                         
                         if (proxyData?.sources != null && proxyData.sources.isNotEmpty()) {
-                            // Format baru {"sources": [...]}
                             proxyData.sources.forEach { source ->
                                 val proxyUrl = source.url ?: return@forEach
                                 val isM3U8 = source.isM3U8 ?: proxyUrl.contains(".m3u8")
                                 val qualityLabel = source.quality ?: "Auto"
                                 
-                                val linkHeaders = mutableMapOf(
+                                val linkHeaders = mapOf(
                                     "accept" to "*/*",
                                     "origin" to "https://asiaflix.net",
                                     "referer" to "https://asiaflix.net/",
                                     "user-agent" to userAgent
                                 )
-                                
-                                // Jika file berupa direct video (bukan m3u8), wajib inject header Range
-                                if (!isM3U8) {
-                                    linkHeaders["Range"] = "bytes=0-"
-                                }
 
                                 callback(newExtractorLink(
                                     name = "Asiaflix Proxy - $serverName ($qualityLabel)",
@@ -620,7 +614,6 @@ class Asiaflix : MainAPI() {
                                 anySuccess.set(true)
                             }
                         } else {
-                            // Fallback jika API mengembalikan respons format lama / tunggal
                             val proxyUrlMatch = Regex(""""(?:url|link|data)"\s*:\s*"([^"]+hlsproxy[^"]+)"""").find(apiResponseText) 
                                 ?: Regex(""""(https://[^"]*hlsproxy[^"]*)"""").find(apiResponseText)
                             
@@ -628,16 +621,12 @@ class Asiaflix : MainAPI() {
 
                             if (!proxyUrl.isNullOrEmpty()) {
                                 val isM3U8 = proxyUrl.contains(".m3u8") || !proxyUrl.contains("mp4-proxy")
-                                val linkHeaders = mutableMapOf(
+                                val linkHeaders = mapOf(
                                     "accept" to "*/*",
                                     "origin" to "https://asiaflix.net",
                                     "referer" to "https://asiaflix.net/",
                                     "user-agent" to userAgent
                                 )
-                                
-                                if (!isM3U8) {
-                                    linkHeaders["Range"] = "bytes=0-"
-                                }
 
                                 callback(newExtractorLink(
                                     name = "Asiaflix Proxy - $serverName",
@@ -852,7 +841,6 @@ class Asiaflix : MainAPI() {
         @JsonProperty("url") val url: String? = null
     )
 
-    // Data Class Baru untuk JSON Response HLS/MP4 Proxy API
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class AsiaflixProxyResponse(
         @JsonProperty("sources") val sources: List<AsiaflixProxySource>? = null,
