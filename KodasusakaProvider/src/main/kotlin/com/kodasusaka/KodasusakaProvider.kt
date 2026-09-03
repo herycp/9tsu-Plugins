@@ -146,16 +146,25 @@ class KodasusakaProvider : MainAPI() {
         if (data.contains("/api/v1/episodes/")) {
             val sourceResponse = app.get(data).parsedSafe<SourceApiResponse>()
             sourceResponse?.sources?.forEach { src ->
-                val fileUrl = src.file
+                var fileUrl = src.file
                 if (!fileUrl.isNullOrEmpty()) {
+                    // Menambahkan /index.json ke akhir URL file jika belum ada
+                    val formattedUrl = if (fileUrl.endsWith("/")) {
+                        "${fileUrl}index.json"
+                    } else if (!fileUrl.endsWith("/index.json")) {
+                        "$fileUrl/index.json"
+                    } else {
+                        fileUrl
+                    }
+
                     callback.invoke(
                         ExtractorLink(
                             source = name,
                             name = name,
-                            url = fileUrl,
+                            url = formattedUrl,
                             referer = mainUrl,
                             quality = Qualities.Unknown.value,
-                            type = if (fileUrl.contains(".m3u8", ignoreCase = true)) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
+                            type = ExtractorLinkType.M3U8
                         )
                     )
                 }
