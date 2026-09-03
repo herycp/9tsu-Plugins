@@ -156,7 +156,7 @@ class KodasusakaProvider : MainAPI() {
                             referer = mainUrl,
                             quality = Qualities.Unknown.value
                         ) {
-                            this.isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
+                            isM3u8 = fileUrl.contains(".m3u8", ignoreCase = true)
                         }
                     )
                 }
