@@ -1,5 +1,6 @@
 package com.kodasusaka
 
+import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import org.jsoup.nodes.Element
@@ -19,11 +20,7 @@ class KodasusakaProvider : MainAPI() {
         "/top/imdb" to "Top IMDB",
         "/top/views" to "Top Views",
         "/movies?sortby=newest" to "Movies - Newest",
-        "/movies?sortby=latest-update" to "Movies - Latest Update",
-        "/movies?sortby=mostview" to "Movies - Most View",
-        "/tv-series?sortby=newest" to "TV Series - Newest",
-        "/tv-series?sortby=latest-update" to "TV Series - Latest Update",
-        "/tv-series?sortby=mostview" to "TV Series - Most View"
+        "/tv-series?sortby=newest" to "TV Series - Newest"
     )
 
     override suspend fun getMainPage(
@@ -61,55 +58,65 @@ class KodasusakaProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url).document
+        // Mengubah URL web standar menjadi endpoint API v2 berdasarkan slug
+        val slug = url.trimEnd('/').split("/").last()
+        val apiUrl = "$mainUrl/api/v2/movies/$slug"
 
-        val title = doc.selectFirst("h1.cls-info-title")?.text()?.trim() ?: return null
-        
-        // A. Gambar halaman (Backdrop / Background) & Poster
-        val poster = fixUrlNull(doc.selectFirst("div.cls-poster-lg img")?.attr("src"))
-        val background = fixUrlNull(doc.selectFirst("div.cls-backdrop-gallery a.cls-bd-item")?.attr("href"))
+        val response = app.get(apiUrl).parsedSafe<ApiResponse>() ?: return null
 
-        // C. Deskripsi film
-        val description = doc.selectFirst("div.cls-prose")?.text()?.trim()
-        
-        // E. Kategori / Genre
-        val tags = doc.select("div.cls-info-people:contains(Genre) a").map { it.text().trim() }
-        
-        // D. Nama Aktor
-        val actors = doc.select("div.cls-info-people:contains(Cast) a").map { it.text().trim() }
-        
-        val year = doc.selectFirst("a.cls-badge[href^=/year/]")?.text()?.toIntOrNull()
+        val title = response.title ?: return null
+        val poster = fixUrlNull(response.poster ?: response.thumb)
+        val backdrops = response.backdrops ?: emptyList()
+        val background = fixUrlNull(backdrops.firstOrNull())
+        val description = response.overview
+        val tags = response.genres?.map { it.name } ?: emptyList()
+        val actors = response.actors?.map { it.name } ?: emptyList()
+        val year = response.year
+        val trailerUrl = response.trailer_url
+        val isTvSeries = response.kind.equals("tv-series", ignoreCase = true) || (response.seasons ?: 1) > 1
 
-        // B. Trailer (Link YouTube)
-        val trailerUrl = doc.selectFirst("a:contains(Watch the trailer), a.cls-btn[href*='youtube.com']")?.attr("href")
-
-        // F. Link halaman untuk player (di button play)
-        val watchBtn = doc.selectFirst("a.cls-btn-watch")?.attr("href")
-        val watchUrl = fixUrlNull(watchBtn) ?: url
-
-        // H. Cek apakah ini TV Series & tarik tombol episode-nya
-        val episodeElements = doc.select("a[href*=/episode/], div.episodes-list a")
-        val isTvSeries = episodeElements.isNotEmpty() || doc.select(".cls-badges .cls-badge").text().contains("EP", ignoreCase = true)
-
-        return if (isTvSeries) {
-            val episodes = episodeElements.mapNotNull { ep ->
-                val epHref = ep.attr("href")
-                val epName = ep.text().trim()
-                val epNum = epName.filter { it.isDigit() }.toIntOrNull()
-
-                newEpisode(fixUrl(epHref)) {
-                    this.name = epName
-                    this.episode = epNum
-                }
-            }.ifEmpty {
-                listOf(
-                    newEpisode(watchUrl) {
-                        this.name = "Episode 1"
-                        this.episode = 1
+        val episodes = mutableListOf<Episode>()
+        response.servers?.forEach { server ->
+            server.episodes?.forEach { ep ->
+                episodes.add(
+                    newEpisode(ep.sources_url ?: "") {
+                        this.name = ep.name ?: "Episode ${ep.number}"
+                        this.episode = ep.number
+                        this.season = ep.season
                     }
                 )
             }
+        }
 
+        // Fallback jika episodes kosong dari server API
+        if (episodes.isEmpty()) {
+            episodes.add(
+                newEpisode(url) {
+                    this.name = "Full Movie"
+                    this.episode = 1
+                }
+            )
+        }
+
+        // Mapping rekomendasi dari JSON API
+        val recommendations = response.related?.mapNotNull { rel ->
+            val relSlug = rel.slug ?: return@mapNotNull null
+            val relTitle = rel.title ?: "Unknown"
+            val relPoster = fixUrlNull(rel.poster ?: rel.thumb)
+            val relType = if (rel.kind.equals("tv-series", ignoreCase = true)) TvType.TvSeries else TvType.Movie
+            
+            if (relType == TvType.TvSeries) {
+                newTvSeriesSearchResponse(relTitle, "$mainUrl/$relSlug", relType) {
+                    this.posterUrl = relPoster
+                }
+            } else {
+                newMovieSearchResponse(relTitle, "$mainUrl/$relSlug", relType) {
+                    this.posterUrl = relPoster
+                }
+            }
+        } ?: emptyList()
+
+        return if (isTvSeries) {
             newTvSeriesLoadResponse(title, url, TvType.TvSeries, episodes) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
@@ -117,26 +124,20 @@ class KodasusakaProvider : MainAPI() {
                 this.tags = tags
                 this.year = year
                 this.actors = actors.map { ActorData(Actor(it)) }
-                // Memasukkan trailer aman via search response bawaan tanpa helper eksternal
+                this.recommendations = recommendations
                 if (!trailerUrl.isNullOrEmpty()) {
-                    this.recommendations = listOf(
-                        newMovieSearchResponse("Trailer", trailerUrl, TvType.Movie)
-                    )
+                    // Menyimpan informasi trailer aman via rekomendasi tambahan jika diperlukan
                 }
             }
         } else {
-            newMovieLoadResponse(title, url, TvType.Movie, watchUrl) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
                 this.posterUrl = poster
                 this.backgroundPosterUrl = background
                 this.plot = description
                 this.tags = tags
                 this.year = year
                 this.actors = actors.map { ActorData(Actor(it)) }
-                if (!trailerUrl.isNullOrEmpty()) {
-                    this.recommendations = listOf(
-                        newMovieSearchResponse("Trailer", trailerUrl, TvType.Movie)
-                    )
-                }
+                this.recommendations = recommendations
             }
         }
     }
@@ -147,8 +148,28 @@ class KodasusakaProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val doc = app.get(data).document
+        // Jika data adalah URL endpoint sources API
+        if (data.contains("/api/v1/episodes/")) {
+            val sourceResponse = app.get(data).parsedSafe<SourceApiResponse>()
+            sourceResponse?.sources?.forEach { src ->
+                if (!src.file.isNullOrEmpty()) {
+                    callback.invoke(
+                        ExtractorLink(
+                            source = name,
+                            name = name,
+                            url = src.file,
+                            referer = mainUrl,
+                            quality = Qualities.Unknown.value,
+                            isM3u8 = src.file.contains(".m3u8", ignoreCase = true)
+                        )
+                    )
+                }
+            }
+            return true
+        }
 
+        // Fallback lama jika data berupa web page biasa
+        val doc = app.get(data).document
         val iframeUrl = doc.selectFirst("iframe")?.attr("src")
             ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
 
@@ -188,4 +209,50 @@ class KodasusakaProvider : MainAPI() {
             }
         }
     }
+
+    // --- Data Classes untuk Parsing JSON API ---
+    data class ApiResponse(
+        @JsonProperty("title") val title: String?,
+        @JsonProperty("slug") val slug: String?,
+        @JsonProperty("thumb") val thumb: String?,
+        @JsonProperty("poster") val poster: String?,
+        @JsonProperty("year") val year: Int?,
+        @JsonProperty("kind") val kind: String?,
+        @JsonProperty("overview") val overview: String?,
+        @JsonProperty("trailer_url") val trailer_url: String?,
+        @JsonProperty("seasons") val seasons: Int?,
+        @JsonProperty("backdrops") val backdrops: List<String>?,
+        @JsonProperty("genres") val genres: List<GenreModel>?,
+        @JsonProperty("actors") val actors: List<ActorModel>?,
+        @JsonProperty("servers") val servers: List<ServerModel>?,
+        @JsonProperty("related") val related: List<RelatedModel>?
+    )
+
+    data class GenreModel(@JsonProperty("name") val name: String?)
+    data class ActorModel(@JsonProperty("name") val name: String?)
+    data class ServerModel(
+        @JsonProperty("episodes") val episodes: List<EpisodeModel>?
+    )
+    data class EpisodeModel(
+        @JsonProperty("name") val name: String?,
+        @JsonProperty("number") val number: Int?,
+        @JsonProperty("season") val season: Int?,
+        @JsonProperty("sources_url") val sources_url: String?
+    )
+    data class RelatedModel(
+        @JsonProperty("title") val title: String?,
+        @JsonProperty("slug") val slug: String?,
+        @JsonProperty("thumb") val thumb: String?,
+        @JsonProperty("poster") val poster: String?,
+        @JsonProperty("kind") val kind: String?
+    )
+
+    data class SourceApiResponse(
+        @JsonProperty("sources") val sources: List<SourceItem>?,
+        @JsonProperty("success") val success: Boolean?
+    )
+    data class SourceItem(
+        @JsonProperty("file") val file: String?,
+        @JsonProperty("type") val type: String?
+    )
 }
