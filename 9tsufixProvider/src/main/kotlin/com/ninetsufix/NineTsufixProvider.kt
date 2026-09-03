@@ -29,7 +29,7 @@ class NineTsuFixProvider : MainAPI() {
         "/premium", "/housou-shuuryou", "/dramaend", "/youtube-baraeti"
     )
 
-    // Category pages untuk 9tsu.vip (berdasarkan screenshot)
+    // Category pages untuk 9tsu.vip
     private val categoryPagesVip = setOf(
         "/drama",
         "/drama-monday1",
@@ -715,6 +715,20 @@ class NineTsuFixProvider : MainAPI() {
             var cleanUrl = rawUrl.trim()
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
+
+            // Penanganan khusus link ok.ru menggunakan Extractor bawaan + Backup Extractor Vidomon
+            if (cleanUrl.contains("ok.ru")) {
+                loadExtractor(cleanUrl, subtitleCallback, callback)
+                
+                VidomonOkruExtractor().getUrl(
+                    url = cleanUrl,
+                    referer = data,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+                linkFound = true
+                continue
+            }
 
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true

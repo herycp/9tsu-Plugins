@@ -336,6 +336,20 @@ class NineTsuProvider : MainAPI() {
             if (cleanUrl.startsWith("//")) cleanUrl = "https:$cleanUrl"
             if (!cleanUrl.startsWith("http")) continue
 
+            // Penanganan khusus link ok.ru menggunakan Extractor bawaan + Backup Extractor Vidomon
+            if (cleanUrl.contains("ok.ru")) {
+                loadExtractor(cleanUrl, subtitleCallback, callback)
+                
+                VidomonOkruExtractor().getUrl(
+                    url = cleanUrl,
+                    referer = data,
+                    subtitleCallback = subtitleCallback,
+                    callback = callback
+                )
+                linkFound = true
+                continue
+            }
+
             if (loadExtractor(cleanUrl, subtitleCallback, callback)) {
                 linkFound = true
                 continue
