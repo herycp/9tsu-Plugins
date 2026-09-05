@@ -301,9 +301,10 @@ class FawesomeTvProvider : MainAPI() {
                 source = name,
                 url = videoUrl,
                 type = type,
-                quality = Qualities.Unknown.value,
-                headers = mapOf("Referer" to mainUrl)
-            )
+                quality = Qualities.Unknown.value
+            ).apply {
+                this.headers = mapOf("Referer" to mainUrl)
+            }
         )
         return true
     }
