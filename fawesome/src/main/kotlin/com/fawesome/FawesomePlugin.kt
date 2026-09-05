@@ -1,20 +1,19 @@
 package com.fawesome
 
+import android.content.Context
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
-import android.content.Context
-import androidx.appcompat.app.AppCompatActivity
 
 @CloudstreamPlugin
-class NineTsufixPlugin : Plugin() {
+class FawesomePlugin : Plugin() {
     override fun load(context: Context) {
-        // Mendaftarkan provider 9tsu
+        // Mendaftarkan provider Fawesome
         registerMainAPI(FawesomeProvider())
         
-        // Mendaftarkan pengaturan untuk memilih domain
+        // Memanggil showLayoutDialog sebagai pengganti showDomainDialog
         this.openSettings = { ctx ->
-            FawesomePrefs.showDomainDialog(ctx as AppCompatActivity) {
-                // Setelah menyimpan preferensi, user bisa refresh manual
+            FawesomePrefs.showLayoutDialog(ctx) {
+                // Tindakan opsional setelah pengaturan disimpan (misalnya reload)
             }
         }
     }
