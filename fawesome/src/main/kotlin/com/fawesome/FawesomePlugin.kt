@@ -1,5 +1,5 @@
 // FawesomePlugin.kt
-package com.fawesometv
+package com.fawesome
 
 import android.content.Context
 import androidx.appcompat.app.AppCompatActivity

@@ -1,5 +1,5 @@
 // FawesomePrefs.kt
-package com.fawesometv
+package com.fawesome
 
 import android.app.AlertDialog
 import android.content.Context

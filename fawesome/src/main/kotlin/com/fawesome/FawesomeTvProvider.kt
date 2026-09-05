@@ -1,5 +1,5 @@
 // FawesomeTvProvider.kt
-package com.fawesometv
+package com.fawesome
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
@@ -355,7 +355,8 @@ class FawesomeTvProvider : MainAPI() {
         return newSearchResponseList(results, hasNext)
     }
 
+    // ----- Error helper -----
     private fun errorResponse(msg: String): MovieLoadResponse {
-        return newMovieLoadResponse("Error: $msg", "", TvType.Unknown, "")
+        return newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
     }
 }
