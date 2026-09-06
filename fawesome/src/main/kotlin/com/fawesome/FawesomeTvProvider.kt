@@ -40,16 +40,14 @@ class FawesomeTvProvider : MainAPI() {
                 val response = app.get(url, headers = headers)
                 if (response.code in 200..299 && response.text.trim().startsWith("{")) {
                     val json = JSONObject(response.text)
-                    
-                    // Ekstrak langsung menggunakan key 'securityToken'
                     val token = json.optString("securityToken").takeIf { it.isNotBlank() }
                         ?: json.optString("token").takeIf { it.isNotBlank() }
 
                     if (!token.isNullOrBlank()) {
                         cachedToken = token
-                        Log.i(TAG, "SUCCESS: Security Token berhasil didapatkan -> $token")
+                        Log.i(TAG, "SUCCESS: Security Token didapatkan -> $token")
                     } else {
-                        Log.w(TAG, "WARN: Key securityToken tidak ditemukan dalam JSON: ${response.text}")
+                        Log.w(TAG, "WARN: Key securityToken tidak ditemukan dalam JSON")
                     }
                     token
                 } else null
@@ -146,8 +144,6 @@ class FawesomeTvProvider : MainAPI() {
         val subcats = json.optJSONArray("subcategories")
             ?: return@coroutineScope newHomePageResponse(emptyList())
 
-        Log.i(TAG, "Subkategori ditemukan: ${subcats.length()}")
-
         val tasks = (0 until subcats.length()).map { i ->
             async {
                 val obj = subcats.optJSONObject(i) ?: return@async null
@@ -216,26 +212,21 @@ class FawesomeTvProvider : MainAPI() {
             val videoTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
             val poster = obj.optString("hd_image").ifBlank { obj.optString("sd_image") }
 
-            val dataJson = JSONObject().apply {
-                put("title", videoTitle)
-                val videoUrl = obj.optString("video_url")
-                if (videoUrl.isNotBlank()) put("video_url", videoUrl)
-                val ccPath = obj.optString("cc_path")
-                if (ccPath.isNotBlank()) put("cc_path", ccPath)
-                val ccMulti = obj.optJSONArray("cc_path_multi_lang")
-                if (ccMulti != null && ccMulti.length() > 0) {
-                    put("cc_path_multi_lang", ccMulti)
-                }
-                if (poster.isNotBlank()) put("poster", poster)
-                val desc = obj.optString("description")
-                if (desc.isNotBlank()) put("plot", desc)
+            val videoId = obj.optString("video_id").ifBlank {
+                obj.optString("nid")
+            }.ifBlank {
+                obj.optString("actionkey").substringAfter("nodeid-=").substringAfter("nodeid=")
             }
 
-            val dataStr = dataJson.toString()
-            val encodedData = URLEncoder.encode(dataStr, "UTF-8")
-            val itemDataUrl = "fawesome://video?data=$encodedData"
+            // Membentuk URL resmi API nodeid agar tidak menghasilkan URL fawesome:// cacat
+            val itemUrl = if (videoId.isNotBlank()) {
+                "$baseApiUrl/recipes.php?searchType=nodeid&start-index=0&max-results=1&nid=$videoId"
+            } else {
+                val urlEncodedData = URLEncoder.encode(obj.toString(), "UTF-8")
+                "$mainUrl/watch?data=$urlEncodedData"
+            }
 
-            val res = newMovieSearchResponse(videoTitle, itemDataUrl, TvType.Movie) {
+            val res = newMovieSearchResponse(videoTitle, itemUrl, TvType.Movie) {
                 this.posterUrl = poster
             }
             results.add(res)
@@ -245,23 +236,66 @@ class FawesomeTvProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         return when {
-            url.startsWith("fawesome://video?data=") -> {
+            url.contains("searchType=nodeid") || url.contains("nid=") -> {
+                val (endpoint, params) = extractEndpointAndParams(url)
+                val json = apiRequest(endpoint, params) ?: return errorResponse("Gagal memuat detail API")
+                val items = json.optJSONObject("feed")?.optJSONArray("items")
+                val item = items?.optJSONObject(0) ?: return errorResponse("Detail film tidak ditemukan")
+
+                val title = item.optString("title", "Movie")
+                val poster = item.optString("hd_image").ifBlank { item.optString("sd_image") }
+                val plot = item.optString("description")
+                val videoUrl = item.optString("video_url")
+                val ccPath = item.optString("cc_path")
+                val ccMulti = item.optJSONArray("cc_path_multi_lang")
+
+                val dataJson = JSONObject().apply {
+                    if (videoUrl.isNotBlank()) put("video_url", videoUrl)
+                    if (ccPath.isNotBlank()) put("cc_path", ccPath)
+                    if (ccMulti != null && ccMulti.length() > 0) put("cc_path_multi_lang", ccMulti)
+                }
+
+                val year = item.optString("release_date").takeLast(4).toIntOrNull()
+                    ?: item.optString("date").takeLast(4).toIntOrNull()
+
+                val tagsList = item.optString("content_genre")
+                    .split(",")
+                    .map { it.trim() }
+                    .filter { it.isNotBlank() }
+
+                val actorsList = mutableListOf<String>()
+                val actorsArray = item.optJSONArray("actors")
+                if (actorsArray != null) {
+                    for (i in 0 until actorsArray.length()) {
+                        actorsList.add(actorsArray.getString(i))
+                    }
+                }
+
+                newMovieLoadResponse(title, url, TvType.Movie, dataJson.toString()) {
+                    this.posterUrl = poster
+                    this.plot = plot
+                    this.year = year
+                    this.tags = tagsList
+                    this.actors = actorsList.map { ActorData(Actor(it, "")) }
+                }
+            }
+            url.startsWith("$mainUrl/watch?data=") -> {
                 val encoded = url.substringAfter("data=")
-                val dataJson = URLDecoder.decode(encoded, "UTF-8")
-                val json = try { JSONObject(dataJson) } catch (_: Exception) { null }
+                val dataJsonStr = URLDecoder.decode(encoded, "UTF-8")
+                val json = try { JSONObject(dataJsonStr) } catch (_: Exception) { null }
                 if (json != null) {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    newMovieLoadResponse(title, url, TvType.Movie, dataJson) {
+                    newMovieLoadResponse(title, url, TvType.Movie, dataJsonStr) {
                         this.posterUrl = poster
                         this.plot = plot
                     }
                 } else {
-                    errorResponse("Invalid video data")
+                    errorResponse("Data video tidak valid")
                 }
             }
-            else -> errorResponse("Unknown URL")
+            else -> errorResponse("URL tidak dikenal")
         }
     }
 
