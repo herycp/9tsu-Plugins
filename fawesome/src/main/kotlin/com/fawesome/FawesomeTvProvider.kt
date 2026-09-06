@@ -291,7 +291,6 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        // Gunakan newExtractorLink dengan named parameters, lalu set headers setelahnya
         val link = newExtractorLink(
             source = name,
             name = "Fawesome TV",
@@ -350,7 +349,8 @@ class FawesomeTvProvider : MainAPI() {
         return newSearchResponseList(results, hasNext)
     }
 
-    private fun errorResponse(msg: String): MovieLoadResponse {
+    // Fix: make errorResponse suspend so it can call suspend function newMovieLoadResponse
+    private suspend fun errorResponse(msg: String): MovieLoadResponse {
         return newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
     }
 }
