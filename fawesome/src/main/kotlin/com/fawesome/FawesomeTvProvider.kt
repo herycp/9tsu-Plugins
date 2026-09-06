@@ -247,8 +247,6 @@ class FawesomeTvProvider : MainAPI() {
                 val poster = item.optString("hd_image").ifBlank { item.optString("sd_image") }
                 val plot = item.optString("description")
 
-                val trailerUrl = item.optString("trailer_url").ifBlank { item.optString("trailer") }
-
                 val videoUrlsArray = JSONArray()
                 val primaryUrl = item.optString("video_url")
                 if (primaryUrl.isNotBlank()) {
@@ -314,9 +312,6 @@ class FawesomeTvProvider : MainAPI() {
                     this.actors = actorsList.map { ActorData(Actor(it, "")) }
                     if (recommendationsList.isNotEmpty()) {
                         this.recommendations = recommendationsList
-                    }
-                    if (trailerUrl.isNotBlank()) {
-                        this.trailerUrl = trailerUrl
                     }
                 }
             }
