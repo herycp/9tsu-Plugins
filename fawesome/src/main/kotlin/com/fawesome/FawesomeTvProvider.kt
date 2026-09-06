@@ -28,6 +28,9 @@ class FawesomeTvProvider : MainAPI() {
     private var cachedToken: String? = null
     private val tokenMutex = Mutex()
 
+    @Volatile
+    private var lastPref: String? = null
+
     private suspend fun ensureToken(): String? {
         cachedToken?.let { return it }
 
@@ -122,25 +125,32 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse(emptyList())
-
         ensureToken()
 
-        val pref = FawesomePrefs.getMainPageType()
-        Log.i(TAG, "Memuat MainPage dengan preferensi: $pref")
+        val currentPref = FawesomePrefs.getMainPageType()
+        val prefChanged = (currentPref != lastPref)
+        if (prefChanged) {
+            lastPref = currentPref
+        }
+
+        Log.i(TAG, "Memuat MainPage [Page $page] dengan preferensi: $currentPref (prefChanged=$prefChanged)")
 
         return when {
-            pref == "home" -> loadHomePage()
-            pref.startsWith("url:") -> {
-                val url = pref.substring(4)
-                loadCategoryOrCountryPage(url)
+            currentPref == "home" -> loadHomePage(page, prefChanged)
+            currentPref.startsWith("url:") -> {
+                val url = currentPref.substring(4)
+                loadCategoryOrCountryPage(url, page, prefChanged)
             }
-            else -> loadHomePage()
+            else -> loadHomePage(page, prefChanged)
         }
     }
 
-    private suspend fun loadHomePage(): HomePageResponse = coroutineScope {
-        val json = apiRequest("sub-categories.php", mapOf("parent" to "Home"))
+    private suspend fun loadHomePage(page: Int, prefChanged: Boolean): HomePageResponse = coroutineScope {
+        val startIndex = (page - 1).toString()
+        val params = mutableMapOf("parent" to "Home", "start-index" to startIndex)
+        if (prefChanged) params["_t"] = System.currentTimeMillis().toString()
+
+        val json = apiRequest("sub-categories.php", params)
             ?: return@coroutineScope newHomePageResponse(emptyList())
 
         val subcats = json.optJSONArray("subcategories")
@@ -153,8 +163,11 @@ class FawesomeTvProvider : MainAPI() {
                 val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: return@async null
 
                 val fixedFeed = fixUrl(feedUrl)
-                val (endpoint, params) = extractEndpointAndParams(fixedFeed)
-                val categoryJson = apiRequest(endpoint, params)
+                val (endpoint, catParams) = extractEndpointAndParams(fixedFeed)
+                catParams["start-index"] = startIndex
+                if (prefChanged) catParams["_t"] = System.currentTimeMillis().toString()
+
+                val categoryJson = apiRequest(endpoint, catParams)
 
                 val movies = parseFeedItems(categoryJson)
                 if (movies.isNotEmpty()) {
@@ -167,9 +180,13 @@ class FawesomeTvProvider : MainAPI() {
         newHomePageResponse(homePageLists)
     }
 
-    private suspend fun loadCategoryOrCountryPage(fullUrl: String): HomePageResponse = coroutineScope {
+    private suspend fun loadCategoryOrCountryPage(fullUrl: String, page: Int, prefChanged: Boolean): HomePageResponse = coroutineScope {
+        val startIndex = (page - 1).toString()
         val fixedUrl = fixUrl(fullUrl)
         val (endpoint, params) = extractEndpointAndParams(fixedUrl)
+        params["start-index"] = startIndex
+        if (prefChanged) params["_t"] = System.currentTimeMillis().toString()
+
         val json = apiRequest(endpoint, params) ?: return@coroutineScope newHomePageResponse(emptyList())
 
         val subcats = json.optJSONArray("subcategories")
@@ -184,6 +201,9 @@ class FawesomeTvProvider : MainAPI() {
 
                     val fixedFeed = fixUrl(feedUrl)
                     val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
+                    subParams["start-index"] = startIndex
+                    if (prefChanged) subParams["_t"] = System.currentTimeMillis().toString()
+
                     val categoryJson = apiRequest(subEndpoint, subParams)
 
                     val movies = parseFeedItems(categoryJson)
@@ -428,14 +448,14 @@ class FawesomeTvProvider : MainAPI() {
         val json = apiRequest("recipes.php", mapOf(
             "searchType" to "search",
             "keys" to query,
-            "start-index" to ((page - 1) * 20).toString()
+            "start-index" to (page - 1).toString()
         )) ?: return newSearchResponseList(emptyList(), false)
 
         val results = parseFeedItems(json)
         val feed = json.optJSONObject("feed")
         val count = feed?.optInt("count", 0) ?: 0
         val maxResult = feed?.optInt("max_result", 20) ?: 20
-        val hasNext = results.size >= maxResult && (page * maxResult < count)
+        val hasNext = results.isNotEmpty() && (results.size >= maxResult || (count > 0 && page * maxResult < count))
 
         return newSearchResponseList(results, hasNext)
     }
