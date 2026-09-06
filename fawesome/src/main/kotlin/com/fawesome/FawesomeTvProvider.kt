@@ -16,12 +16,10 @@ class FawesomeTvProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
     private val baseApiUrl = "$mainUrl/home/new/v453/api"
 
-    // Token caching
     private var cachedToken: String? = null
     private var tokenTimestamp: Long = 0
     private val TOKEN_EXPIRY_MS = 600_000L
 
-    // ----- Token management (header "token") -----
     private suspend fun getToken(): String? {
         val now = System.currentTimeMillis()
         if (cachedToken != null && (now - tokenTimestamp) < TOKEN_EXPIRY_MS) {
@@ -42,7 +40,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // ----- API call: selalu pakai header "token" (kecuali untuk getSecurityToken) -----
     private suspend fun apiRequest(
         endpoint: String,
         params: Map<String, String>,
@@ -75,14 +72,12 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // ----- Helper: ganti domain rapi.ifood.tv -> baseApiUrl -----
     private fun fixUrl(url: String): String {
         return if (url.startsWith("https://rapi.ifood.tv")) {
             url.replace("https://rapi.ifood.tv", baseApiUrl)
         } else url
     }
 
-    // ----- Main page: berdasarkan preferensi (dengan daftar statis di FawesomePrefs) -----
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse("", emptyList())
 
@@ -90,7 +85,7 @@ class FawesomeTvProvider : MainAPI() {
         return when {
             pref == "home" -> loadHomePage()
             pref.startsWith("url:") -> {
-                val url = pref.substring(4) // hapus "url:"
+                val url = pref.substring(4)
                 loadCategoryOrCountryPage(url)
             }
             else -> loadHomePage()
@@ -109,10 +104,8 @@ class FawesomeTvProvider : MainAPI() {
             val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
             val fixedFeed = fixUrl(feedUrl)
             val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-            val desc = obj.optString("description")
             val res = newTvSeriesSearchResponse(title, fixedFeed, TvType.TvSeries) {
                 this.posterUrl = poster
-                // plot tidak tersedia di TvSeriesSearchResponse? kita skip
             }
             homeItems.add(res)
         }
@@ -139,7 +132,6 @@ class FawesomeTvProvider : MainAPI() {
         return newHomePageResponse("", items)
     }
 
-    // ----- Load: menangani URL dari feed (recipes.php) -----
     override suspend fun load(url: String): LoadResponse {
         return when {
             url.startsWith(baseApiUrl) || url.startsWith("https://rapi.ifood.tv") -> {
@@ -160,9 +152,11 @@ class FawesomeTvProvider : MainAPI() {
                 val json = try { JSONObject(dataJson) } catch (_: Exception) { null }
                 if (json != null) {
                     val title = json.optString("title", "Movie")
+                    val poster = json.optString("poster")
+                    val plot = json.optString("plot")
                     newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson) {
-                        this.plot = json.optString("plot")
-                        this.posterUrl = json.optString("poster")
+                        this.posterUrl = poster
+                        this.plot = plot
                     }
                 } else {
                     errorResponse("Invalid video data")
@@ -172,7 +166,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // Proses subcategories (jika load menghasilkan subcategories)
     private suspend fun processSubCategories(json: JSONObject, title: String): LoadResponse {
         val subcats = json.getJSONArray("subcategories")
         val episodes = mutableListOf<Episode>()
@@ -194,7 +187,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // Proses feed (mengandung items array) -> daftar movie
     private suspend fun processFeed(json: JSONObject, title: String): LoadResponse {
         val feed = json.optJSONObject("feed") ?: return errorResponse("No feed")
         val items = feed.optJSONArray("items") ?: return errorResponse("No items")
@@ -203,7 +195,6 @@ class FawesomeTvProvider : MainAPI() {
         for (i in 0 until items.length()) {
             val obj = items.getJSONObject(i)
             val videoTitle = obj.getString("title")
-            // Build data untuk loadLinks
             val dataJson = JSONObject().apply {
                 put("title", videoTitle)
                 val videoUrl = obj.optString("video_url")
@@ -237,7 +228,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // ----- Ekstrak endpoint & params dari URL -----
     private fun extractEndpointAndParams(fullUrl: String): Pair<String, MutableMap<String, String>> {
         val base = baseApiUrl + "/"
         val afterBase = if (fullUrl.startsWith(base)) {
@@ -260,7 +250,6 @@ class FawesomeTvProvider : MainAPI() {
         return endpoint to params
     }
 
-    // ----- Load links (video & subtitle) -----
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -276,7 +265,6 @@ class FawesomeTvProvider : MainAPI() {
 
         var found = false
 
-        // Subtitles
         val ccPath = json.optString("cc_path")
         if (ccPath.isNotBlank()) {
             subtitleCallback.invoke(SubtitleFile(ccPath, "English"))
@@ -295,7 +283,6 @@ class FawesomeTvProvider : MainAPI() {
             }
         }
 
-        // Video URL
         val videoUrl = json.optString("video_url")
         if (videoUrl.isBlank()) return found
 
@@ -303,7 +290,7 @@ class FawesomeTvProvider : MainAPI() {
             videoUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
             videoUrl.contains(".mpd") -> ExtractorLinkType.DASH
             videoUrl.endsWith(".mp4") -> ExtractorLinkType.VIDEO
-            else -> ExtractorLinkType.VIDEO // fallback
+            else -> ExtractorLinkType.VIDEO
         }
 
         callback.invoke(
@@ -320,7 +307,6 @@ class FawesomeTvProvider : MainAPI() {
         return true
     }
 
-    // ----- Search -----
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val json = apiRequest("recipes.php", mapOf(
             "searchType" to "search",
@@ -367,7 +353,6 @@ class FawesomeTvProvider : MainAPI() {
         return newSearchResponseList(results, hasNext)
     }
 
-    // ----- Error helper -----
     private fun errorResponse(msg: String): MovieLoadResponse {
         return newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
     }
