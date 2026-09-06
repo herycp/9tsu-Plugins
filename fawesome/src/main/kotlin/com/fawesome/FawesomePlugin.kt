@@ -14,11 +14,10 @@ class FawesomePlugin : Plugin() {
     override fun load(context: Context) {
         registerMainAPI(FawesomeTvProvider())
 
-        // Menambahkan pengaturan untuk memilih halaman depan
         this.openSettings = { ctx ->
             CoroutineScope(Dispatchers.Main).launch {
                 FawesomePrefs.showMainPageDialog(ctx as AppCompatActivity) {
-                    // Setelah menyimpan preferensi, user bisa refresh manual
+                    // Simpan sudah dilakukan di dialog
                 }
             }
         }

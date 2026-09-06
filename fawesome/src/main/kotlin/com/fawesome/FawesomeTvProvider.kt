@@ -154,7 +154,6 @@ class FawesomeTvProvider : MainAPI() {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    // Pass dataJson as dataUrl, url can be dummy
                     newMovieLoadResponse(title, "", TvType.Movie, dataJson) {
                         this.posterUrl = poster
                         this.plot = plot
@@ -292,10 +291,10 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        // Buat ExtractorLink langsung tanpa named parameter yang bermasalah
-        val link = ExtractorLink(
+        // Gunakan newExtractorLink dengan semua parameter
+        val link = newExtractorLink(
             name = "Fawesome TV",
-            source = this.name,
+            source = name,
             url = videoUrl,
             type = type,
             quality = Qualities.Unknown.value,

@@ -12,7 +12,6 @@ object FawesomePrefs {
     private const val MAIN_PAGE_KEY = "fawesome_main_page"
     private const val DEFAULT_MAIN_PAGE = "home"
 
-    // Daftar statis kategori & negara dengan URL penuh (domain sudah di-fix)
     private val categoryItems = listOf(
         "Action" to "url:https://fawesome.tv/home/new/v453/api/shows.php?searchType=listoflist&keys=9983&siteId=236&country=US",
         "Western" to "url:https://fawesome.tv/home/new/v453/api/shows.php?searchType=listoflist&keys=10019&siteId=236&country=US",
