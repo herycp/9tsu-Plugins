@@ -1,10 +1,13 @@
 package com.fawesome
 
+import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.net.URLDecoder
@@ -16,33 +19,51 @@ class FawesomeTvProvider : MainAPI() {
     override var lang = "en"
     override var hasMainPage = true
 
+    private val TAG = "FawesomeDebug"
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
     private val baseApiUrl = "$mainUrl/home/new/v453/api"
 
+    // Token disimpan dan dipakai berulang kali
+    @Volatile
     private var cachedToken: String? = null
-    private var tokenTimestamp: Long = 0
-    private val TOKEN_EXPIRY_MS = 600_000L
+    private val tokenMutex = Mutex()
 
-    private suspend fun getToken(): String? {
-        val now = System.currentTimeMillis()
-        if (cachedToken != null && (now - tokenTimestamp) < TOKEN_EXPIRY_MS) {
-            return cachedToken
-        }
-        return try {
+    // Fungsi ini hanya akan melakukan HTTP Call 1 KALI saja sepanjang token belum ada
+    private suspend fun ensureToken(): String? {
+        cachedToken?.let { return it }
+
+        return tokenMutex.withLock {
+            cachedToken?.let { return@withLock it }
+
             val url = "$baseApiUrl/getSecurityToken.php?siteId=236&auth-token=1217575&country=US"
-            val response = app.get(url, headers = mapOf("Referer" to mainUrl, "User-Agent" to userAgent))
-            val json = JSONObject(response.text)
-            
-            val token = json.optString("token").takeIf { it.isNotBlank() } 
-                ?: json.optJSONObject("data")?.optString("token")
-                
-            if (!token.isNullOrBlank()) {
-                cachedToken = token
-                tokenTimestamp = now
+            val headers = mapOf("Referer" to mainUrl, "User-Agent" to userAgent)
+
+            Log.d(TAG, "[FETCH TOKEN ONCE] -> $url")
+
+            try {
+                val response = app.get(url, headers = headers)
+                Log.d(TAG, "[TOKEN RESPONSE CODE] -> ${response.code}")
+
+                if (response.code in 200..299) {
+                    val json = JSONObject(response.text)
+                    val token = json.optString("token").takeIf { it.isNotBlank() }
+                        ?: json.optJSONObject("data")?.optString("token")
+
+                    if (!token.isNullOrBlank()) {
+                        cachedToken = token
+                        Log.i(TAG, "SUCCESS: Token berhasil didapatkan & disimpan -> $token")
+                    } else {
+                        Log.e(TAG, "ERROR: Payload JSON tidak berisi token")
+                    }
+                    token
+                } else {
+                    Log.e(TAG, "HTTP ERROR [${response.code}] saat mengambil token")
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "EXCEPTION saat ensureToken(): ${e.localizedMessage}")
+                null
             }
-            token
-        } catch (_: Exception) {
-            null
         }
     }
 
@@ -51,32 +72,55 @@ class FawesomeTvProvider : MainAPI() {
         params: Map<String, String>,
         addToken: Boolean = true
     ): JSONObject? {
+        val (cleanEndpoint, queryParams) = if (endpoint.contains("?")) {
+            extractEndpointAndParams(endpoint)
+        } else {
+            endpoint to params.toMutableMap()
+        }
+
         val allParams = mutableMapOf<String, String>().apply {
+            putAll(queryParams)
             putAll(params)
             put("siteId", "236")
             put("country", "US")
         }
 
-        val fullUrl = "$baseApiUrl/$endpoint?" + allParams.entries.joinToString("&") {
+        val queryString = allParams.entries.joinToString("&") {
             "${it.key}=${URLEncoder.encode(it.value, "UTF-8")}"
+        }
+
+        val fullUrl = if (cleanEndpoint.startsWith("http")) {
+            "$cleanEndpoint?$queryString"
+        } else {
+            "$baseApiUrl/$cleanEndpoint?$queryString"
         }
 
         val headers = mutableMapOf(
             "Referer" to mainUrl,
             "User-Agent" to userAgent
         )
-        
+
         if (addToken) {
-            val token = getToken()
+            val token = ensureToken()
             if (token != null) {
                 headers["token"] = token
             }
         }
 
+        Log.d(TAG, "[EXECUTE API] -> $fullUrl")
+
         return try {
             val response = app.get(fullUrl, headers = headers)
-            JSONObject(response.text)
-        } catch (_: Exception) {
+            Log.d(TAG, "[STATUS ${response.code}] <- $cleanEndpoint")
+
+            if (response.code in 200..299) {
+                JSONObject(response.text)
+            } else {
+                Log.e(TAG, "API ERROR [${response.code}] -> $fullUrl")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "EXCEPTION pada apiRequest($cleanEndpoint): ${e.localizedMessage}")
             null
         }
     }
@@ -90,7 +134,12 @@ class FawesomeTvProvider : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(emptyList())
 
+        // Ambil token sekali di awal sebelum memuat halaman beranda
+        ensureToken()
+
         val pref = FawesomePrefs.getMainPageType()
+        Log.i(TAG, "Memuat MainPage dengan preferensi: $pref")
+
         return when {
             pref == "home" -> loadHomePage()
             pref.startsWith("url:") -> {
@@ -101,14 +150,16 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // Mengambil feed kategori secara Paralel/Konkuren untuk mencegah timeout
     private suspend fun loadHomePage(): HomePageResponse = coroutineScope {
         val json = apiRequest("sub-categories.php", mapOf("parent" to "Home"))
             ?: return@coroutineScope newHomePageResponse(emptyList())
 
-        val subcats = json.optJSONArray("subcategories") 
+        val subcats = json.optJSONArray("subcategories")
             ?: return@coroutineScope newHomePageResponse(emptyList())
 
+        Log.i(TAG, "Jumlah subkategori ditemukan: ${subcats.length()}")
+
+        // Request paralel menggunakan token yang sudah di-cache di awal
         val tasks = (0 until subcats.length()).map { i ->
             async {
                 val obj = subcats.optJSONObject(i) ?: return@async null
@@ -304,6 +355,8 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
+        ensureToken()
+
         val json = apiRequest("shows.php", mapOf(
             "searchType" to "search",
             "keys" to query,
