@@ -2,6 +2,9 @@ package com.fawesome
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.net.URLDecoder
@@ -78,7 +81,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // Perbaikan penggantian domain rapi.ifood.tv -> fawesome.tv
     private fun fixUrl(url: String): String {
         return if (url.startsWith("https://rapi.ifood.tv")) {
             url.replace("https://rapi.ifood.tv", mainUrl)
@@ -99,53 +101,60 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    private suspend fun loadHomePage(): HomePageResponse {
+    // Mengambil feed kategori secara Paralel/Konkuren untuk mencegah timeout
+    private suspend fun loadHomePage(): HomePageResponse = coroutineScope {
         val json = apiRequest("sub-categories.php", mapOf("parent" to "Home"))
-            ?: return newHomePageResponse(emptyList())
+            ?: return@coroutineScope newHomePageResponse(emptyList())
 
-        val subcats = json.optJSONArray("subcategories") ?: return newHomePageResponse(emptyList())
-        val homePageLists = mutableListOf<HomePageList>()
+        val subcats = json.optJSONArray("subcategories") 
+            ?: return@coroutineScope newHomePageResponse(emptyList())
 
-        // Looping setiap subkategori untuk mengambil daftar filmnya
-        for (i in 0 until subcats.length()) {
-            val obj = subcats.optJSONObject(i) ?: continue
-            val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
-            val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
+        val tasks = (0 until subcats.length()).map { i ->
+            async {
+                val obj = subcats.optJSONObject(i) ?: return@async null
+                val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: return@async null
+                val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: return@async null
 
-            val fixedFeed = fixUrl(feedUrl)
-            val (endpoint, params) = extractEndpointAndParams(fixedFeed)
-            val categoryJson = apiRequest(endpoint, params)
+                val fixedFeed = fixUrl(feedUrl)
+                val (endpoint, params) = extractEndpointAndParams(fixedFeed)
+                val categoryJson = apiRequest(endpoint, params)
 
-            val movies = parseFeedItems(categoryJson)
-            if (movies.isNotEmpty()) {
-                homePageLists.add(HomePageList(categoryTitle, movies))
+                val movies = parseFeedItems(categoryJson)
+                if (movies.isNotEmpty()) {
+                    HomePageList(categoryTitle, movies)
+                } else null
             }
         }
-        return newHomePageResponse(homePageLists)
+
+        val homePageLists = tasks.awaitAll().filterNotNull()
+        newHomePageResponse(homePageLists)
     }
 
-    private suspend fun loadCategoryOrCountryPage(fullUrl: String): HomePageResponse {
+    private suspend fun loadCategoryOrCountryPage(fullUrl: String): HomePageResponse = coroutineScope {
         val (endpoint, params) = extractEndpointAndParams(fullUrl)
-        val json = apiRequest(endpoint, params) ?: return newHomePageResponse(emptyList())
+        val json = apiRequest(endpoint, params) ?: return@coroutineScope newHomePageResponse(emptyList())
 
         val subcats = json.optJSONArray("subcategories")
         val homePageLists = mutableListOf<HomePageList>()
 
         if (subcats != null) {
-            for (i in 0 until subcats.length()) {
-                val obj = subcats.optJSONObject(i) ?: continue
-                val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
-                val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
+            val tasks = (0 until subcats.length()).map { i ->
+                async {
+                    val obj = subcats.optJSONObject(i) ?: return@async null
+                    val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: return@async null
+                    val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: return@async null
 
-                val fixedFeed = fixUrl(feedUrl)
-                val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
-                val categoryJson = apiRequest(subEndpoint, subParams)
+                    val fixedFeed = fixUrl(feedUrl)
+                    val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
+                    val categoryJson = apiRequest(subEndpoint, subParams)
 
-                val movies = parseFeedItems(categoryJson)
-                if (movies.isNotEmpty()) {
-                    homePageLists.add(HomePageList(categoryTitle, movies))
+                    val movies = parseFeedItems(categoryJson)
+                    if (movies.isNotEmpty()) {
+                        HomePageList(categoryTitle, movies)
+                    } else null
                 }
             }
+            homePageLists.addAll(tasks.awaitAll().filterNotNull())
         } else if (json.has("feed")) {
             val movies = parseFeedItems(json)
             if (movies.isNotEmpty()) {
@@ -153,10 +162,9 @@ class FawesomeTvProvider : MainAPI() {
             }
         }
 
-        return newHomePageResponse(homePageLists)
+        newHomePageResponse(homePageLists)
     }
 
-    // Fungsi pembantu untuk mengurai daftar film dari feed API Fawesome
     private fun parseFeedItems(json: JSONObject?): List<SearchResponse> {
         if (json == null) return emptyList()
         val feed = json.optJSONObject("feed") ?: return emptyList()
