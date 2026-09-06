@@ -147,7 +147,7 @@ class FawesomeTvProvider : MainAPI() {
 
     private suspend fun loadHomePage(page: Int, prefChanged: Boolean): HomePageResponse = coroutineScope {
         val startIndex = (page - 1).toString()
-        val params = mutableMapOf("parent" to "Home", "start-index" to startIndex)
+        val params = mutableMapOf("parent" to "Home")
         if (prefChanged) params["_t"] = System.currentTimeMillis().toString()
 
         val json = apiRequest("sub-categories.php", params)
@@ -184,7 +184,16 @@ class FawesomeTvProvider : MainAPI() {
         val startIndex = (page - 1).toString()
         val fixedUrl = fixUrl(fullUrl)
         val (endpoint, params) = extractEndpointAndParams(fixedUrl)
-        params["start-index"] = startIndex
+
+        // Cek apakah endpoint merupakan kontainer subkategori (seperti shows.php dengan listoflist)
+        val isContainer = endpoint.contains("sub-categories") ||
+                params["searchType"] == "listoflist" ||
+                fullUrl.contains("listoflist")
+
+        // Jika bukan kontainer (misal: feed langsung), tambahkan start-index ke request utama
+        if (!isContainer) {
+            params["start-index"] = startIndex
+        }
         if (prefChanged) params["_t"] = System.currentTimeMillis().toString()
 
         val json = apiRequest(endpoint, params) ?: return@coroutineScope newHomePageResponse(emptyList())
@@ -201,6 +210,8 @@ class FawesomeTvProvider : MainAPI() {
 
                     val fixedFeed = fixUrl(feedUrl)
                     val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
+                    
+                    // start-index diterapkan pada feed subkategori (misal: Best Japanese Movies)
                     subParams["start-index"] = startIndex
                     if (prefChanged) subParams["_t"] = System.currentTimeMillis().toString()
 
