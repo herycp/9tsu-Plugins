@@ -3,6 +3,7 @@ package com.fawesome
 import android.util.Log
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import com.lagradost.cloudstream3.utils.AppUtils.addTrailer
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -264,6 +265,29 @@ class FawesomeTvProvider : MainAPI() {
         return results
     }
 
+    private fun parseRecommendations(json: JSONObject?): List<SearchResponse> {
+        if (json == null) return emptyList()
+        val list = mutableListOf<SearchResponse>()
+
+        // 1. Ekstrak langsung dari item feed
+        list.addAll(parseFeedItems(json))
+
+        // 2. Ekstrak jika response berisi array subcategories
+        val subcats = json.optJSONArray("subcategories")
+        if (subcats != null) {
+            for (i in 0 until subcats.length()) {
+                val subObj = subcats.optJSONObject(i) ?: continue
+                val subFeed = subObj.optJSONObject("feed")
+                if (subFeed != null) {
+                    val dummyContainer = JSONObject().apply { put("feed", subFeed) }
+                    list.addAll(parseFeedItems(dummyContainer))
+                }
+            }
+        }
+
+        return list.distinctBy { it.name }
+    }
+
     override suspend fun load(url: String): LoadResponse {
         return when {
             url.contains("searchType=nodeid") || url.contains("nid=") -> {
@@ -275,6 +299,12 @@ class FawesomeTvProvider : MainAPI() {
                 val title = item.optString("title", "Movie")
                 val poster = item.optString("hd_image").ifBlank { item.optString("sd_image") }
                 val plot = item.optString("description")
+
+                // Perbaikan Trailer: Cek kunci alternatif pada JSON
+                val trailerUrl = item.optString("trailer_url")
+                    .ifBlank { item.optString("trailer") }
+                    .ifBlank { item.optString("trailer_path") }
+                    .ifBlank { item.optString("preview_url") }
 
                 val videoUrlsArray = JSONArray()
                 val primaryUrl = item.optString("video_url")
@@ -324,14 +354,39 @@ class FawesomeTvProvider : MainAPI() {
                     }
                 }
 
-                val recommendationsList = mutableListOf<SearchResponse>()
-                val deeplink = item.optString("deeplink_url").takeIf { it.isNotBlank() }
-                if (deeplink != null) {
-                    val fixedDeep = fixUrl(deeplink)
+                // Perbaikan Recommendations: Cek kunci alternatif & Fallback ke pencarian Genre
+                var recJson: JSONObject? = null
+                val rawRecUrl = item.optString("deeplink_url")
+                    .ifBlank { item.optString("deeplink") }
+                    .ifBlank { item.optString("feed") }
+                    .ifBlank { item.optString("related_url") }
+
+                val videoId = item.optString("video_id").ifBlank { item.optString("nid") }
+
+                if (rawRecUrl.isNotBlank() && (videoId.isBlank() || !rawRecUrl.contains("nid=$videoId"))) {
+                    val fixedDeep = fixUrl(rawRecUrl)
                     val (recEnd, recParams) = extractEndpointAndParams(fixedDeep)
-                    val recJson = apiRequest(recEnd, recParams)
-                    recommendationsList.addAll(parseFeedItems(recJson))
+                    recJson = apiRequest(recEnd, recParams)
                 }
+
+                val recList = parseRecommendations(recJson).toMutableList()
+
+                // Fallback: Jika deeplink kosong atau tidak menghasilkan rekomendasi, gunakan pencarian berdasar genre
+                if (recList.isEmpty()) {
+                    val genre = item.optString("primary_genre")
+                        .ifBlank { tagsList.firstOrNull() ?: "" }
+                        .trim()
+                    if (genre.isNotBlank()) {
+                        val fallbackJson = apiRequest("recipes.php", mapOf(
+                            "searchType" to "search",
+                            "keys" to genre,
+                            "start-index" to "0"
+                        ))
+                        recList.addAll(parseRecommendations(fallbackJson))
+                    }
+                }
+
+                val finalRecommendations = recList.filter { it.name != title }.distinctBy { it.name }
 
                 newMovieLoadResponse(title, url, TvType.Movie, dataJson.toString()) {
                     this.posterUrl = poster
@@ -339,8 +394,11 @@ class FawesomeTvProvider : MainAPI() {
                     this.year = year
                     this.tags = tagsList
                     this.actors = actorsList.map { ActorData(Actor(it, "")) }
-                    if (recommendationsList.isNotEmpty()) {
-                        this.recommendations = recommendationsList
+                    if (finalRecommendations.isNotEmpty()) {
+                        this.recommendations = finalRecommendations
+                    }
+                    if (trailerUrl.isNotBlank()) {
+                        addTrailer(trailerUrl)
                     }
                 }
             }
