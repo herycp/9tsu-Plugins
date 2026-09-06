@@ -154,7 +154,6 @@ class FawesomeTvProvider : MainAPI() {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    // Panggil newMovieLoadResponse tanpa named parameter, urutkan sesuai signature
                     newMovieLoadResponse(title, "", TvType.Movie, dataJson) {
                         this.posterUrl = poster
                         this.plot = plot
@@ -264,7 +263,6 @@ class FawesomeTvProvider : MainAPI() {
 
         var found = false
 
-        // Subtitles
         val ccPath = json.optString("cc_path")
         if (ccPath.isNotBlank()) {
             subtitleCallback.invoke(SubtitleFile(ccPath, "English"))
@@ -293,15 +291,15 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        // Gunakan newExtractorLink secara posisional, tanpa named parameter
+        // Gunakan newExtractorLink dengan named parameters, lalu set headers setelahnya
         val link = newExtractorLink(
-            "Fawesome TV",
-            name,
-            videoUrl,
-            type,
-            Qualities.Unknown.value,
-            mapOf("Referer" to mainUrl)
+            source = name,
+            name = "Fawesome TV",
+            url = videoUrl,
+            type = type,
+            quality = Qualities.Unknown.value
         )
+        link.headers = mapOf("Referer" to mainUrl)
         callback.invoke(link)
         return true
     }
