@@ -1,4 +1,3 @@
-// FawesomeTvProvider.kt
 package com.fawesome
 
 import com.lagradost.cloudstream3.*
@@ -154,10 +153,10 @@ class FawesomeTvProvider : MainAPI() {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson) {
-                        this.posterUrl = poster
-                        this.plot = plot
-                    }
+                    val response = newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson)
+                    response.posterUrl = poster
+                    response.plot = plot
+                    response
                 } else {
                     errorResponse("Invalid video data")
                 }
@@ -177,14 +176,14 @@ class FawesomeTvProvider : MainAPI() {
             val ep = newEpisode(subTitle) {
                 this.data = fixedFeed
                 this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-                this.plot = obj.optString("description")
+                // plot not available in Episode
             }
             episodes.add(ep)
         }
         if (episodes.isEmpty()) return errorResponse("No subcategories found")
-        return newTvSeriesLoadResponse(title, "", TvType.TvSeries, episodes) {
-            this.plot = "Subcategories"
-        }
+        val response = newTvSeriesLoadResponse(title, "", TvType.TvSeries, episodes)
+        response.plot = "Subcategories"
+        return response
     }
 
     private suspend fun processFeed(json: JSONObject, title: String): LoadResponse {
@@ -217,15 +216,14 @@ class FawesomeTvProvider : MainAPI() {
             val ep = newEpisode(videoTitle) {
                 this.data = videoUrl
                 this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-                this.plot = obj.optString("description")
             }
             episodes.add(ep)
         }
 
         if (episodes.isEmpty()) return errorResponse("No movies found")
-        return newTvSeriesLoadResponse(title, "", TvType.Movie, episodes) {
-            this.plot = "Movies"
-        }
+        val response = newTvSeriesLoadResponse(title, "", TvType.Movie, episodes)
+        response.plot = "Movies"
+        return response
     }
 
     private fun extractEndpointAndParams(fullUrl: String): Pair<String, MutableMap<String, String>> {
@@ -293,17 +291,15 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        callback.invoke(
-            newExtractorLink(
-                name = "Fawesome TV",
-                source = name,
-                url = videoUrl,
-                type = type,
-                quality = Qualities.Unknown.value
-            ).apply {
-                this.headers = mapOf("Referer" to mainUrl)
-            }
+        val link = newExtractorLink(
+            name = "Fawesome TV",
+            source = name,
+            url = videoUrl,
+            type = type,
+            quality = Qualities.Unknown.value
         )
+        link.headers = mapOf("Referer" to mainUrl)
+        callback.invoke(link)
         return true
     }
 
@@ -354,6 +350,8 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     private fun errorResponse(msg: String): MovieLoadResponse {
-        return newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
+        val response = newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
+        response.plot = msg
+        return response
     }
 }
