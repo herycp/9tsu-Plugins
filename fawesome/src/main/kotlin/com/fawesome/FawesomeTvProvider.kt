@@ -11,8 +11,6 @@ class FawesomeTvProvider : MainAPI() {
     override var mainUrl = "https://fawesome.tv"
     override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama)
     override var lang = "en"
-    
-    // AKTIFKAN HALAMAN DEPAN (Mencegah provider tersembunyi di Beranda)
     override var hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
@@ -32,7 +30,6 @@ class FawesomeTvProvider : MainAPI() {
             val response = app.get(url, headers = mapOf("Referer" to mainUrl, "User-Agent" to userAgent))
             val json = JSONObject(response.text)
             
-            // Ekstrak token dengan fallback aman
             val token = json.optString("token").takeIf { it.isNotBlank() } 
                 ?: json.optJSONObject("data")?.optString("token")
                 
@@ -81,14 +78,15 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
+    // Perbaikan penggantian domain rapi.ifood.tv -> fawesome.tv
     private fun fixUrl(url: String): String {
         return if (url.startsWith("https://rapi.ifood.tv")) {
-            url.replace("https://rapi.ifood.tv", baseApiUrl)
+            url.replace("https://rapi.ifood.tv", mainUrl)
         } else url
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse("", emptyList())
+        if (page > 1) return newHomePageResponse(emptyList())
 
         val pref = FawesomePrefs.getMainPageType()
         return when {
@@ -103,58 +101,102 @@ class FawesomeTvProvider : MainAPI() {
 
     private suspend fun loadHomePage(): HomePageResponse {
         val json = apiRequest("sub-categories.php", mapOf("parent" to "Home"))
-            ?: return newHomePageResponse("Error", emptyList())
+            ?: return newHomePageResponse(emptyList())
 
-        val items = json.optJSONArray("subcategories") ?: return newHomePageResponse("Home", emptyList())
-        val homeItems = mutableListOf<SearchResponse>()
-        for (i in 0 until items.length()) {
-            val obj = items.getJSONObject(i)
-            val title = obj.getString("title")
+        val subcats = json.optJSONArray("subcategories") ?: return newHomePageResponse(emptyList())
+        val homePageLists = mutableListOf<HomePageList>()
+
+        // Looping setiap subkategori untuk mengambil daftar filmnya
+        for (i in 0 until subcats.length()) {
+            val obj = subcats.optJSONObject(i) ?: continue
+            val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
             val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
+
             val fixedFeed = fixUrl(feedUrl)
-            val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-            val res = newTvSeriesSearchResponse(title, fixedFeed, TvType.TvSeries) {
-                this.posterUrl = poster
+            val (endpoint, params) = extractEndpointAndParams(fixedFeed)
+            val categoryJson = apiRequest(endpoint, params)
+
+            val movies = parseFeedItems(categoryJson)
+            if (movies.isNotEmpty()) {
+                homePageLists.add(HomePageList(categoryTitle, movies))
             }
-            homeItems.add(res)
         }
-        return newHomePageResponse("Home", homeItems)
+        return newHomePageResponse(homePageLists)
     }
 
     private suspend fun loadCategoryOrCountryPage(fullUrl: String): HomePageResponse {
         val (endpoint, params) = extractEndpointAndParams(fullUrl)
-        val json = apiRequest(endpoint, params) ?: return newHomePageResponse("Error", emptyList())
+        val json = apiRequest(endpoint, params) ?: return newHomePageResponse(emptyList())
 
-        val subcats = json.optJSONArray("subcategories") ?: return newHomePageResponse("", emptyList())
-        val items = mutableListOf<SearchResponse>()
-        for (i in 0 until subcats.length()) {
-            val obj = subcats.getJSONObject(i)
-            val title = obj.getString("title")
-            val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
-            val fixedFeed = fixUrl(feedUrl)
-            val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-            val res = newTvSeriesSearchResponse(title, fixedFeed, TvType.TvSeries) {
+        val subcats = json.optJSONArray("subcategories")
+        val homePageLists = mutableListOf<HomePageList>()
+
+        if (subcats != null) {
+            for (i in 0 until subcats.length()) {
+                val obj = subcats.optJSONObject(i) ?: continue
+                val categoryTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
+                val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
+
+                val fixedFeed = fixUrl(feedUrl)
+                val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
+                val categoryJson = apiRequest(subEndpoint, subParams)
+
+                val movies = parseFeedItems(categoryJson)
+                if (movies.isNotEmpty()) {
+                    homePageLists.add(HomePageList(categoryTitle, movies))
+                }
+            }
+        } else if (json.has("feed")) {
+            val movies = parseFeedItems(json)
+            if (movies.isNotEmpty()) {
+                homePageLists.add(HomePageList("Movies", movies))
+            }
+        }
+
+        return newHomePageResponse(homePageLists)
+    }
+
+    // Fungsi pembantu untuk mengurai daftar film dari feed API Fawesome
+    private fun parseFeedItems(json: JSONObject?): List<SearchResponse> {
+        if (json == null) return emptyList()
+        val feed = json.optJSONObject("feed") ?: return emptyList()
+        val items = feed.optJSONArray("items") ?: return emptyList()
+        val results = mutableListOf<SearchResponse>()
+
+        for (i in 0 until items.length()) {
+            val obj = items.optJSONObject(i) ?: continue
+            val videoTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
+            val poster = obj.optString("hd_image").ifBlank { obj.optString("sd_image") }
+
+            val dataJson = JSONObject().apply {
+                put("title", videoTitle)
+                val videoUrl = obj.optString("video_url")
+                if (videoUrl.isNotBlank()) put("video_url", videoUrl)
+                val ccPath = obj.optString("cc_path")
+                if (ccPath.isNotBlank()) put("cc_path", ccPath)
+                val ccMulti = obj.optJSONArray("cc_path_multi_lang")
+                if (ccMulti != null && ccMulti.length() > 0) {
+                    put("cc_path_multi_lang", ccMulti)
+                }
+                if (poster.isNotBlank()) put("poster", poster)
+                val desc = obj.optString("description")
+                if (desc.isNotBlank()) put("plot", desc)
+            }
+
+            val dataStr = dataJson.toString()
+            val encodedData = URLEncoder.encode(dataStr, "UTF-8")
+            val itemDataUrl = "fawesome://video?data=$encodedData"
+
+            val res = newMovieSearchResponse(videoTitle, itemDataUrl, TvType.Movie) {
                 this.posterUrl = poster
             }
-            items.add(res)
+            results.add(res)
         }
-        return newHomePageResponse("", items)
+        return results
     }
 
     override suspend fun load(url: String): LoadResponse {
         return when {
-            url.startsWith(baseApiUrl) || url.startsWith("https://rapi.ifood.tv") -> {
-                val fixedUrl = fixUrl(url)
-                val (endpoint, params) = extractEndpointAndParams(fixedUrl)
-                val json = apiRequest(endpoint, params) ?: return errorResponse("API call failed")
-                if (json.has("feed")) {
-                    processFeed(json, "Feed")
-                } else if (json.has("subcategories")) {
-                    processSubCategories(json, "Subcategories")
-                } else {
-                    errorResponse("Unknown API response")
-                }
-            }
             url.startsWith("fawesome://video?data=") -> {
                 val encoded = url.substringAfter("data=")
                 val dataJson = URLDecoder.decode(encoded, "UTF-8")
@@ -163,7 +205,7 @@ class FawesomeTvProvider : MainAPI() {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    newMovieLoadResponse(title, "", TvType.Movie, dataJson) {
+                    newMovieLoadResponse(title, url, TvType.Movie, dataJson) {
                         this.posterUrl = poster
                         this.plot = plot
                     }
@@ -175,68 +217,8 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    private suspend fun processSubCategories(json: JSONObject, title: String): LoadResponse {
-        val subcats = json.optJSONArray("subcategories") ?: return errorResponse("No subcategories found")
-        val episodes = mutableListOf<Episode>()
-        for (i in 0 until subcats.length()) {
-            val obj = subcats.getJSONObject(i)
-            val subTitle = obj.getString("title")
-            val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
-            val fixedFeed = fixUrl(feedUrl)
-            val ep = newEpisode(subTitle) {
-                this.data = fixedFeed
-                this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-            }
-            episodes.add(ep)
-        }
-        if (episodes.isEmpty()) return errorResponse("No subcategories found")
-        return newTvSeriesLoadResponse(title, "", TvType.TvSeries, episodes) {
-            this.plot = "Subcategories"
-        }
-    }
-
-    private suspend fun processFeed(json: JSONObject, title: String): LoadResponse {
-        val feed = json.optJSONObject("feed") ?: return errorResponse("No feed")
-        val items = feed.optJSONArray("items") ?: return errorResponse("No items")
-        val episodes = mutableListOf<Episode>()
-
-        for (i in 0 until items.length()) {
-            val obj = items.getJSONObject(i)
-            val videoTitle = obj.getString("title")
-            val dataJson = JSONObject().apply {
-                put("title", videoTitle)
-                val videoUrl = obj.optString("video_url")
-                if (videoUrl.isNotBlank()) put("video_url", videoUrl)
-                val ccPath = obj.optString("cc_path")
-                if (ccPath.isNotBlank()) put("cc_path", ccPath)
-                val ccMulti = obj.optJSONArray("cc_path_multi_lang")
-                if (ccMulti != null && ccMulti.length() > 0) {
-                    put("cc_path_multi_lang", ccMulti)
-                }
-                val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-                if (poster.isNotBlank()) put("poster", poster)
-                val desc = obj.optString("description")
-                if (desc.isNotBlank()) put("plot", desc)
-            }
-            val dataStr = dataJson.toString()
-            val encodedData = URLEncoder.encode(dataStr, "UTF-8")
-            val videoUrl = "fawesome://video?data=$encodedData"
-
-            val ep = newEpisode(videoTitle) {
-                this.data = videoUrl
-                this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-            }
-            episodes.add(ep)
-        }
-
-        if (episodes.isEmpty()) return errorResponse("No movies found")
-        return newTvSeriesLoadResponse(title, "", TvType.Movie, episodes) {
-            this.plot = "Movies"
-        }
-    }
-
     private fun extractEndpointAndParams(fullUrl: String): Pair<String, MutableMap<String, String>> {
-        val base = baseApiUrl + "/"
+        val base = "$baseApiUrl/"
         val afterBase = if (fullUrl.startsWith(base)) {
             fullUrl.substring(base.length)
         } else {
@@ -314,49 +296,18 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        // DIUBAH: Menggunakan shows.php pengganti recipes.php
         val json = apiRequest("shows.php", mapOf(
             "searchType" to "search",
             "keys" to query,
             "start-index" to ((page - 1) * 20).toString()
         )) ?: return newSearchResponseList(emptyList(), false)
 
-        val feed = json.optJSONObject("feed") ?: return newSearchResponseList(emptyList(), false)
-        val items = feed.optJSONArray("items") ?: return newSearchResponseList(emptyList(), false)
-
-        val results = mutableListOf<SearchResponse>()
-        for (i in 0 until items.length()) {
-            val obj = items.getJSONObject(i)
-            val title = obj.getString("title")
-            val dataJson = JSONObject().apply {
-                put("title", title)
-                val videoUrl = obj.optString("video_url")
-                if (videoUrl.isNotBlank()) put("video_url", videoUrl)
-                val ccPath = obj.optString("cc_path")
-                if (ccPath.isNotBlank()) put("cc_path", ccPath)
-                val ccMulti = obj.optJSONArray("cc_path_multi_lang")
-                if (ccMulti != null && ccMulti.length() > 0) {
-                    put("cc_path_multi_lang", ccMulti)
-                }
-                val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-                if (poster.isNotBlank()) put("poster", poster)
-                val desc = obj.optString("description")
-                if (desc.isNotBlank()) put("plot", desc)
-            }
-            val dataStr = dataJson.toString()
-            val encodedData = URLEncoder.encode(dataStr, "UTF-8")
-            val videoUrl = "fawesome://video?data=$encodedData"
-            val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-
-            val res = newTvSeriesSearchResponse(title, videoUrl, TvType.Movie) {
-                this.posterUrl = poster
-            }
-            results.add(res)
-        }
-
-        val count = feed.optInt("count", 0)
-        val maxResult = feed.optInt("max_result", 20)
+        val results = parseFeedItems(json)
+        val feed = json.optJSONObject("feed")
+        val count = feed?.optInt("count", 0) ?: 0
+        val maxResult = feed?.optInt("max_result", 20) ?: 20
         val hasNext = results.size >= maxResult && (page * maxResult < count)
+
         return newSearchResponseList(results, hasNext)
     }
 
