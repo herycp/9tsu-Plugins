@@ -1,5 +1,6 @@
 package com.noritv
 
+import android.util.Log
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
@@ -18,6 +19,7 @@ class NoriTvProvider : MainAPI() {
 
     private val restApiUrl = "https://api.noritv.com/rest/v1"
     private val streamDomain = "https://s1.noritv.com"
+    private val TAG = "NoriTvDebug"
 
     private val defaultHeaders = mapOf(
         "referer" to mainUrl,
@@ -41,7 +43,9 @@ class NoriTvProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
+        Log.d(TAG, "[getMainPage] Request URL: $url")
         val response = app.get(url, headers = defaultHeaders).text
+        Log.d(TAG, "[getMainPage] Response Raw: $response")
         val parsed = parseJson<ApiResponse>(response)
 
         val items = parsed.items.mapNotNull { item ->
@@ -54,7 +58,9 @@ class NoriTvProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$mainUrl/api/movies?q=$encodedQuery&page=1&pageSize=24"
+        Log.d(TAG, "[Search] Request URL: $url")
         val response = app.get(url, headers = defaultHeaders).text
+        Log.d(TAG, "[Search] Response Raw: $response")
         val parsed = parseJson<ApiResponse>(response)
 
         return parsed.items.mapNotNull { item ->
@@ -63,52 +69,96 @@ class NoriTvProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val parts = url.split("|")
-        if (parts.size < 2) return null
+        Log.d(TAG, "==================== LOAD START ====================")
+        Log.d(TAG, "[load] Raw URL Parameter: $url")
         
+        val parts = url.split("|")
+        if (parts.size < 2) {
+            Log.e(TAG, "[load] Format URL tidak valid (kurang dari 2 segmen): $url")
+            return null
+        }
+
         val type = parts[0]
-        val slug = URLEncoder.encode(parts[1], "UTF-8")
+        val rawSlug = parts[1]
+        Log.d(TAG, "[load] Type: $type | Slug: $rawSlug")
 
         return if (type == "series") {
-            val seriesUrl = "$restApiUrl/series?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cseries_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cepisodes(id%2Cseries_id%2Ccollection_id%2Cseason_number%2Cepisode_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes)&slug=eq.$slug"
-            val response = app.get(seriesUrl, headers = restHeaders).text
-            val parsed = parseJson<List<SeriesDetail>>(response).firstOrNull() ?: return null
+            val seriesUrl = "$restApiUrl/series?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cseries_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cepisodes(id%2Cseries_id%2Ccollection_id%2Cseason_number%2Cepisode_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes)&slug=eq.$rawSlug"
+            
+            Log.d(TAG, "[SERIES REQ] Target URL: $seriesUrl")
+            Log.d(TAG, "[SERIES REQ] Headers: $restHeaders")
 
-            val episodesList = parsed.episodes?.mapNotNull { ep ->
-                val videoPath = ep.video_path ?: return@mapNotNull null
-                newEpisode(videoPath) {
-                    this.name = ep.title ?: "Episode ${ep.episode_number ?: 1}"
-                    this.episode = ep.episode_number
-                    this.season = ep.season_number
+            try {
+                val res = app.get(seriesUrl, headers = restHeaders)
+                Log.d(TAG, "[SERIES RES] HTTP Status Code: ${res.code}")
+                Log.d(TAG, "[SERIES RES] Body Raw: ${res.text}")
+
+                val parsedList = parseJson<List<SeriesDetail>>(res.text)
+                Log.d(TAG, "[SERIES PARSE] Jumlah elemen di list: ${parsedList.size}")
+
+                val parsed = parsedList.firstOrNull()
+                if (parsed == null) {
+                    Log.e(TAG, "[SERIES ERROR] Hasil parse null atau array kosong []. Slug '$rawSlug' mungkin tidak ditemukan di DB.")
+                    return null
                 }
-            } ?: emptyList()
 
-            newTvSeriesLoadResponse(
-                parsed.title ?: "Unknown Series",
-                url,
-                TvType.TvSeries,
-                episodesList
-            ) {
-                this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
-                this.plot = parsed.description
-                this.year = parsed.year
+                Log.d(TAG, "[SERIES PARSE] Title: ${parsed.title}")
+                Log.d(TAG, "[SERIES PARSE] Total Episodes dari API: ${parsed.episodes?.size ?: 0}")
+
+                val episodesList = parsed.episodes?.mapNotNull { ep ->
+                    val videoPath = ep.video_path
+                    if (videoPath == null) {
+                        Log.w(TAG, "[EPISODE SKIP] Episode '${ep.title}' tidak memiliki video_path")
+                        return@mapNotNull null
+                    }
+                    newEpisode(videoPath) {
+                        this.name = ep.title ?: "Episode ${ep.episode_number ?: 1}"
+                        this.episode = ep.episode_number
+                        this.season = ep.season_number
+                    }
+                } ?: emptyList()
+
+                Log.d(TAG, "[SERIES FINISH] Total Episode Terproses: ${episodesList.size}")
+
+                newTvSeriesLoadResponse(
+                    parsed.title ?: "Unknown Series",
+                    url,
+                    TvType.TvSeries,
+                    episodesList
+                ) {
+                    this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
+                    this.plot = parsed.description
+                    this.year = parsed.year
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "[SERIES EXCEPTION] Gagal memproses/parse data series", e)
+                throw e
             }
         } else {
-            val movieUrl = "$restApiUrl/movies?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cmovie_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cmovie_parts(id%2Cmovie_id%2Ccollection_id%2Cpart_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes%2Csubtitles)&slug=eq.$slug"
-            val response = app.get(movieUrl, headers = restHeaders).text
-            val parsed = parseJson<List<MovieDetail>>(response).firstOrNull() ?: return null
+            val movieUrl = "$restApiUrl/movies?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cmovie_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cmovie_parts(id%2Cmovie_id%2Ccollection_id%2Cpart_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes%2Csubtitles)&slug=eq.$rawSlug"
+            Log.d(TAG, "[MOVIE REQ] Target URL: $movieUrl")
+            
+            try {
+                val res = app.get(movieUrl, headers = restHeaders)
+                Log.d(TAG, "[MOVIE RES] HTTP Status Code: ${res.code}")
+                Log.d(TAG, "[MOVIE RES] Body Raw: ${res.text}")
 
-            val videoPath = parsed.movie_parts?.firstOrNull()?.video_path ?: ""
+                val parsed = parseJson<List<MovieDetail>>(res.text).firstOrNull() ?: return null
+                val videoPath = parsed.movie_parts?.firstOrNull()?.video_path ?: ""
 
-            newMovieLoadResponse(
-                parsed.title ?: "Unknown Movie",
-                url,
-                TvType.Movie,
-                videoPath
-            ) {
-                this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
-                this.plot = parsed.description
-                this.year = parsed.year
+                newMovieLoadResponse(
+                    parsed.title ?: "Unknown Movie",
+                    url,
+                    TvType.Movie,
+                    videoPath
+                ) {
+                    this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
+                    this.plot = parsed.description
+                    this.year = parsed.year
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "[MOVIE EXCEPTION] Gagal memproses/parse data movie", e)
+                throw e
             }
         }
     }
@@ -119,8 +169,10 @@ class NoriTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        Log.d(TAG, "[loadLinks] Video Path Input: $data")
         if (data.isBlank()) return false
         val streamUrl = "$streamDomain$data"
+        Log.d(TAG, "[loadLinks] Final Stream URL: $streamUrl")
 
         callback.invoke(
             ExtractorLink(
@@ -140,7 +192,7 @@ class NoriTvProvider : MainAPI() {
         val itemTitle = this.title ?: return null
         val itemSlug = this.slug ?: return null
         val itemType = this.type ?: "movie"
-        
+
         val mappedType = if (itemType == "series") TvType.TvSeries else TvType.Movie
         val horizontalPoster = fixUrl(this.bannerUrl ?: this.thumbnail ?: "")
 
