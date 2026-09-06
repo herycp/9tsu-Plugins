@@ -8,6 +8,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.net.URLDecoder
@@ -113,10 +114,12 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
+    // Point 5: Fix domain/URL API pengganti host lama
     private fun fixUrl(url: String): String {
-        return if (url.startsWith("https://rapi.ifood.tv")) {
-            url.replace("https://rapi.ifood.tv", baseApiUrl)
-        } else url
+        if (url.isBlank()) return ""
+        return url.replace("https://rapi.ifood.tv", baseApiUrl)
+            .replace("http://rapi.ifood.tv", baseApiUrl)
+            .replace("http://fawesome.ifood.tv", baseApiUrl)
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
@@ -218,7 +221,6 @@ class FawesomeTvProvider : MainAPI() {
                 obj.optString("actionkey").substringAfter("nodeid-=").substringAfter("nodeid=")
             }
 
-            // Membentuk URL resmi API nodeid agar tidak menghasilkan URL fawesome:// cacat
             val itemUrl = if (videoId.isNotBlank()) {
                 "$baseApiUrl/recipes.php?searchType=nodeid&start-index=0&max-results=1&nid=$videoId"
             } else {
@@ -245,12 +247,40 @@ class FawesomeTvProvider : MainAPI() {
                 val title = item.optString("title", "Movie")
                 val poster = item.optString("hd_image").ifBlank { item.optString("sd_image") }
                 val plot = item.optString("description")
-                val videoUrl = item.optString("video_url")
+
+                // Point 2: Menambahkan Trailer
+                val trailerUrl = item.optString("trailer_url").ifBlank { item.optString("trailer") }
+
+                // Point 3: Mengumpulkan seluruh alternatif URL/Server untuk video yang sama
+                val videoUrlsArray = JSONArray()
+                val primaryUrl = item.optString("video_url")
+                if (primaryUrl.isNotBlank()) {
+                    videoUrlsArray.put(primaryUrl)
+                }
+
+                val altUrls = item.optJSONArray("video_urls")
+                if (altUrls != null) {
+                    for (i in 0 until altUrls.length()) {
+                        val alt = altUrls.optString(i)
+                        if (alt.isNotBlank()) {
+                            var exists = false
+                            for (j in 0 until videoUrlsArray.length()) {
+                                if (videoUrlsArray.optString(j) == alt) {
+                                    exists = true
+                                    break
+                                }
+                            }
+                            if (!exists) videoUrlsArray.put(alt)
+                        }
+                    }
+                }
+
+                // Point 4: Ekstraksi Subtitle
                 val ccPath = item.optString("cc_path")
                 val ccMulti = item.optJSONArray("cc_path_multi_lang")
 
                 val dataJson = JSONObject().apply {
-                    if (videoUrl.isNotBlank()) put("video_url", videoUrl)
+                    put("video_urls", videoUrlsArray)
                     if (ccPath.isNotBlank()) put("cc_path", ccPath)
                     if (ccMulti != null && ccMulti.length() > 0) put("cc_path_multi_lang", ccMulti)
                 }
@@ -271,12 +301,28 @@ class FawesomeTvProvider : MainAPI() {
                     }
                 }
 
+                // Point 5: Rekomendasi film dari deeplink_url dengan fixUrl
+                val recommendationsList = mutableListOf<SearchResponse>()
+                val deeplink = item.optString("deeplink_url").takeIf { it.isNotBlank() }
+                if (deeplink != null) {
+                    val fixedDeep = fixUrl(deeplink)
+                    val (recEnd, recParams) = extractEndpointAndParams(fixedDeep)
+                    val recJson = apiRequest(recEnd, recParams)
+                    recommendationsList.addAll(parseFeedItems(recJson))
+                }
+
                 newMovieLoadResponse(title, url, TvType.Movie, dataJson.toString()) {
                     this.posterUrl = poster
                     this.plot = plot
                     this.year = year
                     this.tags = tagsList
                     this.actors = actorsList.map { ActorData(Actor(it, "")) }
+                    if (recommendationsList.isNotEmpty()) {
+                        this.recommendations = recommendationsList
+                    }
+                    if (trailerUrl.isNotBlank()) {
+                        addTrailer(trailerUrl)
+                    }
                 }
             }
             url.startsWith("$mainUrl/watch?data=") -> {
@@ -330,13 +376,12 @@ class FawesomeTvProvider : MainAPI() {
         if (data.isBlank()) return false
         val json = try { JSONObject(data) } catch (_: Exception) { return false }
 
-        var found = false
-
+        // Point 4: Parsing Subtitle Utama & Multi Bahasa
         val ccPath = json.optString("cc_path")
         if (ccPath.isNotBlank()) {
-            subtitleCallback.invoke(SubtitleFile(ccPath, "English"))
-            found = true
+            subtitleCallback.invoke(SubtitleFile("English", ccPath))
         }
+
         val ccMulti = json.optJSONArray("cc_path_multi_lang")
         if (ccMulti != null) {
             for (i in 0 until ccMulti.length()) {
@@ -344,39 +389,56 @@ class FawesomeTvProvider : MainAPI() {
                 val lang = subObj.optString("language", "Unknown")
                 val file = subObj.optString("file_path")
                 if (file.isNotBlank()) {
-                    subtitleCallback.invoke(SubtitleFile(file, lang))
-                    found = true
+                    subtitleCallback.invoke(SubtitleFile(lang, file))
                 }
             }
         }
 
-        val videoUrl = json.optString("video_url")
-        if (videoUrl.isBlank()) return found
+        // Point 3: Mendaftarkan setiap alternatif URL video sebagai opsi Server terpisah
+        val videoUrls = json.optJSONArray("video_urls")
+        val urlsList = mutableListOf<String>()
 
-        val type = when {
-            videoUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
-            videoUrl.contains(".mpd") -> ExtractorLinkType.DASH
-            videoUrl.endsWith(".mp4") -> ExtractorLinkType.VIDEO
-            else -> ExtractorLinkType.VIDEO
+        if (videoUrls != null && videoUrls.length() > 0) {
+            for (i in 0 until videoUrls.length()) {
+                val u = videoUrls.optString(i)
+                if (u.isNotBlank()) urlsList.add(u)
+            }
+        } else {
+            val singleUrl = json.optString("video_url")
+            if (singleUrl.isNotBlank()) urlsList.add(singleUrl)
         }
 
-        val link = ExtractorLink(
-            source = name,
-            name = "Fawesome TV",
-            url = videoUrl,
-            referer = mainUrl,
-            quality = Qualities.Unknown.value,
-            type = type,
-            headers = mapOf("Referer" to mainUrl)
-        )
-        callback.invoke(link)
+        if (urlsList.isEmpty()) return false
+
+        urlsList.distinct().forEachIndexed { index, streamUrl ->
+            val serverName = if (urlsList.size > 1) "$name - Server ${index + 1}" else name
+            val type = when {
+                streamUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
+                streamUrl.contains(".mpd") -> ExtractorLinkType.DASH
+                else -> ExtractorLinkType.VIDEO
+            }
+
+            callback.invoke(
+                ExtractorLink(
+                    source = name,
+                    name = serverName,
+                    url = streamUrl,
+                    referer = mainUrl,
+                    quality = Qualities.Unknown.value,
+                    type = type,
+                    headers = mapOf("Referer" to mainUrl)
+                )
+            )
+        }
+
         return true
     }
 
+    // Point 1: Perbaikan endpoint pencarian ke recipes.php
     override suspend fun search(query: String, page: Int): SearchResponseList {
         ensureToken()
 
-        val json = apiRequest("shows.php", mapOf(
+        val json = apiRequest("recipes.php", mapOf(
             "searchType" to "search",
             "keys" to query,
             "start-index" to ((page - 1) * 20).toString()
