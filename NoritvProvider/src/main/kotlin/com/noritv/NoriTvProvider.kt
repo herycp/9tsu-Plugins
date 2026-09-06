@@ -43,9 +43,7 @@ class NoriTvProvider : MainAPI() {
         request: MainPageRequest
     ): HomePageResponse {
         val url = request.data + page
-        Log.d(TAG, "[getMainPage] Request URL: $url")
         val response = app.get(url, headers = defaultHeaders).text
-        Log.d(TAG, "[getMainPage] Response Raw: $response")
         val parsed = parseJson<ApiResponse>(response)
 
         val items = parsed.items.mapNotNull { item ->
@@ -58,9 +56,7 @@ class NoriTvProvider : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val encodedQuery = URLEncoder.encode(query, "UTF-8")
         val url = "$mainUrl/api/movies?q=$encodedQuery&page=1&pageSize=24"
-        Log.d(TAG, "[Search] Request URL: $url")
         val response = app.get(url, headers = defaultHeaders).text
-        Log.d(TAG, "[Search] Response Raw: $response")
         val parsed = parseJson<ApiResponse>(response)
 
         return parsed.items.mapNotNull { item ->
@@ -71,54 +67,43 @@ class NoriTvProvider : MainAPI() {
     override suspend fun load(url: String): LoadResponse? {
         Log.d(TAG, "==================== LOAD START ====================")
         Log.d(TAG, "[load] Raw URL Parameter: $url")
-        
-        val parts = url.split("|")
+
+        // Hapus domain jika Cloudstream otomatis menambahkannya di depan
+        val cleanUrl = url.removePrefix(mainUrl).trimStart('/')
+        val parts = cleanUrl.split("|")
         if (parts.size < 2) {
-            Log.e(TAG, "[load] Format URL tidak valid (kurang dari 2 segmen): $url")
+            Log.e(TAG, "[load] Format URL tidak valid: $url")
             return null
         }
 
         val type = parts[0]
         val rawSlug = parts[1]
-        Log.d(TAG, "[load] Type: $type | Slug: $rawSlug")
+        
+        // Memastikan apakah tipe berupa "series" meskipun terdapat prefix URL
+        val isSeries = type.contains("series", ignoreCase = true)
+        Log.d(TAG, "[load] Clean Type: $type | Clean Slug: $rawSlug | Is Series: $isSeries")
 
-        return if (type == "series") {
+        return if (isSeries) {
+            // API HIT UNTUK SERIES
             val seriesUrl = "$restApiUrl/series?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cseries_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cepisodes(id%2Cseries_id%2Ccollection_id%2Cseason_number%2Cepisode_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes)&slug=eq.$rawSlug"
             
             Log.d(TAG, "[SERIES REQ] Target URL: $seriesUrl")
-            Log.d(TAG, "[SERIES REQ] Headers: $restHeaders")
 
             try {
                 val res = app.get(seriesUrl, headers = restHeaders)
-                Log.d(TAG, "[SERIES RES] HTTP Status Code: ${res.code}")
                 Log.d(TAG, "[SERIES RES] Body Raw: ${res.text}")
 
                 val parsedList = parseJson<List<SeriesDetail>>(res.text)
-                Log.d(TAG, "[SERIES PARSE] Jumlah elemen di list: ${parsedList.size}")
-
-                val parsed = parsedList.firstOrNull()
-                if (parsed == null) {
-                    Log.e(TAG, "[SERIES ERROR] Hasil parse null atau array kosong []. Slug '$rawSlug' mungkin tidak ditemukan di DB.")
-                    return null
-                }
-
-                Log.d(TAG, "[SERIES PARSE] Title: ${parsed.title}")
-                Log.d(TAG, "[SERIES PARSE] Total Episodes dari API: ${parsed.episodes?.size ?: 0}")
+                val parsed = parsedList.firstOrNull() ?: return null
 
                 val episodesList = parsed.episodes?.mapNotNull { ep ->
-                    val videoPath = ep.video_path
-                    if (videoPath == null) {
-                        Log.w(TAG, "[EPISODE SKIP] Episode '${ep.title}' tidak memiliki video_path")
-                        return@mapNotNull null
-                    }
+                    val videoPath = ep.video_path ?: return@mapNotNull null
                     newEpisode(videoPath) {
                         this.name = ep.title ?: "Episode ${ep.episode_number ?: 1}"
                         this.episode = ep.episode_number
                         this.season = ep.season_number
                     }
                 } ?: emptyList()
-
-                Log.d(TAG, "[SERIES FINISH] Total Episode Terproses: ${episodesList.size}")
 
                 newTvSeriesLoadResponse(
                     parsed.title ?: "Unknown Series",
@@ -131,16 +116,16 @@ class NoriTvProvider : MainAPI() {
                     this.year = parsed.year
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "[SERIES EXCEPTION] Gagal memproses/parse data series", e)
+                Log.e(TAG, "[SERIES EXCEPTION] Gagal memproses data series", e)
                 throw e
             }
         } else {
+            // API HIT UNTUK MOVIE
             val movieUrl = "$restApiUrl/movies?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cmovie_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cmovie_parts(id%2Cmovie_id%2Ccollection_id%2Cpart_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes%2Csubtitles)&slug=eq.$rawSlug"
             Log.d(TAG, "[MOVIE REQ] Target URL: $movieUrl")
             
             try {
                 val res = app.get(movieUrl, headers = restHeaders)
-                Log.d(TAG, "[MOVIE RES] HTTP Status Code: ${res.code}")
                 Log.d(TAG, "[MOVIE RES] Body Raw: ${res.text}")
 
                 val parsed = parseJson<List<MovieDetail>>(res.text).firstOrNull() ?: return null
@@ -157,7 +142,7 @@ class NoriTvProvider : MainAPI() {
                     this.year = parsed.year
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "[MOVIE EXCEPTION] Gagal memproses/parse data movie", e)
+                Log.e(TAG, "[MOVIE EXCEPTION] Gagal memproses data movie", e)
                 throw e
             }
         }
@@ -169,10 +154,8 @@ class NoriTvProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        Log.d(TAG, "[loadLinks] Video Path Input: $data")
         if (data.isBlank()) return false
         val streamUrl = "$streamDomain$data"
-        Log.d(TAG, "[loadLinks] Final Stream URL: $streamUrl")
 
         callback.invoke(
             ExtractorLink(
@@ -207,7 +190,7 @@ class NoriTvProvider : MainAPI() {
         }
     }
 
-    // --- Data Classes Penyesuaian JSON API --- //
+    // --- Data Classes --- //
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     data class ApiResponse(
