@@ -154,7 +154,8 @@ class FawesomeTvProvider : MainAPI() {
                     val title = json.optString("title", "Movie")
                     val poster = json.optString("poster")
                     val plot = json.optString("plot")
-                    newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson) {
+                    // Fix: use empty string for url, pass dataJson as dataUrl
+                    newMovieLoadResponse(title, "", TvType.Movie, dataJson) {
                         this.posterUrl = poster
                         this.plot = plot
                     }
@@ -177,7 +178,7 @@ class FawesomeTvProvider : MainAPI() {
             val ep = newEpisode(subTitle) {
                 this.data = fixedFeed
                 this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-                // Episode does not have 'plot', so we skip
+                // Episode does not have a plot field, so we skip
             }
             episodes.add(ep)
         }
@@ -217,7 +218,7 @@ class FawesomeTvProvider : MainAPI() {
             val ep = newEpisode(videoTitle) {
                 this.data = videoUrl
                 this.posterUrl = obj.optString("hd_image") ?: obj.optString("sd_image")
-                // Episode does not have 'plot', so we skip
+                // Episode does not have a plot field
             }
             episodes.add(ep)
         }
@@ -293,17 +294,16 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        // Use newExtractorLink with all parameters (quality is Int? = null)
+        // Fix: use newExtractorLink without named 'quality' parameter; just pass quality as positional argument.
         callback.invoke(
             newExtractorLink(
                 name = "Fawesome TV",
                 source = name,
                 url = videoUrl,
                 type = type,
-                quality = Qualities.Unknown.value
-            ).apply {
-                this.headers = mapOf("Referer" to mainUrl)
-            }
+                quality = Qualities.Unknown.value,
+                headers = mapOf("Referer" to mainUrl)
+            )
         )
         return true
     }
