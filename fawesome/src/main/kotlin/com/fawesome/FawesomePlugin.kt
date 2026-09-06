@@ -5,6 +5,9 @@ import android.content.Context
 import androidx.appcompat.app.AppCompatActivity
 import com.lagradost.cloudstream3.plugins.CloudstreamPlugin
 import com.lagradost.cloudstream3.plugins.Plugin
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @CloudstreamPlugin
 class FawesomePlugin : Plugin() {
@@ -13,8 +16,10 @@ class FawesomePlugin : Plugin() {
 
         // Menambahkan pengaturan untuk memilih halaman depan
         this.openSettings = { ctx ->
-            FawesomePrefs.showMainPageDialog(ctx as AppCompatActivity) {
-                // Setelah menyimpan preferensi, user bisa refresh manual
+            CoroutineScope(Dispatchers.Main).launch {
+                FawesomePrefs.showMainPageDialog(ctx as AppCompatActivity) {
+                    // Setelah menyimpan preferensi, user bisa refresh manual
+                }
             }
         }
     }

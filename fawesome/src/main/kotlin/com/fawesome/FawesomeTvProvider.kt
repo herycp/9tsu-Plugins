@@ -112,7 +112,7 @@ class FawesomeTvProvider : MainAPI() {
             val desc = obj.optString("description")
             val res = newTvSeriesSearchResponse(title, fixedFeed, TvType.TvSeries) {
                 this.posterUrl = poster
-                this.plot = desc
+                // plot tidak tersedia di TvSeriesSearchResponse? kita skip
             }
             homeItems.add(res)
         }
@@ -131,10 +131,8 @@ class FawesomeTvProvider : MainAPI() {
             val feedUrl = obj.optString("feed").takeIf { it.isNotBlank() } ?: continue
             val fixedFeed = fixUrl(feedUrl)
             val poster = obj.optString("hd_image") ?: obj.optString("sd_image")
-            val desc = obj.optString("description")
             val res = newTvSeriesSearchResponse(title, fixedFeed, TvType.TvSeries) {
                 this.posterUrl = poster
-                this.plot = desc
             }
             items.add(res)
         }
@@ -162,7 +160,10 @@ class FawesomeTvProvider : MainAPI() {
                 val json = try { JSONObject(dataJson) } catch (_: Exception) { null }
                 if (json != null) {
                     val title = json.optString("title", "Movie")
-                    newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson)
+                    newMovieLoadResponse(title, dataJson, TvType.Movie, dataJson) {
+                        this.plot = json.optString("plot")
+                        this.posterUrl = json.optString("poster")
+                    }
                 } else {
                     errorResponse("Invalid video data")
                 }
@@ -171,7 +172,8 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    private fun processSubCategories(json: JSONObject, title: String): LoadResponse {
+    // Proses subcategories (jika load menghasilkan subcategories)
+    private suspend fun processSubCategories(json: JSONObject, title: String): LoadResponse {
         val subcats = json.getJSONArray("subcategories")
         val episodes = mutableListOf<Episode>()
         for (i in 0 until subcats.length()) {
@@ -187,10 +189,13 @@ class FawesomeTvProvider : MainAPI() {
             episodes.add(ep)
         }
         if (episodes.isEmpty()) return errorResponse("No subcategories found")
-        return newTvSeriesLoadResponse(title, "", TvType.TvSeries, episodes)
+        return newTvSeriesLoadResponse(title, "", TvType.TvSeries, episodes) {
+            this.plot = "Subcategories"
+        }
     }
 
-    private fun processFeed(json: JSONObject, title: String): LoadResponse {
+    // Proses feed (mengandung items array) -> daftar movie
+    private suspend fun processFeed(json: JSONObject, title: String): LoadResponse {
         val feed = json.optJSONObject("feed") ?: return errorResponse("No feed")
         val items = feed.optJSONArray("items") ?: return errorResponse("No items")
         val episodes = mutableListOf<Episode>()
@@ -198,6 +203,7 @@ class FawesomeTvProvider : MainAPI() {
         for (i in 0 until items.length()) {
             val obj = items.getJSONObject(i)
             val videoTitle = obj.getString("title")
+            // Build data untuk loadLinks
             val dataJson = JSONObject().apply {
                 put("title", videoTitle)
                 val videoUrl = obj.optString("video_url")
@@ -226,7 +232,9 @@ class FawesomeTvProvider : MainAPI() {
         }
 
         if (episodes.isEmpty()) return errorResponse("No movies found")
-        return newTvSeriesLoadResponse(title, "", TvType.Movie, episodes)
+        return newTvSeriesLoadResponse(title, "", TvType.Movie, episodes) {
+            this.plot = "Movies"
+        }
     }
 
     // ----- Ekstrak endpoint & params dari URL -----
@@ -252,6 +260,7 @@ class FawesomeTvProvider : MainAPI() {
         return endpoint to params
     }
 
+    // ----- Load links (video & subtitle) -----
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -267,6 +276,7 @@ class FawesomeTvProvider : MainAPI() {
 
         var found = false
 
+        // Subtitles
         val ccPath = json.optString("cc_path")
         if (ccPath.isNotBlank()) {
             subtitleCallback.invoke(SubtitleFile(ccPath, "English"))
@@ -285,6 +295,7 @@ class FawesomeTvProvider : MainAPI() {
             }
         }
 
+        // Video URL
         val videoUrl = json.optString("video_url")
         if (videoUrl.isBlank()) return found
 
@@ -292,7 +303,7 @@ class FawesomeTvProvider : MainAPI() {
             videoUrl.contains(".m3u8") -> ExtractorLinkType.M3U8
             videoUrl.contains(".mpd") -> ExtractorLinkType.DASH
             videoUrl.endsWith(".mp4") -> ExtractorLinkType.VIDEO
-            else -> ExtractorLinkType.OTHER
+            else -> ExtractorLinkType.VIDEO // fallback
         }
 
         callback.invoke(
@@ -309,6 +320,7 @@ class FawesomeTvProvider : MainAPI() {
         return true
     }
 
+    // ----- Search -----
     override suspend fun search(query: String, page: Int): SearchResponseList {
         val json = apiRequest("recipes.php", mapOf(
             "searchType" to "search",
@@ -345,7 +357,6 @@ class FawesomeTvProvider : MainAPI() {
 
             val res = newTvSeriesSearchResponse(title, videoUrl, TvType.Movie) {
                 this.posterUrl = poster
-                this.plot = obj.optString("description")
             }
             results.add(res)
         }
