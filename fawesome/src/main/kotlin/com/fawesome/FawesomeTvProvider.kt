@@ -23,12 +23,10 @@ class FawesomeTvProvider : MainAPI() {
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
     private val baseApiUrl = "$mainUrl/home/new/v453/api"
 
-    // Token disimpan dan dipakai berulang kali
     @Volatile
     private var cachedToken: String? = null
     private val tokenMutex = Mutex()
 
-    // Fungsi ini hanya akan melakukan HTTP Call 1 KALI saja sepanjang token belum ada
     private suspend fun ensureToken(): String? {
         cachedToken?.let { return it }
 
@@ -38,30 +36,25 @@ class FawesomeTvProvider : MainAPI() {
             val url = "$baseApiUrl/getSecurityToken.php?siteId=236&auth-token=1217575&country=US"
             val headers = mapOf("Referer" to mainUrl, "User-Agent" to userAgent)
 
-            Log.d(TAG, "[FETCH TOKEN ONCE] -> $url")
-
             try {
                 val response = app.get(url, headers = headers)
-                Log.d(TAG, "[TOKEN RESPONSE CODE] -> ${response.code}")
-
-                if (response.code in 200..299) {
+                if (response.code in 200..299 && response.text.trim().startsWith("{")) {
                     val json = JSONObject(response.text)
-                    val token = json.optString("token").takeIf { it.isNotBlank() }
-                        ?: json.optJSONObject("data")?.optString("token")
+                    
+                    // Ekstrak langsung menggunakan key 'securityToken'
+                    val token = json.optString("securityToken").takeIf { it.isNotBlank() }
+                        ?: json.optString("token").takeIf { it.isNotBlank() }
 
                     if (!token.isNullOrBlank()) {
                         cachedToken = token
-                        Log.i(TAG, "SUCCESS: Token berhasil didapatkan & disimpan -> $token")
+                        Log.i(TAG, "SUCCESS: Security Token berhasil didapatkan -> $token")
                     } else {
-                        Log.e(TAG, "ERROR: Payload JSON tidak berisi token")
+                        Log.w(TAG, "WARN: Key securityToken tidak ditemukan dalam JSON: ${response.text}")
                     }
                     token
-                } else {
-                    Log.e(TAG, "HTTP ERROR [${response.code}] saat mengambil token")
-                    null
-                }
+                } else null
             } catch (e: Exception) {
-                Log.e(TAG, "EXCEPTION saat ensureToken(): ${e.localizedMessage}")
+                Log.e(TAG, "EXCEPTION ensureToken(): ${e.localizedMessage}")
                 null
             }
         }
@@ -90,7 +83,7 @@ class FawesomeTvProvider : MainAPI() {
         }
 
         val fullUrl = if (cleanEndpoint.startsWith("http")) {
-            "$cleanEndpoint?$queryString"
+            if (cleanEndpoint.contains("?")) cleanEndpoint else "$cleanEndpoint?$queryString"
         } else {
             "$baseApiUrl/$cleanEndpoint?$queryString"
         }
@@ -101,40 +94,36 @@ class FawesomeTvProvider : MainAPI() {
         )
 
         if (addToken) {
-            val token = ensureToken()
-            if (token != null) {
-                headers["token"] = token
-            }
+            ensureToken()?.let { headers["token"] = it }
         }
 
         Log.d(TAG, "[EXECUTE API] -> $fullUrl")
 
         return try {
             val response = app.get(fullUrl, headers = headers)
-            Log.d(TAG, "[STATUS ${response.code}] <- $cleanEndpoint")
+            val body = response.text.trim()
 
-            if (response.code in 200..299) {
-                JSONObject(response.text)
+            if (response.code in 200..299 && body.startsWith("{")) {
+                JSONObject(body)
             } else {
-                Log.e(TAG, "API ERROR [${response.code}] -> $fullUrl")
+                Log.e(TAG, "API RESP NOT JSON [${response.code}] -> ${body.take(100)}")
                 null
             }
         } catch (e: Exception) {
-            Log.e(TAG, "EXCEPTION pada apiRequest($cleanEndpoint): ${e.localizedMessage}")
+            Log.e(TAG, "EXCEPTION apiRequest($cleanEndpoint): ${e.localizedMessage}")
             null
         }
     }
 
     private fun fixUrl(url: String): String {
         return if (url.startsWith("https://rapi.ifood.tv")) {
-            url.replace("https://rapi.ifood.tv", mainUrl)
+            url.replace("https://rapi.ifood.tv", baseApiUrl)
         } else url
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(emptyList())
 
-        // Ambil token sekali di awal sebelum memuat halaman beranda
         ensureToken()
 
         val pref = FawesomePrefs.getMainPageType()
@@ -157,9 +146,8 @@ class FawesomeTvProvider : MainAPI() {
         val subcats = json.optJSONArray("subcategories")
             ?: return@coroutineScope newHomePageResponse(emptyList())
 
-        Log.i(TAG, "Jumlah subkategori ditemukan: ${subcats.length()}")
+        Log.i(TAG, "Subkategori ditemukan: ${subcats.length()}")
 
-        // Request paralel menggunakan token yang sudah di-cache di awal
         val tasks = (0 until subcats.length()).map { i ->
             async {
                 val obj = subcats.optJSONObject(i) ?: return@async null
@@ -182,7 +170,8 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     private suspend fun loadCategoryOrCountryPage(fullUrl: String): HomePageResponse = coroutineScope {
-        val (endpoint, params) = extractEndpointAndParams(fullUrl)
+        val fixedUrl = fixUrl(fullUrl)
+        val (endpoint, params) = extractEndpointAndParams(fixedUrl)
         val json = apiRequest(endpoint, params) ?: return@coroutineScope newHomePageResponse(emptyList())
 
         val subcats = json.optJSONArray("subcategories")
@@ -305,11 +294,7 @@ class FawesomeTvProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        val json = try {
-            JSONObject(data)
-        } catch (_: Exception) {
-            return false
-        }
+        val json = try { JSONObject(data) } catch (_: Exception) { return false }
 
         var found = false
 
