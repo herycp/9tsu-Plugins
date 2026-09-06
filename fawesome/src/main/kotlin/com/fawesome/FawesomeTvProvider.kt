@@ -9,8 +9,11 @@ import java.net.URLDecoder
 class FawesomeTvProvider : MainAPI() {
     override var name = "Fawesome TV"
     override var mainUrl = "https://fawesome.tv"
-    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries)
+    override var supportedTypes = setOf(TvType.Movie, TvType.TvSeries, TvType.AsianDrama)
     override var lang = "en"
+    
+    // AKTIFKAN HALAMAN DEPAN (Mencegah provider tersembunyi di Beranda)
+    override var hasMainPage = true
 
     private val userAgent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Mobile Safari/537.36"
     private val baseApiUrl = "$mainUrl/home/new/v453/api"
@@ -28,8 +31,12 @@ class FawesomeTvProvider : MainAPI() {
             val url = "$baseApiUrl/getSecurityToken.php?siteId=236&auth-token=1217575&country=US"
             val response = app.get(url, headers = mapOf("Referer" to mainUrl, "User-Agent" to userAgent))
             val json = JSONObject(response.text)
-            val token = json.optString("token").takeIf { it.isNotBlank() }
-            if (token != null) {
+            
+            // Ekstrak token dengan fallback aman
+            val token = json.optString("token").takeIf { it.isNotBlank() } 
+                ?: json.optJSONObject("data")?.optString("token")
+                
+            if (!token.isNullOrBlank()) {
                 cachedToken = token
                 tokenTimestamp = now
             }
@@ -58,9 +65,12 @@ class FawesomeTvProvider : MainAPI() {
             "Referer" to mainUrl,
             "User-Agent" to userAgent
         )
+        
         if (addToken) {
-            val token = getToken() ?: return null
-            headers["token"] = token
+            val token = getToken()
+            if (token != null) {
+                headers["token"] = token
+            }
         }
 
         return try {
@@ -95,7 +105,7 @@ class FawesomeTvProvider : MainAPI() {
         val json = apiRequest("sub-categories.php", mapOf("parent" to "Home"))
             ?: return newHomePageResponse("Error", emptyList())
 
-        val items = json.getJSONArray("subcategories")
+        val items = json.optJSONArray("subcategories") ?: return newHomePageResponse("Home", emptyList())
         val homeItems = mutableListOf<SearchResponse>()
         for (i in 0 until items.length()) {
             val obj = items.getJSONObject(i)
@@ -115,7 +125,7 @@ class FawesomeTvProvider : MainAPI() {
         val (endpoint, params) = extractEndpointAndParams(fullUrl)
         val json = apiRequest(endpoint, params) ?: return newHomePageResponse("Error", emptyList())
 
-        val subcats = json.getJSONArray("subcategories")
+        val subcats = json.optJSONArray("subcategories") ?: return newHomePageResponse("", emptyList())
         val items = mutableListOf<SearchResponse>()
         for (i in 0 until subcats.length()) {
             val obj = subcats.getJSONObject(i)
@@ -166,7 +176,7 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     private suspend fun processSubCategories(json: JSONObject, title: String): LoadResponse {
-        val subcats = json.getJSONArray("subcategories")
+        val subcats = json.optJSONArray("subcategories") ?: return errorResponse("No subcategories found")
         val episodes = mutableListOf<Episode>()
         for (i in 0 until subcats.length()) {
             val obj = subcats.getJSONObject(i)
@@ -290,7 +300,6 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        // Perbaikan instansiasi ExtractorLink
         val link = ExtractorLink(
             source = name,
             name = "Fawesome TV",
@@ -305,7 +314,8 @@ class FawesomeTvProvider : MainAPI() {
     }
 
     override suspend fun search(query: String, page: Int): SearchResponseList {
-        val json = apiRequest("recipes.php", mapOf(
+        // DIUBAH: Menggunakan shows.php pengganti recipes.php
+        val json = apiRequest("shows.php", mapOf(
             "searchType" to "search",
             "keys" to query,
             "start-index" to ((page - 1) * 20).toString()
