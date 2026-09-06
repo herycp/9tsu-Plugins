@@ -1,4 +1,3 @@
-// FawesomeTvProvider.kt
 package com.fawesome
 
 import com.lagradost.cloudstream3.*
@@ -291,14 +290,16 @@ class FawesomeTvProvider : MainAPI() {
             else -> ExtractorLinkType.VIDEO
         }
 
-        val link = newExtractorLink(
+        // Perbaikan instansiasi ExtractorLink
+        val link = ExtractorLink(
             source = name,
             name = "Fawesome TV",
             url = videoUrl,
+            referer = mainUrl,
+            quality = Qualities.Unknown.value,
             type = type,
-            quality = Qualities.Unknown.value
+            headers = mapOf("Referer" to mainUrl)
         )
-        link.headers = mapOf("Referer" to mainUrl)
         callback.invoke(link)
         return true
     }
@@ -349,7 +350,6 @@ class FawesomeTvProvider : MainAPI() {
         return newSearchResponseList(results, hasNext)
     }
 
-    // Fix: make errorResponse suspend so it can call suspend function newMovieLoadResponse
     private suspend fun errorResponse(msg: String): MovieLoadResponse {
         return newMovieLoadResponse("Error: $msg", "", TvType.Movie, "")
     }
