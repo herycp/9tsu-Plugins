@@ -78,6 +78,7 @@ class FawesomeTvProvider : MainAPI() {
             putAll(params)
             put("siteId", "236")
             put("country", "US")
+            put("auth-token", "1217575")
         }
 
         val queryString = allParams.entries.joinToString("&") {
@@ -185,12 +186,10 @@ class FawesomeTvProvider : MainAPI() {
         val fixedUrl = fixUrl(fullUrl)
         val (endpoint, params) = extractEndpointAndParams(fixedUrl)
 
-        // Cek apakah endpoint merupakan kontainer subkategori (seperti shows.php dengan listoflist)
         val isContainer = endpoint.contains("sub-categories") ||
                 params["searchType"] == "listoflist" ||
                 fullUrl.contains("listoflist")
 
-        // Jika bukan kontainer (misal: feed langsung), tambahkan start-index ke request utama
         if (!isContainer) {
             params["start-index"] = startIndex
         }
@@ -211,7 +210,6 @@ class FawesomeTvProvider : MainAPI() {
                     val fixedFeed = fixUrl(feedUrl)
                     val (subEndpoint, subParams) = extractEndpointAndParams(fixedFeed)
                     
-                    // start-index diterapkan pada feed subkategori (misal: Best Japanese Movies)
                     subParams["start-index"] = startIndex
                     if (prefChanged) subParams["_t"] = System.currentTimeMillis().toString()
 
