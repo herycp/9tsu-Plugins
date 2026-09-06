@@ -114,7 +114,6 @@ class FawesomeTvProvider : MainAPI() {
         }
     }
 
-    // Point 5: Fix domain/URL API pengganti host lama
     private fun fixUrl(url: String): String {
         if (url.isBlank()) return ""
         return url.replace("https://rapi.ifood.tv", baseApiUrl)
@@ -248,10 +247,8 @@ class FawesomeTvProvider : MainAPI() {
                 val poster = item.optString("hd_image").ifBlank { item.optString("sd_image") }
                 val plot = item.optString("description")
 
-                // Point 2: Menambahkan Trailer
                 val trailerUrl = item.optString("trailer_url").ifBlank { item.optString("trailer") }
 
-                // Point 3: Mengumpulkan seluruh alternatif URL/Server untuk video yang sama
                 val videoUrlsArray = JSONArray()
                 val primaryUrl = item.optString("video_url")
                 if (primaryUrl.isNotBlank()) {
@@ -275,7 +272,6 @@ class FawesomeTvProvider : MainAPI() {
                     }
                 }
 
-                // Point 4: Ekstraksi Subtitle
                 val ccPath = item.optString("cc_path")
                 val ccMulti = item.optJSONArray("cc_path_multi_lang")
 
@@ -301,7 +297,6 @@ class FawesomeTvProvider : MainAPI() {
                     }
                 }
 
-                // Point 5: Rekomendasi film dari deeplink_url dengan fixUrl
                 val recommendationsList = mutableListOf<SearchResponse>()
                 val deeplink = item.optString("deeplink_url").takeIf { it.isNotBlank() }
                 if (deeplink != null) {
@@ -321,7 +316,7 @@ class FawesomeTvProvider : MainAPI() {
                         this.recommendations = recommendationsList
                     }
                     if (trailerUrl.isNotBlank()) {
-                        addTrailer(trailerUrl)
+                        this.trailerUrl = trailerUrl
                     }
                 }
             }
@@ -376,7 +371,6 @@ class FawesomeTvProvider : MainAPI() {
         if (data.isBlank()) return false
         val json = try { JSONObject(data) } catch (_: Exception) { return false }
 
-        // Point 4: Parsing Subtitle Utama & Multi Bahasa
         val ccPath = json.optString("cc_path")
         if (ccPath.isNotBlank()) {
             subtitleCallback.invoke(SubtitleFile("English", ccPath))
@@ -394,7 +388,6 @@ class FawesomeTvProvider : MainAPI() {
             }
         }
 
-        // Point 3: Mendaftarkan setiap alternatif URL video sebagai opsi Server terpisah
         val videoUrls = json.optJSONArray("video_urls")
         val urlsList = mutableListOf<String>()
 
@@ -434,7 +427,6 @@ class FawesomeTvProvider : MainAPI() {
         return true
     }
 
-    // Point 1: Perbaikan endpoint pencarian ke recipes.php
     override suspend fun search(query: String, page: Int): SearchResponseList {
         ensureToken()
 
