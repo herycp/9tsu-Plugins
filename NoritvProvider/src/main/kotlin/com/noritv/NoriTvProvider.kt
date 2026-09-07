@@ -99,8 +99,8 @@ class NoriTvProvider : MainAPI() {
                     TvType.TvSeries,
                     episodesList
                 ) {
-                    // DALAM (DETAIL): Format Portrait (poster_url)
-                    this.posterUrl = fixUrl(parsed.poster_url?.ifEmpty { null } ?: parsed.banner_url ?: "")
+                    // DESKRIPSI (DETAIL): Menggunakan banner_url
+                    this.posterUrl = fixUrl(parsed.banner_url?.ifEmpty { null } ?: parsed.poster_url ?: "")
                     this.plot = parsed.description
                     this.year = parsed.year
                 }
@@ -122,8 +122,8 @@ class NoriTvProvider : MainAPI() {
                     TvType.Movie,
                     videoPath
                 ) {
-                    // DALAM (DETAIL): Format Portrait (poster_url)
-                    this.posterUrl = fixUrl(parsed.poster_url?.ifEmpty { null } ?: parsed.banner_url ?: "")
+                    // DESKRIPSI (DETAIL): Menggunakan banner_url
+                    this.posterUrl = fixUrl(parsed.banner_url?.ifEmpty { null } ?: parsed.poster_url ?: "")
                     this.plot = parsed.description
                     this.year = parsed.year
                 }
@@ -174,11 +174,11 @@ class NoriTvProvider : MainAPI() {
 
         val mappedType = if (itemType == "series") TvType.TvSeries else TvType.Movie
 
-        // LUAR (HOME/SEARCH): Format Landscape (bannerUrl / thumbnail)
-        val landscapePoster = fixUrl(
-            this.bannerUrl?.ifEmpty { null }
+        // LIST (HALAMAN DEPAN & PENCARIAN): Menggunakan posterUrl / poster_url
+        val portraitPoster = fixUrl(
+            this.posterUrl?.ifEmpty { null }
                 ?: this.thumbnail?.ifEmpty { null }
-                ?: this.posterUrl ?: ""
+                ?: this.bannerUrl ?: ""
         )
 
         return newTvSeriesSearchResponse(
@@ -187,7 +187,7 @@ class NoriTvProvider : MainAPI() {
             mappedType,
             false
         ) {
-            this.posterUrl = landscapePoster
+            this.posterUrl = portraitPoster
             this.posterHeaders = defaultHeaders
         }
     }
