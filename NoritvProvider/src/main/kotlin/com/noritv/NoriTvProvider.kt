@@ -68,31 +68,19 @@ class NoriTvProvider : MainAPI() {
         Log.d(TAG, "==================== LOAD START ====================")
         Log.d(TAG, "[load] Raw URL Parameter: $url")
 
-        // Hapus domain jika Cloudstream otomatis menambahkannya di depan
         val cleanUrl = url.removePrefix(mainUrl).trimStart('/')
         val parts = cleanUrl.split("|")
-        if (parts.size < 2) {
-            Log.e(TAG, "[load] Format URL tidak valid: $url")
-            return null
-        }
+        if (parts.size < 2) return null
 
         val type = parts[0]
         val rawSlug = parts[1]
-        
-        // Memastikan apakah tipe berupa "series" meskipun terdapat prefix URL
         val isSeries = type.contains("series", ignoreCase = true)
-        Log.d(TAG, "[load] Clean Type: $type | Clean Slug: $rawSlug | Is Series: $isSeries")
 
         return if (isSeries) {
-            // API HIT UNTUK SERIES
             val seriesUrl = "$restApiUrl/series?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cseries_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cepisodes(id%2Cseries_id%2Ccollection_id%2Cseason_number%2Cepisode_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes)&slug=eq.$rawSlug"
             
-            Log.d(TAG, "[SERIES REQ] Target URL: $seriesUrl")
-
             try {
                 val res = app.get(seriesUrl, headers = restHeaders)
-                Log.d(TAG, "[SERIES RES] Body Raw: ${res.text}")
-
                 val parsedList = parseJson<List<SeriesDetail>>(res.text)
                 val parsed = parsedList.firstOrNull() ?: return null
 
@@ -116,18 +104,14 @@ class NoriTvProvider : MainAPI() {
                     this.year = parsed.year
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "[SERIES EXCEPTION] Gagal memproses data series", e)
+                Log.e(TAG, "[SERIES EXCEPTION] Error loading series", e)
                 throw e
             }
         } else {
-            // API HIT UNTUK MOVIE
             val movieUrl = "$restApiUrl/movies?select=id%2Cslug%2Ctitle%2Coriginal_title%2Ctitle_kana%2Cyear%2Corigin_country%2Cdescription%2Cposter_url%2Cbanner_url%2Cmovie_genres(genre%3Agenres(slug%2Cname%2Cname_ja))%2Cmovie_parts(id%2Cmovie_id%2Ccollection_id%2Cpart_number%2Ctitle%2Cvideo_path%2Cthumbnail_url%2Cduration_minutes%2Csubtitles)&slug=eq.$rawSlug"
-            Log.d(TAG, "[MOVIE REQ] Target URL: $movieUrl")
             
             try {
                 val res = app.get(movieUrl, headers = restHeaders)
-                Log.d(TAG, "[MOVIE RES] Body Raw: ${res.text}")
-
                 val parsed = parseJson<List<MovieDetail>>(res.text).firstOrNull() ?: return null
                 val videoPath = parsed.movie_parts?.firstOrNull()?.video_path ?: ""
 
@@ -142,7 +126,7 @@ class NoriTvProvider : MainAPI() {
                     this.year = parsed.year
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "[MOVIE EXCEPTION] Gagal memproses data movie", e)
+                Log.e(TAG, "[MOVIE EXCEPTION] Error loading movie", e)
                 throw e
             }
         }
@@ -155,7 +139,18 @@ class NoriTvProvider : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         if (data.isBlank()) return false
-        val streamUrl = "$streamDomain$data"
+        Log.d(TAG, "[loadLinks] Raw Data Received: $data")
+
+        // Membersihkan domain domain utama jika otomatis ditempelkan oleh Cloudstream
+        val cleanPath = if (data.contains("noritv.com")) {
+            data.substringAfter("noritv.com")
+        } else {
+            data
+        }
+
+        val formattedPath = if (cleanPath.startsWith("/")) cleanPath else "/$cleanPath"
+        val streamUrl = "$streamDomain$formattedPath"
+        Log.d(TAG, "[loadLinks] Formatted Stream URL: $streamUrl")
 
         callback.invoke(
             ExtractorLink(
