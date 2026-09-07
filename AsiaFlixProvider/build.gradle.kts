@@ -7,7 +7,7 @@ plugins {
 version = 1
 
 cloudstream {
-    description = "asiaflix.net provider"
+    description = "asiaflix.in provider"
     authors = listOf("Herycp")
     status = 1
     tvTypes = listOf("Movie", "TvSeries", "AsianDrama")

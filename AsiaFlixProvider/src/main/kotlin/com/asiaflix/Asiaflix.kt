@@ -26,7 +26,7 @@ import javax.crypto.spec.SecretKeySpec
 class Asiaflix : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
     override var lang = "en"
-    override var mainUrl = "https://api.asiaflix.net/v1"
+    override var mainUrl = "https://api.asiaflix.in/v1"
     override var name = "Asiaflix"
     override val hasMainPage = true
 
@@ -45,8 +45,8 @@ class Asiaflix : MainAPI() {
                 val requestBuilder = originalRequest.newBuilder()
                     .header("accept", "*/*")
                     .header("dnt", "1")
-                    .header("origin", "https://asiaflix.net")
-                    .header("referer", "https://asiaflix.net/")
+                    .header("origin", "https://asiaflix.in")
+                    .header("referer", "https://asiaflix.in/")
                     .header("sec-ch-ua", "\"Chromium\";v=\"152\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"152\"")
                     .header("sec-ch-ua-mobile", "?1")
                     .header("sec-ch-ua-platform", "\"Android\"")
@@ -610,8 +610,8 @@ class Asiaflix : MainAPI() {
                         
                         val reqHeaders = mapOf(
                             "accept" to "application/json, text/plain, */*",
-                            "origin" to "https://asiaflix.net",
-                            "referer" to "https://asiaflix.net/drama/",
+                            "origin" to "https://asiaflix.in",
+                            "referer" to "https://asiaflix.in/drama/",
                             "user-agent" to userAgent,
                             "x-access-control" to "web"
                         )
@@ -629,8 +629,8 @@ class Asiaflix : MainAPI() {
                                 
                                 val linkHeaders = mapOf(
                                     "accept" to "*/*",
-                                    "origin" to "https://asiaflix.net",
-                                    "referer" to "https://asiaflix.net/",
+                                    "origin" to "https://asiaflix.in",
+                                    "referer" to "https://asiaflix.in/",
                                     "user-agent" to userAgent
                                 )
 
@@ -641,7 +641,7 @@ class Asiaflix : MainAPI() {
                                     type = if (isM3U8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.headers = linkHeaders
-                                    this.referer = "https://asiaflix.net/"
+                                    this.referer = "https://asiaflix.in/"
                                 })
                                 anySuccess.set(true)
                             }
@@ -655,8 +655,8 @@ class Asiaflix : MainAPI() {
                                 val isM3U8 = proxyUrl.contains(".m3u8") || !proxyUrl.contains("mp4-proxy")
                                 val linkHeaders = mapOf(
                                     "accept" to "*/*",
-                                    "origin" to "https://asiaflix.net",
-                                    "referer" to "https://asiaflix.net/",
+                                    "origin" to "https://asiaflix.in",
+                                    "referer" to "https://asiaflix.in/",
                                     "user-agent" to userAgent
                                 )
 
@@ -667,7 +667,7 @@ class Asiaflix : MainAPI() {
                                     type = if (isM3U8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.headers = linkHeaders
-                                    this.referer = "https://asiaflix.net/"
+                                    this.referer = "https://asiaflix.in/"
                                 })
                                 anySuccess.set(true)
                             } else {
