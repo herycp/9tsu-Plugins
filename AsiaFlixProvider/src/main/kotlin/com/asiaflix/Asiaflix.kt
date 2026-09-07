@@ -196,7 +196,7 @@ class Asiaflix : MainAPI() {
             "$mainUrl/drama/list?country=$country&page=$page"
         }
 
-        val responseText = app.get(url, headers = headers).text
+        val responseText = app.get(url, headers = headers, timeout = 30).text
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         val hasNext = true
 
