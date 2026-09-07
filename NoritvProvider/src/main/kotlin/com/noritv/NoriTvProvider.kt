@@ -99,7 +99,8 @@ class NoriTvProvider : MainAPI() {
                     TvType.TvSeries,
                     episodesList
                 ) {
-                    this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
+                    // DALAM (DETAIL): Format Portrait (poster_url)
+                    this.posterUrl = fixUrl(parsed.poster_url?.ifEmpty { null } ?: parsed.banner_url ?: "")
                     this.plot = parsed.description
                     this.year = parsed.year
                 }
@@ -121,7 +122,8 @@ class NoriTvProvider : MainAPI() {
                     TvType.Movie,
                     videoPath
                 ) {
-                    this.posterUrl = fixUrl(parsed.poster_url ?: parsed.banner_url ?: "")
+                    // DALAM (DETAIL): Format Portrait (poster_url)
+                    this.posterUrl = fixUrl(parsed.poster_url?.ifEmpty { null } ?: parsed.banner_url ?: "")
                     this.plot = parsed.description
                     this.year = parsed.year
                 }
@@ -141,7 +143,6 @@ class NoriTvProvider : MainAPI() {
         if (data.isBlank()) return false
         Log.d(TAG, "[loadLinks] Raw Data Received: $data")
 
-        // Membersihkan domain domain utama jika otomatis ditempelkan oleh Cloudstream
         val cleanPath = if (data.contains("noritv.com")) {
             data.substringAfter("noritv.com")
         } else {
@@ -172,7 +173,13 @@ class NoriTvProvider : MainAPI() {
         val itemType = this.type ?: "movie"
 
         val mappedType = if (itemType == "series") TvType.TvSeries else TvType.Movie
-        val horizontalPoster = fixUrl(this.bannerUrl ?: this.thumbnail ?: "")
+
+        // LUAR (HOME/SEARCH): Format Landscape (bannerUrl / thumbnail)
+        val landscapePoster = fixUrl(
+            this.bannerUrl?.ifEmpty { null }
+                ?: this.thumbnail?.ifEmpty { null }
+                ?: this.posterUrl ?: ""
+        )
 
         return newTvSeriesSearchResponse(
             itemTitle,
@@ -180,7 +187,7 @@ class NoriTvProvider : MainAPI() {
             mappedType,
             false
         ) {
-            this.posterUrl = horizontalPoster
+            this.posterUrl = landscapePoster
             this.posterHeaders = defaultHeaders
         }
     }
@@ -202,6 +209,7 @@ class NoriTvProvider : MainAPI() {
         @JsonProperty("slug") val slug: String? = null,
         @JsonProperty("title") val title: String? = null,
         @JsonProperty("thumbnail") val thumbnail: String? = null,
+        @JsonProperty("posterUrl") val posterUrl: String? = null,
         @JsonProperty("bannerUrl") val bannerUrl: String? = null
     )
 
