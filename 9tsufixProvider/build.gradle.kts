@@ -1,4 +1,4 @@
-import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+//import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 dependencies {
     implementation("com.google.android.material:material:1.12.0")
@@ -30,14 +30,6 @@ cloudstream {
 
     // Random CC logo I found
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
-}
-kotlin {
-    compileOptions {
-        jvmTarget.set(JvmTarget.JVM_11)
-    }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
 }
 
 android {
