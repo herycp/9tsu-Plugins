@@ -29,6 +29,15 @@ cloudstream {
     // Random CC logo I found
     iconUrl = "https://upload.wikimedia.org/wikipedia/commons/2/2f/Korduene_Logo.png"
 }
+kotlin {
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
+    kotlinOptions {
+        jvmTarget = "11"
+    }
+}
 
 android {
     buildFeatures {
