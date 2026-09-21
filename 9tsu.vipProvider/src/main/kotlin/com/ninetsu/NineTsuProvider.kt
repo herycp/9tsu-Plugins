@@ -254,13 +254,13 @@ class NineTsuProvider : MainAPI() {
                 }
                 
                 when {
-                    src.contains("vixmoran.today") -> {
-                        val idMatch = Regex("""vixmoran\.today/embed/([^?]+)""").find(src)
+                    src.contains("joqtiva.today") -> {
+                        val idMatch = Regex("""joqtiva\.today/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
-                                callback.invoke(newExtractorLink("vixmoran", this.name, apiUrl, ExtractorLinkType.M3U8) {
+                                callback.invoke(newExtractorLink("joqtiva", this.name, apiUrl, ExtractorLinkType.M3U8) {
                                     this.referer = data
                                     this.quality = Qualities.Unknown.value
                                 })
