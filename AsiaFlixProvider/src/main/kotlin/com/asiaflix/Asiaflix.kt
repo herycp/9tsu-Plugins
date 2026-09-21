@@ -26,9 +26,12 @@ import javax.crypto.spec.SecretKeySpec
 class Asiaflix : MainAPI() {
     override val supportedTypes = setOf(TvType.AsianDrama, TvType.TvSeries, TvType.Movie)
     override var lang = "en"
-    override var mainUrl = "https://api.asiaflix.in/v1"
     override var name = "Asiaflix"
     override val hasMainPage = true
+
+    // Daftar domain (Prioritas: 1. .net -> 2. .in)
+    private val apiDomains = listOf("https://api.asiaflix.net", "https://api.asiaflix.in")
+    override var mainUrl = "${apiDomains[0]}/v1"
 
     private val userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     private val headers = mapOf("User-Agent" to userAgent, "x-access-control" to "web")
@@ -36,17 +39,47 @@ class Asiaflix : MainAPI() {
     private val tmdbToken = "eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3MmJhMTBjNDI5OTE0MTU3MzgwOGQyNzEwNGVkMThmYSIsInN1YiI6IjY0ZjVhNTUwMTIxOTdlMDBmZWE5MzdmMSIsInNjb3BlcyI6WyJhcGlfcmVhZCJdLCJ2ZXJzaW9uIjoxfQ.84b7vWpVEilAbly4RpS01E9tyirHdhSXjcpfmTczI3Q"
     private val mdlBaseUrl = "https://my-drama-list-api-ten.vercel.app"
 
+    // ==================================================================
+    // FUNGSI FAILOVER API (Mencegah Cloudflare & Server Down)
+    // ==================================================================
+    private suspend fun safeApiGet(endpoint: String, timeoutSec: Long = 30L): String {
+        val path = if (endpoint.startsWith("http")) {
+            java.net.URL(endpoint).file 
+        } else {
+            if (endpoint.startsWith("/v1")) endpoint else "/v1$endpoint"
+        }
+        
+        for ((index, domain) in apiDomains.withIndex()) {
+            try {
+                val fullUrl = "$domain$path"
+                Log.d("AsiaflixDebug", "Mencoba domain ke-${index + 1}: $fullUrl")
+                
+                val response = app.get(fullUrl, headers = headers, timeout = timeoutSec)
+                
+                if (response.text.isNotBlank() && !response.text.contains("cf-mitigation") && !response.text.contains("Cloudflare")) {
+                    return response.text
+                } else {
+                    Log.w("AsiaflixDebug", "Domain $domain terblokir Cloudflare. Beralih ke backup...")
+                }
+            } catch (e: Exception) {
+                Log.w("AsiaflixDebug", "Gagal pada domain $domain: ${e.message}. Beralih ke backup...")
+            }
+        }
+        throw Exception("Semua domain Asiaflix (.net & .in) gagal diakses. Kemungkinan server down.")
+    }
+
     override fun getVideoInterceptor(extractorLink: ExtractorLink): Interceptor {
         return Interceptor { chain ->
             val originalRequest = chain.request()
             val url = originalRequest.url.toString()
 
             val request = if (url.contains("hlsproxy")) {
+                val topDomain = if (url.contains(".in")) "in" else "net"
                 val requestBuilder = originalRequest.newBuilder()
                     .header("accept", "*/*")
                     .header("dnt", "1")
-                    .header("origin", "https://asiaflix.in")
-                    .header("referer", "https://asiaflix.in/")
+                    .header("origin", "https://asiaflix.$topDomain")
+                    .header("referer", "https://asiaflix.$topDomain/")
                     .header("sec-ch-ua", "\"Chromium\";v=\"152\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"152\"")
                     .header("sec-ch-ua-mobile", "?1")
                     .header("sec-ch-ua-platform", "\"Android\"")
@@ -55,6 +88,7 @@ class Asiaflix : MainAPI() {
                     .header("sec-fetch-site", "cross-site")
                     .header("user-agent", userAgent)
 
+                // Modifikasi Range header menjadi Open-Ended untuk mencegah Error 500
                 val rangeHeader = originalRequest.header("Range")
                 if (rangeHeader != null) {
                     val startByte = rangeHeader.substringAfter("bytes=").substringBefore("-")
@@ -189,14 +223,15 @@ class Asiaflix : MainAPI() {
         val items = mutableListOf<SearchResponse>()
         val isLatest = request.data == "latest"
 
-        val url = if (isLatest) {
-            "$mainUrl/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
+        val endpoint = if (isLatest) {
+            "/drama/dynamic-fetch?page=$page&type=Latest%20Updates"
         } else {
             val country = URLEncoder.encode(request.data, "UTF-8")
-            "$mainUrl/drama/list?country=$country&page=$page"
+            "/drama/list?country=$country&page=$page"
         }
 
-        val responseText = app.get(url, headers = headers, timeout = 30).text
+        // Terapkan Failover dengan Timeout 30 Detik
+        val responseText = safeApiGet(endpoint, timeoutSec = 30L)
         val response = tryParseJson<AsiaflixListResponse>(responseText)
         val hasNext = true
 
@@ -234,8 +269,8 @@ class Asiaflix : MainAPI() {
                 }
             }
             
-            val url = "$mainUrl/drama/list?${queryParams.joinToString("&")}"
-            val responseText = app.get(url, headers = headers).text
+            val url = "/drama/list?${queryParams.joinToString("&")}"
+            val responseText = safeApiGet(url, 30L)
             results = tryParseJson<AsiaflixListResponse>(responseText)?.body ?: emptyList()
         } else {
             var searchQuery = cleanQuery
@@ -252,9 +287,9 @@ class Asiaflix : MainAPI() {
 
             val encodedQuery = URLEncoder.encode(searchQuery, "UTF-8")
             val projections = URLEncoder.encode("""["releaseYear","status","casts","episodes","genres","country","showType","description"]""", "UTF-8")
-            val url = "$mainUrl/drama/search?q=$encodedQuery&page=1&projections=$projections"
+            val url = "/drama/search?q=$encodedQuery&page=1&projections=$projections"
 
-            val responseText = app.get(url, headers = headers).text
+            val responseText = safeApiGet(url, 30L)
             val baseResults = tryParseJson<AsiaflixListResponse>(responseText)?.body ?: emptyList()
             
             results = if (tagFilters.isNotEmpty()) {
@@ -297,7 +332,9 @@ class Asiaflix : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val responseText = app.get(url, headers = headers).text
+        // Terapkan failover untuk mengambil detail
+        val detailId = url.substringAfter("?id=")
+        val responseText = safeApiGet("/drama/detail?id=$detailId", 30L)
         val response = tryParseJson<AsiaflixDetail>(responseText) ?: return null
 
         val isMovie = response.showType?.contains("Movie", ignoreCase = true) == true || response.episodes?.size == 1
@@ -505,15 +542,15 @@ class Asiaflix : MainAPI() {
         val recommendations = try {
             var recText = ""
             if (!genreName.isNullOrBlank()) {
-                val recUrl = "$mainUrl/drama/list?genre=${URLEncoder.encode(genreName, "UTF-8")}&limit=30"
-                recText = app.get(recUrl, headers = headers).text
+                val recUrl = "/drama/list?genre=${URLEncoder.encode(genreName, "UTF-8")}&limit=30"
+                recText = safeApiGet(recUrl, 30L)
             }
             
             var recResponse = tryParseJson<AsiaflixListResponse>(recText)
             
             if (recResponse?.body.isNullOrEmpty() && !countryName.isNullOrBlank()) {
-                val recUrl = "$mainUrl/drama/list?country=${URLEncoder.encode(countryName, "UTF-8")}&limit=30"
-                recText = app.get(recUrl, headers = headers).text
+                val recUrl = "/drama/list?country=${URLEncoder.encode(countryName, "UTF-8")}&limit=30"
+                recText = safeApiGet(recUrl, 30L)
                 recResponse = tryParseJson<AsiaflixListResponse>(recText)
             }
 
@@ -591,7 +628,7 @@ class Asiaflix : MainAPI() {
             }
 
             // ------------------------------------------------------------------
-            // URUTAN 2: API HLS Proxy Asiaflix (Penanganan HLS & Direct MP4 tanpa hardcode Range)
+            // URUTAN 2: API HLS Proxy Asiaflix
             // ------------------------------------------------------------------
             linkData.streamUrls?.forEach { stream ->
                 var streamUrl = stream.url ?: return@forEach
@@ -606,19 +643,10 @@ class Asiaflix : MainAPI() {
                         val encodedUrl = URLEncoder.encode(base64Url, "UTF-8")
                         val encodedServer = URLEncoder.encode(serverName, "UTF-8")
                         
-                        val proxyApiUrl = "$mainUrl/drama/get-stream-url?value=$encodedUrl&server=$encodedServer"
+                        val proxyApiUrl = "/drama/get-stream-url?value=$encodedUrl&server=$encodedServer"
                         
-                        val reqHeaders = mapOf(
-                            "accept" to "application/json, text/plain, */*",
-                            "origin" to "https://asiaflix.in",
-                            "referer" to "https://asiaflix.in/drama/",
-                            "user-agent" to userAgent,
-                            "x-access-control" to "web"
-                        )
-
-                        Log.d("AsiaflixDebug", "Hit API Proxy | Server: $serverName | URL: $proxyApiUrl")
-                        val apiResponseText = app.get(proxyApiUrl, headers = reqHeaders, timeout = 10).text
-                        
+                        // Failover dengan timeout lebih pendek (15 detik) untuk load proxy URL
+                        val apiResponseText = safeApiGet(proxyApiUrl, 15L)
                         val proxyData = tryParseJson<AsiaflixProxyResponse>(apiResponseText)
                         
                         if (proxyData?.sources != null && proxyData.sources.isNotEmpty()) {
@@ -626,11 +654,12 @@ class Asiaflix : MainAPI() {
                                 val proxyUrl = source.url ?: return@forEach
                                 val isM3U8 = source.isM3U8 ?: proxyUrl.contains(".m3u8")
                                 val qualityLabel = source.quality ?: "Auto"
+                                val topDomain = if (proxyUrl.contains(".in")) "in" else "net"
                                 
                                 val linkHeaders = mapOf(
                                     "accept" to "*/*",
-                                    "origin" to "https://asiaflix.in",
-                                    "referer" to "https://asiaflix.in/",
+                                    "origin" to "https://asiaflix.$topDomain",
+                                    "referer" to "https://asiaflix.$topDomain/",
                                     "user-agent" to userAgent
                                 )
 
@@ -641,7 +670,7 @@ class Asiaflix : MainAPI() {
                                     type = if (isM3U8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.headers = linkHeaders
-                                    this.referer = "https://asiaflix.in/"
+                                    this.referer = "https://asiaflix.$topDomain/"
                                 })
                                 anySuccess.set(true)
                             }
@@ -653,10 +682,12 @@ class Asiaflix : MainAPI() {
 
                             if (!proxyUrl.isNullOrEmpty()) {
                                 val isM3U8 = proxyUrl.contains(".m3u8") || !proxyUrl.contains("mp4-proxy")
+                                val topDomain = if (proxyUrl.contains(".in")) "in" else "net"
+
                                 val linkHeaders = mapOf(
                                     "accept" to "*/*",
-                                    "origin" to "https://asiaflix.in",
-                                    "referer" to "https://asiaflix.in/",
+                                    "origin" to "https://asiaflix.$topDomain",
+                                    "referer" to "https://asiaflix.$topDomain/",
                                     "user-agent" to userAgent
                                 )
 
@@ -667,7 +698,7 @@ class Asiaflix : MainAPI() {
                                     type = if (isM3U8) ExtractorLinkType.M3U8 else ExtractorLinkType.VIDEO
                                 ) {
                                     this.headers = linkHeaders
-                                    this.referer = "https://asiaflix.in/"
+                                    this.referer = "https://asiaflix.$topDomain/"
                                 })
                                 anySuccess.set(true)
                             } else {
