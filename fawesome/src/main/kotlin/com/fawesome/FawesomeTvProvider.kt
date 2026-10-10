@@ -243,23 +243,41 @@ class FawesomeTvProvider : MainAPI() {
             val videoTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
             val poster = obj.optString("hd_image").ifBlank { obj.optString("sd_image") }
 
+            // Deteksi jika item adalah TV Show/Series
+            val itemType = obj.optString("item_type")
+            val contentType = obj.optString("content_type")
+            val feedType = obj.optString("feed_type")
+            val isTvShow = itemType == "tvshow" || contentType == "listoflist" || feedType == "show"
+
             val videoId = obj.optString("video_id").ifBlank {
                 obj.optString("nid")
             }.ifBlank {
                 obj.optString("actionkey").substringAfter("nodeid-=").substringAfter("nodeid=")
             }
 
-            val itemUrl = if (videoId.isNotBlank()) {
+            val rawFeed = obj.optString("feed").ifBlank { obj.optString("deeplink_url") }
+
+            // Tentukan URL berdasarkan tipe konten
+            val itemUrl = if (isTvShow && rawFeed.isNotBlank()) {
+                fixUrl(rawFeed)
+            } else if (videoId.isNotBlank()) {
                 "$baseApiUrl/recipes.php?searchType=nodeid&start-index=0&max-results=1&nid=$videoId"
             } else {
                 val urlEncodedData = URLEncoder.encode(obj.toString(), "UTF-8")
                 "$mainUrl/watch?data=$urlEncodedData"
             }
 
-            val res = newMovieSearchResponse(videoTitle, itemUrl, TvType.Movie) {
-                this.posterUrl = poster
+            if (isTvShow) {
+                val res = newTvSeriesSearchResponse(videoTitle, itemUrl, TvType.TvSeries) {
+                    this.posterUrl = poster
+                }
+                results.add(res)
+            } else {
+                val res = newMovieSearchResponse(videoTitle, itemUrl, TvType.Movie) {
+                    this.posterUrl = poster
+                }
+                results.add(res)
             }
-            results.add(res)
         }
         return results
     }
@@ -285,8 +303,119 @@ class FawesomeTvProvider : MainAPI() {
         return list.distinctBy { it.name }
     }
 
+    // Fungsi Pembantu untuk ekstrak daftar Episode dari URL new-qid / JSON Feed
+    private fun parseEpisodes(json: JSONObject?, seasonNum: Int): List<Episode> {
+        if (json == null) return emptyList()
+        val items = json.optJSONObject("feed")?.optJSONArray("items") ?: return emptyList()
+        val seasonEps = mutableListOf<Episode>()
+
+        for (j in 0 until items.length()) {
+            val epItem = items.optJSONObject(j) ?: continue
+            val epTitle = epItem.optString("title")
+            val epDesc = epItem.optString("description")
+            val epPoster = epItem.optString("hd_image").ifBlank { epItem.optString("sd_image") }
+
+            val primaryUrl = epItem.optString("video_url")
+            val videoUrlsArray = JSONArray()
+            if (primaryUrl.isNotBlank()) {
+                videoUrlsArray.put(primaryUrl)
+            }
+
+            val altUrls = epItem.optJSONArray("video_urls")
+            if (altUrls != null) {
+                for (k in 0 until altUrls.length()) {
+                    val alt = altUrls.optString(k)
+                    if (alt.isNotBlank()) {
+                        var exists = false
+                        for (l in 0 until videoUrlsArray.length()) {
+                            if (videoUrlsArray.optString(l) == alt) {
+                                exists = true
+                                break
+                            }
+                        }
+                        if (!exists) videoUrlsArray.put(alt)
+                    }
+                }
+            }
+
+            val ccPath = epItem.optString("cc_path")
+            val ccMulti = epItem.optJSONArray("cc_path_multi_lang")
+
+            val epDataJson = JSONObject().apply {
+                put("video_urls", videoUrlsArray)
+                if (ccPath.isNotBlank()) put("cc_path", ccPath)
+                if (ccMulti != null && ccMulti.length() > 0) put("cc_path_multi_lang", ccMulti)
+            }
+
+            // Mencoba mengekstrak nomor urut episode dari judul (misal: "Episode 05")
+            val epNumMatch = Regex("Ep(?:isode)?\\s*(\\d+)").find(epTitle)
+            val epNum = epNumMatch?.groupValues?.get(1)?.toIntOrNull() ?: (j + 1)
+
+            seasonEps.add(newEpisode(epDataJson.toString()) {
+                this.name = epTitle
+                this.description = epDesc
+                this.posterUrl = epPoster
+                this.season = seasonNum
+                this.episode = epNum
+            })
+        }
+        return seasonEps
+    }
+
     override suspend fun load(url: String): LoadResponse {
         return when {
+            // Blok penanganan untuk TV Series (Mengandung multi-season atau list multi-episode)
+            url.contains("searchType=listoflist") || url.contains("searchType=new-qid") -> coroutineScope {
+                val (endpoint, params) = extractEndpointAndParams(url)
+                val json = apiRequest(endpoint, params) ?: return@coroutineScope errorResponse("Gagal memuat serial API")
+
+                val episodes = mutableListOf<Episode>()
+                val subcats = json.optJSONArray("subcategories")
+                val rootFeed = json.optJSONObject("feed")
+
+                // Coba ambil metadata series dari root response
+                val seriesTitle = rootFeed?.optString("title")?.takeIf { it.isNotBlank() } ?: "TV Series"
+                val poster = rootFeed?.optString("hd_image")?.ifBlank { rootFeed.optString("sd_image") }
+                val plot = rootFeed?.optString("description")
+                val year = rootFeed?.optString("release_date")?.takeLast(4)?.toIntOrNull()
+                    ?: rootFeed?.optString("date")?.takeLast(4)?.toIntOrNull()
+                val tagsList = rootFeed?.optString("content_genre")?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
+
+                // 1. Eksekusi URL untuk listoflist (Multi Season)
+                if (subcats != null && subcats.length() > 0) {
+                    val deferredSeasons = (0 until subcats.length()).map { i ->
+                        async {
+                            val subObj = subcats.optJSONObject(i) ?: return@async null
+                            val subTitle = subObj.optString("title")
+                            val subFeedUrl = fixUrl(subObj.optString("feed"))
+
+                            // Mencoba mengekstrak nomor season dari judul (misal: "The FBI Files S01")
+                            val seasonMatch = Regex("S(\\d+)").find(subTitle)
+                            val seasonNum = seasonMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
+
+                            if (subFeedUrl.isNotBlank()) {
+                                val (epEndpoint, epParams) = extractEndpointAndParams(subFeedUrl)
+                                val epJson = apiRequest(epEndpoint, epParams)
+                                parseEpisodes(epJson, seasonNum)
+                            } else emptyList()
+                        }
+                    }
+                    deferredSeasons.awaitAll().forEach { episodes.addAll(it) }
+                } 
+                // 2. Jika URL adalah new-qid yang langsung berisi list items
+                else if (rootFeed != null && rootFeed.has("items")) {
+                    episodes.addAll(parseEpisodes(json, 1))
+                }
+
+                newTvSeriesLoadResponse(seriesTitle, url, TvType.TvSeries, episodes) {
+                    this.posterUrl = poster ?: episodes.firstOrNull()?.posterUrl
+                    this.plot = plot ?: episodes.firstOrNull()?.description
+                    this.year = year
+                    this.tags = tagsList
+                }
+            }
+            
+            // Blok penanganan untuk Film / Single Video
             url.contains("searchType=nodeid") || url.contains("nid=") -> {
                 val (endpoint, params) = extractEndpointAndParams(url)
                 val json = apiRequest(endpoint, params) ?: return errorResponse("Gagal memuat detail API")
