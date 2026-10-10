@@ -243,7 +243,6 @@ class FawesomeTvProvider : MainAPI() {
             val videoTitle = obj.optString("title").takeIf { it.isNotBlank() } ?: continue
             val poster = obj.optString("hd_image").ifBlank { obj.optString("sd_image") }
 
-            // Deteksi jika item adalah TV Show/Series
             val itemType = obj.optString("item_type")
             val contentType = obj.optString("content_type")
             val feedType = obj.optString("feed_type")
@@ -257,7 +256,6 @@ class FawesomeTvProvider : MainAPI() {
 
             val rawFeed = obj.optString("feed").ifBlank { obj.optString("deeplink_url") }
 
-            // Tentukan URL berdasarkan tipe konten
             val itemUrl = if (isTvShow && rawFeed.isNotBlank()) {
                 fixUrl(rawFeed)
             } else if (videoId.isNotBlank()) {
@@ -303,7 +301,6 @@ class FawesomeTvProvider : MainAPI() {
         return list.distinctBy { it.name }
     }
 
-    // Fungsi Pembantu untuk ekstrak daftar Episode dari URL new-qid / JSON Feed
     private fun parseEpisodes(json: JSONObject?, seasonNum: Int): List<Episode> {
         if (json == null) return emptyList()
         val items = json.optJSONObject("feed")?.optJSONArray("items") ?: return emptyList()
@@ -347,7 +344,6 @@ class FawesomeTvProvider : MainAPI() {
                 if (ccMulti != null && ccMulti.length() > 0) put("cc_path_multi_lang", ccMulti)
             }
 
-            // Mencoba mengekstrak nomor urut episode dari judul (misal: "Episode 05")
             val epNumMatch = Regex("Ep(?:isode)?\\s*(\\d+)").find(epTitle)
             val epNum = epNumMatch?.groupValues?.get(1)?.toIntOrNull() ?: (j + 1)
 
@@ -364,7 +360,6 @@ class FawesomeTvProvider : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse {
         return when {
-            // Blok penanganan untuk TV Series (Mengandung multi-season atau list multi-episode)
             url.contains("searchType=listoflist") || url.contains("searchType=new-qid") -> coroutineScope {
                 val (endpoint, params) = extractEndpointAndParams(url)
                 val json = apiRequest(endpoint, params) ?: return@coroutineScope errorResponse("Gagal memuat serial API")
@@ -373,7 +368,6 @@ class FawesomeTvProvider : MainAPI() {
                 val subcats = json.optJSONArray("subcategories")
                 val rootFeed = json.optJSONObject("feed")
 
-                // Coba ambil metadata series dari root response
                 val seriesTitle = rootFeed?.optString("title")?.takeIf { it.isNotBlank() } ?: "TV Series"
                 val poster = rootFeed?.optString("hd_image")?.ifBlank { rootFeed.optString("sd_image") }
                 val plot = rootFeed?.optString("description")
@@ -381,15 +375,13 @@ class FawesomeTvProvider : MainAPI() {
                     ?: rootFeed?.optString("date")?.takeLast(4)?.toIntOrNull()
                 val tagsList = rootFeed?.optString("content_genre")?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }
 
-                // 1. Eksekusi URL untuk listoflist (Multi Season)
                 if (subcats != null && subcats.length() > 0) {
                     val deferredSeasons = (0 until subcats.length()).map { i ->
                         async {
-                            val subObj = subcats.optJSONObject(i) ?: return@async null
+                            val subObj = subcats.optJSONObject(i) ?: return@async emptyList<Episode>()
                             val subTitle = subObj.optString("title")
                             val subFeedUrl = fixUrl(subObj.optString("feed"))
 
-                            // Mencoba mengekstrak nomor season dari judul (misal: "The FBI Files S01")
                             val seasonMatch = Regex("S(\\d+)").find(subTitle)
                             val seasonNum = seasonMatch?.groupValues?.get(1)?.toIntOrNull() ?: (i + 1)
 
@@ -400,10 +392,8 @@ class FawesomeTvProvider : MainAPI() {
                             } else emptyList()
                         }
                     }
-                    deferredSeasons.awaitAll().forEach { episodes.addAll(it) }
-                } 
-                // 2. Jika URL adalah new-qid yang langsung berisi list items
-                else if (rootFeed != null && rootFeed.has("items")) {
+                    deferredSeasons.awaitAll().filterNotNull().forEach { episodes.addAll(it) }
+                } else if (rootFeed != null && rootFeed.has("items")) {
                     episodes.addAll(parseEpisodes(json, 1))
                 }
 
@@ -414,8 +404,6 @@ class FawesomeTvProvider : MainAPI() {
                     this.tags = tagsList
                 }
             }
-            
-            // Blok penanganan untuk Film / Single Video
             url.contains("searchType=nodeid") || url.contains("nid=") -> {
                 val (endpoint, params) = extractEndpointAndParams(url)
                 val json = apiRequest(endpoint, params) ?: return errorResponse("Gagal memuat detail API")
