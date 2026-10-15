@@ -3,7 +3,6 @@ package com.kodasusaka
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import org.jsoup.nodes.Element
 
 class KodasusakaProvider : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
@@ -15,28 +14,36 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
+    // 5 menu halaman depan menggunakan API v2
     override val mainPage = mainPageOf(
-        "/top/views" to "Top Views",
-        "/top/tmdb" to "Top TMDB",
-        "/top/imdb" to "Top IMDB",
-        "/movies?sortby=newest" to "Movie Newest",
-        "/tv-series?sortby=newest" to "TV Series Newest"
+        "/api/v2/movies?sortby=views" to "Top Views",
+        "/api/v2/movies?sortby=tmdb" to "Top TMDB",
+        "/api/v2/movies?sortby=imdb" to "Top IMDB",
+        "/api/v2/movies?sortby=newest" to "Movie Newest",
+        "/api/v2/tv-series?sortby=newest" to "TV Series Newest"
     )
 
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
+        // Menambahkan parameter page dan limit secara dinamis untuk pagination
         val url = if (request.data.contains("?")) {
-            "$mainUrl${request.data}&page=$page"
+            "$mainUrl${request.data}&limit=30&page=$page"
         } else {
-            "$mainUrl${request.data}?page=$page"
+            "$mainUrl${request.data}?limit=30&page=$page"
         }
-        val doc = app.get(url).document
+        
+        val response = app.get(url).parsedSafe<ApiListResponse>()
 
-        val homeItems = doc.select("article.group").mapNotNull {
-            it.toSearchResult()
-        }
+        val homeItems = response?.items?.mapNotNull { item ->
+            item.toSearchResponse(mainUrl)
+        } ?: emptyList()
+
+        // Logika Pagination Otomatis dari API
+        val currentPage = response?.page ?: 1
+        val totalPages = response?.total_pages ?: 1
+        val hasNext = currentPage < totalPages
 
         return newHomePageResponse(
             list = HomePageList(
@@ -44,17 +51,18 @@ class KodasusakaProvider : MainAPI() {
                 list = homeItems,
                 isHorizontalImages = false
             ),
-            hasNext = homeItems.isNotEmpty() && doc.selectFirst("nav[aria-label=Pagination] a:contains(Next), nav[aria-label=Pagination] a:contains(Selanjutnya), a[rel=next]") != null
+            hasNext = hasNext // Cloudstream akan me-load page+1 jika ini true
         )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/search?q=$query&page=1"
-        val doc = app.get(url).document
+        // Search bawaan Cloudstream hanya membutuhkan page 1
+        val url = "$mainUrl/api/v2/search?q=$query&limit=30&page=1"
+        val response = app.get(url).parsedSafe<ApiListResponse>()
 
-        return doc.select("article.group").mapNotNull {
-            it.toSearchResult()
-        }
+        return response?.items?.mapNotNull { item ->
+            item.toSearchResponse(mainUrl)
+        } ?: emptyList()
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -64,7 +72,7 @@ class KodasusakaProvider : MainAPI() {
         val response = app.get(apiUrl).parsedSafe<ApiResponse>() ?: return null
 
         val title = response.title ?: return null
-        val poster = fixUrlNull(response.poster ?: response.thumb)
+        val poster = fixUrlNull(response.poster?.takeIf { it.isNotBlank() } ?: response.thumb)
         val backdrops = response.backdrops ?: emptyList()
         val background = fixUrlNull(backdrops.firstOrNull())
         val description = response.overview
@@ -78,7 +86,7 @@ class KodasusakaProvider : MainAPI() {
             server.episodes?.forEach { ep ->
                 if (!ep.sources_url.isNullOrEmpty()) {
                     episodes.add(
-                        newEpisode(ep.sources_url!!) {
+                        newEpisode(ep.sources_url) {
                             this.name = ep.name ?: "Episode ${ep.number}"
                             this.episode = ep.number
                             this.season = ep.season
@@ -100,7 +108,7 @@ class KodasusakaProvider : MainAPI() {
         val recommendations = response.related?.mapNotNull { rel ->
             val relSlug = rel.slug ?: return@mapNotNull null
             val relTitle = rel.title ?: "Unknown"
-            val relPoster = fixUrlNull(rel.poster ?: rel.thumb)
+            val relPoster = fixUrlNull(rel.poster?.takeIf { it.isNotBlank() } ?: rel.thumb)
             val relType = if (rel.kind.equals("tv-series", ignoreCase = true)) TvType.TvSeries else TvType.Movie
             
             if (relType == TvType.TvSeries) {
@@ -146,9 +154,9 @@ class KodasusakaProvider : MainAPI() {
         if (data.contains("/api/v1/episodes/")) {
             val sourceResponse = app.get(data).parsedSafe<SourceApiResponse>()
             sourceResponse?.sources?.forEach { src ->
-                var fileUrl = src.file
+                val fileUrl = src.file
                 if (!fileUrl.isNullOrEmpty()) {
-                    // Menambahkan /index.json ke akhir URL file jika belum ada
+                    // Inject "/index.json" ke akhir URL agar format M3U8 bisa terbaca oleh player
                     val formattedUrl = if (fileUrl.endsWith("/")) {
                         "${fileUrl}index.json"
                     } else if (!fileUrl.endsWith("/index.json")) {
@@ -171,47 +179,52 @@ class KodasusakaProvider : MainAPI() {
             }
             return true
         }
-
-        val doc = app.get(data).document
-        val iframeUrl = doc.selectFirst("iframe")?.attr("src")
-            ?: doc.selectFirst("div[data-embed]")?.attr("data-embed")
-
-        if (!iframeUrl.isNullOrEmpty()) {
-            val fixedIframe = fixUrl(iframeUrl)
-            loadExtractor(fixedIframe, data, subtitleCallback, callback)
-        }
-
-        return true
+        return false
     }
 
-    private fun Element.toSearchResult(): SearchResponse? {
-        val linkElement = this.selectFirst("a") ?: return null
-        val href = linkElement.attr("href")
-
-        val title = this.selectFirst("h3")?.text()?.trim() ?: return null
-        if (title.isEmpty()) return null
-
-        val posterUrl = fixUrlNull(this.selectFirst("img")?.attr("src"))
-        val badgeText = this.selectFirst("span.backdrop-blur-sm, span.absolute")?.text()?.trim()
-
-        val isTvSeries = badgeText?.contains("EP", ignoreCase = true) == true ||
-                href.contains("/series/", ignoreCase = true) ||
-                href.contains("/tv-series", ignoreCase = true)
+    // --- Ekstensi Helper Pemetaan JSON ke SearchResponse ---
+    private fun ApiListItem.toSearchResponse(mainUrl: String): SearchResponse? {
+        val validTitle = title ?: return null
+        val validSlug = slug ?: return null
+        
+        val url = "$mainUrl/$validSlug" 
+        val img = poster?.takeIf { it.isNotBlank() } ?: thumb
+        val posterUrl = fixUrlNull(img)
+        val isTvSeries = kind.equals("tv-series", ignoreCase = true)
 
         return if (isTvSeries) {
-            newTvSeriesSearchResponse(title, fixUrl(href), TvType.TvSeries) {
+            newTvSeriesSearchResponse(validTitle, url, TvType.TvSeries) {
                 this.posterUrl = posterUrl
             }
         } else {
-            newMovieSearchResponse(title, fixUrl(href), TvType.Movie) {
+            newMovieSearchResponse(validTitle, url, TvType.Movie) {
                 this.posterUrl = posterUrl
-                if (badgeText?.contains("FULLHD", ignoreCase = true) == true ||
-                    badgeText?.contains("HD", ignoreCase = true) == true) {
+                if (quality?.contains("HD", true) == true || episode_label?.contains("HD", true) == true) {
                     this.quality = SearchQuality.HD
                 }
             }
         }
     }
+
+    // --- Data Classes untuk Parsing API Web JSON ---
+    data class ApiListResponse(
+        @JsonProperty("items") val items: List<ApiListItem>?,
+        @JsonProperty("page") val page: Int?,
+        @JsonProperty("total_pages") val total_pages: Int?,
+        @JsonProperty("total") val total: Int?,
+        @JsonProperty("limit") val limit: Int?
+    )
+
+    data class ApiListItem(
+        @JsonProperty("title") val title: String?,
+        @JsonProperty("slug") val slug: String?,
+        @JsonProperty("thumb") val thumb: String?,
+        @JsonProperty("poster") val poster: String?,
+        @JsonProperty("year") val year: Int?,
+        @JsonProperty("kind") val kind: String?,
+        @JsonProperty("quality") val quality: String?,
+        @JsonProperty("episode_label") val episode_label: String?
+    )
 
     data class ApiResponse(
         @JsonProperty("title") val title: String?,
