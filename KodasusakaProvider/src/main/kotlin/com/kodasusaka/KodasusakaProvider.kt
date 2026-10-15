@@ -15,7 +15,6 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
-    // Menyesuaikan rute API halaman depan sesuai dokumentasi terbaru
     override val mainPage = mainPageOf(
         "/api/v2/movies?sortby=views" to "Top Views",
         "/api/v2/top/tmdb" to "Top TMDB",
@@ -36,12 +35,14 @@ class KodasusakaProvider : MainAPI() {
         
         val response = app.get(url).parsedSafe<ApiListResponse>()
 
-        val homeItems = response?.items?.mapNotNull { item ->
+        // Mengambil array items baik dari luar (movies) maupun dari dalam object 'list' (top)
+        val rawItems = response?.items ?: response?.list?.items ?: emptyList()
+        val homeItems = rawItems.mapNotNull { item ->
             item.toSearchResponse(mainUrl)
-        } ?: emptyList()
+        }
 
-        val currentPage = response?.page ?: 1
-        val totalPages = response?.total_pages ?: 1
+        val currentPage = response?.page ?: response?.list?.page ?: 1
+        val totalPages = response?.total_pages ?: response?.list?.total_pages ?: 1
         val hasNext = currentPage < totalPages
 
         return newHomePageResponse(
@@ -55,15 +56,17 @@ class KodasusakaProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // ENCODE QUERY: Mencegah error URL ketika ada spasi atau karakter khusus
         val encodedQuery = URLEncoder.encode(query, "utf-8")
         val url = "$mainUrl/api/v2/search?q=$encodedQuery&limit=30&page=1"
         
         val response = app.get(url).parsedSafe<ApiListResponse>()
 
-        return response?.items?.mapNotNull { item ->
+        // Mengambil items dari dalam object 'list' (search)
+        val rawItems = response?.items ?: response?.list?.items ?: emptyList()
+        
+        return rawItems.mapNotNull { item ->
             item.toSearchResponse(mainUrl)
-        } ?: emptyList()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -208,12 +211,21 @@ class KodasusakaProvider : MainAPI() {
         }
     }
 
+    // --- Pembaruan Struktur Data untuk API Pencarian & Halaman Depan ---
     data class ApiListResponse(
+        // Untuk respons langsung di root (Movies / TV Series)
         @JsonProperty("items") val items: List<ApiListItem>?,
         @JsonProperty("page") val page: Int?,
         @JsonProperty("total_pages") val total_pages: Int?,
-        @JsonProperty("total") val total: Int?,
-        @JsonProperty("limit") val limit: Int?
+        
+        // Untuk respons di dalam object "list" (Search / Top)
+        @JsonProperty("list") val list: ApiListObject?
+    )
+
+    data class ApiListObject(
+        @JsonProperty("items") val items: List<ApiListItem>?,
+        @JsonProperty("page") val page: Int?,
+        @JsonProperty("total_pages") val total_pages: Int?
     )
 
     data class ApiListItem(
