@@ -14,7 +14,6 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
-    // 5 menu halaman depan menggunakan API v2
     override val mainPage = mainPageOf(
         "/api/v2/movies?sortby=views" to "Top Views",
         "/api/v2/movies?sortby=tmdb" to "Top TMDB",
@@ -27,7 +26,6 @@ class KodasusakaProvider : MainAPI() {
         page: Int,
         request: MainPageRequest
     ): HomePageResponse {
-        // Menambahkan parameter page dan limit secara dinamis untuk pagination
         val url = if (request.data.contains("?")) {
             "$mainUrl${request.data}&limit=30&page=$page"
         } else {
@@ -40,7 +38,6 @@ class KodasusakaProvider : MainAPI() {
             item.toSearchResponse(mainUrl)
         } ?: emptyList()
 
-        // Logika Pagination Otomatis dari API
         val currentPage = response?.page ?: 1
         val totalPages = response?.total_pages ?: 1
         val hasNext = currentPage < totalPages
@@ -51,12 +48,11 @@ class KodasusakaProvider : MainAPI() {
                 list = homeItems,
                 isHorizontalImages = false
             ),
-            hasNext = hasNext // Cloudstream akan me-load page+1 jika ini true
+            hasNext = hasNext 
         )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        // Search bawaan Cloudstream hanya membutuhkan page 1
         val url = "$mainUrl/api/v2/search?q=$query&limit=30&page=1"
         val response = app.get(url).parsedSafe<ApiListResponse>()
 
@@ -86,7 +82,7 @@ class KodasusakaProvider : MainAPI() {
             server.episodes?.forEach { ep ->
                 if (!ep.sources_url.isNullOrEmpty()) {
                     episodes.add(
-                        newEpisode(ep.sources_url) {
+                        newEpisode(ep.sources_url!!) {
                             this.name = ep.name ?: "Episode ${ep.number}"
                             this.episode = ep.number
                             this.season = ep.season
@@ -156,7 +152,6 @@ class KodasusakaProvider : MainAPI() {
             sourceResponse?.sources?.forEach { src ->
                 val fileUrl = src.file
                 if (!fileUrl.isNullOrEmpty()) {
-                    // Inject "/index.json" ke akhir URL agar format M3U8 bisa terbaca oleh player
                     val formattedUrl = if (fileUrl.endsWith("/")) {
                         "${fileUrl}index.json"
                     } else if (!fileUrl.endsWith("/index.json")) {
@@ -182,7 +177,6 @@ class KodasusakaProvider : MainAPI() {
         return false
     }
 
-    // --- Ekstensi Helper Pemetaan JSON ke SearchResponse ---
     private fun ApiListItem.toSearchResponse(mainUrl: String): SearchResponse? {
         val validTitle = title ?: return null
         val validSlug = slug ?: return null
@@ -192,6 +186,10 @@ class KodasusakaProvider : MainAPI() {
         val posterUrl = fixUrlNull(img)
         val isTvSeries = kind.equals("tv-series", ignoreCase = true)
 
+        // Variabel lokal untuk mencegah tertimpa 'this.quality' milik SearchResponse
+        val jsonQuality = quality
+        val jsonEpisodeLabel = episode_label
+
         return if (isTvSeries) {
             newTvSeriesSearchResponse(validTitle, url, TvType.TvSeries) {
                 this.posterUrl = posterUrl
@@ -199,14 +197,13 @@ class KodasusakaProvider : MainAPI() {
         } else {
             newMovieSearchResponse(validTitle, url, TvType.Movie) {
                 this.posterUrl = posterUrl
-                if (quality?.contains("HD", true) == true || episode_label?.contains("HD", true) == true) {
+                if (jsonQuality?.contains("HD", true) == true || jsonEpisodeLabel?.contains("HD", true) == true) {
                     this.quality = SearchQuality.HD
                 }
             }
         }
     }
 
-    // --- Data Classes untuk Parsing API Web JSON ---
     data class ApiListResponse(
         @JsonProperty("items") val items: List<ApiListItem>?,
         @JsonProperty("page") val page: Int?,
