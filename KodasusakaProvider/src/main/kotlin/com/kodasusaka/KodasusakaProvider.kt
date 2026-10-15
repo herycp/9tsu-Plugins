@@ -3,6 +3,7 @@ package com.kodasusaka
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
+import java.net.URLEncoder
 
 class KodasusakaProvider : MainAPI() {
     override var mainUrl = "https://kodasusaka.com"
@@ -14,12 +15,13 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
+    // Menyesuaikan rute API halaman depan sesuai dokumentasi terbaru
     override val mainPage = mainPageOf(
         "/api/v2/movies?sortby=views" to "Top Views",
-        "/api/v2/movies?sortby=tmdb" to "Top TMDB",
-        "/api/v2/movies?sortby=imdb" to "Top IMDB",
-        "/api/v2/movies?sortby=newest" to "Movie Newest",
-        "/api/v2/tv-series?sortby=newest" to "TV Series Newest"
+        "/api/v2/top/tmdb" to "Top TMDB",
+        "/api/v2/top/imdb" to "Top IMDB",
+        "/api/v2/movies?kind=movie&sortby=newest" to "Movie Newest",
+        "/api/v2/movies?kind=tv-series&sortby=newest" to "TV Series Newest"
     )
 
     override suspend fun getMainPage(
@@ -53,7 +55,10 @@ class KodasusakaProvider : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$mainUrl/api/v2/search?q=$query&limit=30&page=1"
+        // ENCODE QUERY: Mencegah error URL ketika ada spasi atau karakter khusus
+        val encodedQuery = URLEncoder.encode(query, "utf-8")
+        val url = "$mainUrl/api/v2/search?q=$encodedQuery&limit=30&page=1"
+        
         val response = app.get(url).parsedSafe<ApiListResponse>()
 
         return response?.items?.mapNotNull { item ->
@@ -186,7 +191,6 @@ class KodasusakaProvider : MainAPI() {
         val posterUrl = fixUrlNull(img)
         val isTvSeries = kind.equals("tv-series", ignoreCase = true)
 
-        // Variabel lokal untuk mencegah tertimpa 'this.quality' milik SearchResponse
         val jsonQuality = quality
         val jsonEpisodeLabel = episode_label
 
