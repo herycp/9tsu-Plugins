@@ -15,12 +15,13 @@ class KodasusakaProvider : MainAPI() {
         TvType.Movie
     )
 
+    // REVISI 2: Mengubah sortby menjadi sort
     override val mainPage = mainPageOf(
-        "/api/v2/movies?sortby=views" to "Top Views",
+        "/api/v2/movies?sort=views" to "Top Views",
         "/api/v2/top/tmdb" to "Top TMDB",
         "/api/v2/top/imdb" to "Top IMDB",
-        "/api/v2/movies?kind=movie&sortby=newest" to "Movie Newest",
-        "/api/v2/movies?kind=tv-series&sortby=newest" to "TV Series Newest"
+        "/api/v2/movies?kind=movie&sort=newest" to "Movie Newest",
+        "/api/v2/movies?kind=tv-series&sort=newest" to "TV Series Newest"
     )
 
     override suspend fun getMainPage(
@@ -76,7 +77,11 @@ class KodasusakaProvider : MainAPI() {
         val response = app.get(apiUrl).parsedSafe<ApiResponse>() ?: return null
 
         val title = response.title ?: return null
+        
+        // Halaman detail (load) biasanya memerlukan gambar kualitas tinggi. 
+        // Tetap kita utamakan poster di halaman detail besar, atau bisa disesuaikan jika ingin thumb juga.
         val poster = fixUrlNull(response.poster?.takeIf { it.isNotBlank() } ?: response.thumb)
+        
         val backdrops = response.backdrops ?: emptyList()
         val background = fixUrlNull(backdrops.firstOrNull())
         val description = response.overview
@@ -90,7 +95,7 @@ class KodasusakaProvider : MainAPI() {
             server.episodes?.forEach { ep ->
                 if (!ep.sources_url.isNullOrEmpty()) {
                     episodes.add(
-                        newEpisode(ep.sources_url!!) {
+                        newEpisode(ep.sources_url) {
                             this.name = ep.name ?: "Episode ${ep.number}"
                             this.episode = ep.number
                             this.season = ep.season
@@ -112,7 +117,10 @@ class KodasusakaProvider : MainAPI() {
         val recommendations = response.related?.mapNotNull { rel ->
             val relSlug = rel.slug ?: return@mapNotNull null
             val relTitle = rel.title ?: "Unknown"
-            val relPoster = fixUrlNull(rel.poster?.takeIf { it.isNotBlank() } ?: rel.thumb)
+            
+            // REVISI 1: Menggunakan thumb untuk gambar rekomendasi (menyerupai halaman awal)
+            val relPoster = fixUrlNull(rel.thumb)
+            
             val relType = if (rel.kind.equals("tv-series", ignoreCase = true)) TvType.TvSeries else TvType.Movie
             
             if (relType == TvType.TvSeries) {
@@ -190,8 +198,10 @@ class KodasusakaProvider : MainAPI() {
         val validSlug = slug ?: return null
         
         val url = "$mainUrl/$validSlug" 
-        val img = poster?.takeIf { it.isNotBlank() } ?: thumb
-        val posterUrl = fixUrlNull(img)
+        
+        // REVISI 1: Menjadikan properti 'thumb' sebagai gambar pada halaman awal dan pencarian
+        val posterUrl = fixUrlNull(thumb)
+        
         val isTvSeries = kind.equals("tv-series", ignoreCase = true)
 
         val jsonQuality = quality
