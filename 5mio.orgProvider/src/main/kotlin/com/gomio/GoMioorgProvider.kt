@@ -253,15 +253,15 @@ class FiveMioProvider : MainAPI() {
                 }
 
                 when {
-                    src.contains("yorqemi.digital") -> {
-                        val idMatch = Regex("""yorqemi\.digital/embed/([^?]+)""").find(src)
+                    src.contains("cavdoro.digital") -> {
+                        val idMatch = Regex("""cavdoro\.digital/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "yorqemi",
+                                        name = "cavdoro",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
