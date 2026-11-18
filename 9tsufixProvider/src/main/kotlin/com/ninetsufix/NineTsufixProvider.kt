@@ -628,15 +628,15 @@ class NineTsuFixProvider : MainAPI() {
                 }
 
                 when {
-                    src.contains("felzuno.digital") -> {
-                        val idMatch = Regex("""felzuno\.digital/embed/([^?]+)""").find(src)
+                    src.contains("nixvaro.digital") -> {
+                        val idMatch = Regex("""nixvaro\.digital/embed/([^?]+)""").find(src)
                         val videoId = idMatch?.groupValues?.get(1)
                         if (videoId != null) {
                             try {
                                 val apiUrl = "https://obnoxious-elysia-herycp-161a17d4.koyeb.app/api/playlist?id=$videoId"
                                 callback.invoke(
                                     newExtractorLink(
-                                        name = "felzuno",
+                                        name = "nixvaro",
                                         source = this.name,
                                         url = apiUrl,
                                         type = ExtractorLinkType.M3U8
